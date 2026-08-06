@@ -1,6 +1,6 @@
 # Matcher 双模式 A/B/O 实施计划
 
-本文规定新版 Stage2 Matcher 的当前目标行为。旧 `matcher/` 及其 Anchor O/O′ 训练只作为已经完成的工程 smoke，不是本文要求兼容的生产接口。新版代码位于 `matcher_v2/`，首先完整训练、推理和评估不依赖 Stage1 产物的 `ground_truth_context`，同时实现能够读取 Stage1 产物的 `stage1_context`。
+本文规定独立 Matcher 仓库的当前目标行为。早期 Anchor O/O′ 训练只作为已经完成的工程 smoke，不是本文要求兼容的生产接口。正式代码统一位于 `matcher/`，首先完整训练、推理和评估不依赖 Stage1 产物的 `ground_truth_context`，同时实现能够读取 Stage1 产物的 `stage1_context`。
 
 ## 目标与范围
 
@@ -48,7 +48,7 @@ $$
 
 ## Stage3 复用边界
 
-`matcher_v2/` 必须让 Stage3 Builder 无需读取 Matcher Dataset、训练器、匈牙利匹配或 A/B/O 预测头即可复用以下能力：
+`matcher/` 必须让 Stage3 Builder 无需读取 Matcher Dataset、训练器、匈牙利匹配或 A/B/O 预测头即可复用以下能力：
 
 - 48³ 密度归一化与旋转后的坐标约定；
 - `MapBackbone` 的四尺度特征和 `MapSummaryHead`；
@@ -59,11 +59,11 @@ $$
 
 ## 工程入口与产物
 
-- Python 包：`matcher_v2/`。
-- 当前契约：`matcher_v2/README.md` 与 `文档/规划文档/Matcher_双模式数据契约.md`。
-- 正式配置：`configs/matcher_v2/`。
-- 模式一正式人类入口：`训练与运行/sh/matcher_v2/mode1/`。
-- 可复用 Stage1 产物清单生成工具：`ops/matcher_v2/`；正式 JSON 不写入临时目录，生成过程的大型中间状态和 smoke 产物写入任务专属临时目录。
+- Python 包：`matcher/`。
+- 当前契约：`matcher/README.md` 与 `文档/规划文档/Matcher_双模式数据契约.md`。
+- 正式配置：`configs/mode1/`；模式二正式配置在全量 Stage1 产物到齐后另行建立。
+- 模式一正式人类入口：`训练与运行/sh/mode1/`。
+- 两类正式清单均由 `matcher/manifest.py` 生成；正式 JSON 不写入临时目录，生成过程的大型中间状态和 smoke 产物写入任务专属临时目录。
 - 执行记录：`文档/exec_plan/Matcher_双模式ABO端到端实施.md`。
 
 正式训练使用 AdamW、BF16 autocast、在线 W&B，并在一个 epoch 内支持五次均匀间隔验证。批次继续按 occurrence 数装箱；预算、Map 分块、细配对分块和 U-Net 通道均由 YAML 显式配置。
@@ -76,4 +76,4 @@ $$
 - 真实 `ground_truth_context` PDB 完成 Dataset、前向、反向、checkpoint、推理和评估 smoke。
 - 真实 Stage1 F1-centered 产物完成 `stage1_context` Dataset 与模型前向 smoke。
 - 服务器画像记录平均 batch/PDB/occurrence 时间、数据等待、优化步、峰值显存与 OOM 状态。
-- 正式模式一训练启动后由当前对话的 heartbeat 监控；旧 Job 335493 按用户授权通过锁协议终止其旧训练并复用 A800 allocation。
+- 正式模式一重新训练前必须先解释既有 F1 低于 0.2 的主要原因，完成相应修改与 smoke，并把最终 YAML、shell 和提交命令交给用户审阅授权。旧训练不再由 heartbeat 监控。

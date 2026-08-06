@@ -1,59 +1,55 @@
-# Matcher
+# Matcher 代码边界
 
-本目录实现 AdaLigand Stage2 Matcher。首个正式版本只包含不依赖 Stage1 推理产物的 Anchor 路线、受体原子模态 A 和 O/O′ 输出。
+`matcher` 实现两个显式数据模式和一套共享网络。`ground_truth_context` 不读取
+Stage1 推理产物；`stage1_context` 读取 Find 的 F1-centered 产物。两种模式只在
+`train.py` 的 `build_dataset` 处二选一，不使用动态注册表或通用多模态框架。
 
-## 当前公开边界
+## 两个数据入口
 
-- 数据入口：`AnchorPocketDataset`。候选来自已有 bias/context 池，验证候选关系由正式清单冻结。
-- 模型入口：`Matcher`。输入是已装配的配体图、候选 A 图、候选中心 48³ Map、PDB/候选/occurrence 索引和可选辅助标签。
-- 目标函数：按配体身份执行 Hungarian，对 O 与 O′ 共用分配；辅助任务只在权重大于零时构造。
-- 当前解码：`OOPrimeDecoder`。允许 slot 拒绝和候选复用；不执行 A/B merge/split 推理。
-- 当前评估：`OOPrimeEvaluation`。完整验证集上扫描全局 O 阈值，以 occurrence 级 F1 选择 checkpoint。
+- `data_ground_truth.py`：每个真实 occurrence 产生一个候选，读取真实 ligand-area、
+  10 Å A 和中心 48³ 实验密度。正式训练、推理和评估使用此入口。
+- `data_stage1.py`：按正式 JSON 指针读取预测候选、V、P、A 和完整图概率；PP 只在
+  内存中从当前 48³ 内的概率 top-k 产生。该入口与模式一的清单和后处理互不依赖。
 
-字段级输入、清单、内存张量与 batch 约束见 `文档/规划文档/Matcher_Anchor_OOPrime数据契约.md`。
+模式二可以从模式一 checkpoint 开始继续训练基础参数和新增参数。V、P、PP、A
+条件不存在时，新增候选增量和 A 节点增量不经过带偏置网络，而是直接保持逐元素零。
+这保证网络执行模式一基础路径；模式二训练后不要求基础参数仍等于旧 checkpoint。
 
-模型不得读取 `bias/context` 来源标记。真实 occurrence 配体坐标只生成标签，不能进入模型输入。A 允许为空；零候选 PDB 已在样本收集边界剔除。
+## 模型与当前范围
 
-Phase2 FinePair 始终计算完整的候选框×occurrence 配对网格。`fine_pair_chunk_size` 只限制一次 forward 中联合计算的配对数，不筛选配对。CUDA BF16/FP16 环境安装 `flash-attn` 后，无 attention bias 的单上下文细注意力会自动使用 varlen Flash 内核；其它调用继续使用 PyTorch scaled-dot-product attention，模型定义不随执行内核变化。
+`model.py` 在已经通过旧 Matcher smoke 的图、粗分支、FinePair 和 FiLM_plus 算子上，
+增加六个 A/B/O、A′/B′/O′ 头以及 Stage1 条件增量。复用主干避免在仓库内复制一份
+一千余行的同构实现；公开输入仍只有 `contracts.py` 中的中性类型。共享科学算子位于
+`model_core.py`，正式六头模型入口位于 `model.py`。
 
-未来 Stage1 推理产物使用新的数据与推理入口，不在 Anchor 文件中加入模式分支。未来 A/B 使用独立 decoder/evaluator，不改变当前 O/O′ 的阈值和正确性定义。
+当前正式模式一只让 `MapBackbone` 和 `MapSummaryHead` 进入网络，不启用 U-Net 自行
+预测或选择采样点。此前讨论已明确暂缓 `MapPointHead → MapPointBuilder`；在没有敲定
+点的选择监督前，不把它偷偷加入本次 checkpoint。模式二 PP 已经使用确定的 Stage1
+完整图概率作为点身份，因此可以安全地从同一次 U-Net 的四尺度特征取得初始表示。
 
-## 配置与运行
+## Stage3 可直接复用的叶子
 
-正式配置位于 `configs/matcher/`，训练入口为 `python -m matcher.train`。本地或服务器 smoke 产物必须写入 `tmp/`；正式运行通过 `训练与运行/sh/matcher/` 的薄脚本调用项目通用任务提交系统。正式服务器训练需要用户在审阅 YAML 与 `.sh` 后单独授权。
+Stage3 可以从 `matcher.stage3` 显式导入以下叶子；该稳定入口不导出 Dataset、Matcher、
+Hungarian、六个预测头或训练器：
 
-## 显存画像
+- `data_common.centered_crop`：固定中心、越界零填充的密度裁剪；该函数因 Stage3 的数据来源不同，不从 `stage3.py` 再导出；
+- `MapBackbone`、`MapFeatures`、`MapSummaryHead`：四尺度密度特征
+  与候选摘要；
+- `topk_probability_points`：把完整图概率限制到当前 BOX 后选择 top-k 坐标；
+- `DensityPointBuilder`：在给定局部坐标处采样四尺度特征；
+- `contracts.PocketInput`：密度、A 图和候选几何的模型无关内存边界；
+- `contracts.Stage1Context`：模式二 V、P、PP、A 的模型无关内存边界；
+- 同构建图与 GatedGCN 叶子，以及 `FinePairBranch`、`GraphStateFiLMPlus`。
 
-`ops/profile_matcher_memory.py` 先预热一个完整 Phase2 训练步，再测量第二个 forward、loss、backward 与 AdamW step 的峰值显存。画像只生成临时 JSON，不参与正式训练。普通测量命令为：
+当前训练增强只旋转密度张量。同一 PDB 的全部候选使用同一个 90° 立方体旋转。
+当前配体图和 A 图只以距离等旋转不变量参与网络，因此世界坐标无需同步改变；以后
+若模式一启用空间采样点，点坐标必须与密度执行同一旋转后才能采样 U-Net 特征。
+当前没有把这项尚未启用的坐标旋转预先包装成公共函数；Stage3 若启用相同增强，必须
+先明确定义局部坐标变换并增加对应测试。
 
-```bash
-python -m ops.profile_matcher_memory \
-  --config configs/matcher/anchor_O_O_prime_phase2.yaml \
-  --channels 24,48,72,96 \
-  --output tmp/matcher_profile/memory_profile.json
-```
+## 运行与后处理
 
-需要按人工给定的显存上限验收时使用：
-
-```bash
-python -m ops.profile_matcher_memory \
-  --config configs/matcher/anchor_O_O_prime_phase2.yaml \
-  --channels 24,48,72,96 \
-  --memory-limit-gib 72 \
-  --output tmp/matcher_profile/memory_profile.json
-```
-
-命令末尾接受与 `matcher.train` 相同的 OmegaConf 点号覆盖，可直接调整 `occurrence_budget_per_batch`、两个 chunk size、activation checkpoint 和 bottleneck 参数。省略 `--experiment-manifest` 时，脚本准备正式训练清单的 epoch 0，并测量第一个 occurrence 装箱批次。若需指定重负载批次，可传入只用于画像的小清单；该清单应在 `splits.train` 的每个 PDB 中冻结 `candidate_start_zyx`。清单与输出 JSON 都必须位于 `tmp/`，不能成为正式训练输入。
-
-普通 Dataset 的限时吞吐测量使用：
-
-```bash
-python -m ops.profile_matcher_throughput \
-  --config configs/matcher/anchor_O_O_prime_phase2.yaml \
-  --channels 24,48,72,96 \
-  --minutes 60 \
-  --memory-limit-gib 72 \
-  --output tmp/matcher_profile/normal_throughput.json
-```
-
-输出同时记录平均 batch、PDB、occurrence 时间、优化步时间、数据等待时间、峰值显存和是否 OOM。该画像执行正式训练的 Dataset、loss、backward、梯度裁剪与 AdamW，但不运行周期性验证或保存 checkpoint，因此不能直接代表包含验证的完整 epoch 用时。
+模式一正式入口位于 `训练与运行/sh/mode1/`。训练支持断点续训、在线
+W&B、BF16、每 epoch 五次验证、`events.jsonl` 和原子 checkpoint。模式一后处理只在
+`decode_ground_truth.py` 与 `infer_ground_truth.py` 中实现；未来模式二使用独立推理
+入口，不在这些文件里加入数据来源条件分支。

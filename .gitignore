@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+
+# 训练与临时分析产物只保留在服务器结果目录或任务专属临时目录。
+outputs/
+results/
+tmp/
+wandb/

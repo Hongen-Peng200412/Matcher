@@ -1,5 +1,1 @@
-"""AdaLigand Stage2 Matcher。"""
-
-from .graph import GraphState, MolecularGraph, NodeEdgeLayer, build_molecular_graph
-
-__all__ = ["GraphState", "MolecularGraph", "NodeEdgeLayer", "build_molecular_graph"]
+"""Stage2 Matcher；公开对象从其职责模块显式导入。"""

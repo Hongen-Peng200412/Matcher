@@ -1,9 +1,9 @@
 <#
 .SYNOPSIS
-    Safe sync the AdaLigand project to the remote server.
+    Safe sync the Matcher project to the remote server.
 
 .DESCRIPTION
-    1. Keep the remote AdaLigand project directory to avoid disturbing running jobs.
+    1. Keep the remote Matcher project directory to avoid disturbing running jobs.
     2. Verify rsync exists on the remote server.
     3. Remove any existing remote .git directory.
     4. Upload local files with rsync while excluding local-only files.
@@ -16,7 +16,7 @@ $RemoteUser = "penghongen"
 $RemoteIP = "10.102.33.220"
 $RemotePort = "10022"
 $RemoteBaseDir = "/home/penghongen/My_Project"
-$RemoteTargetDir = "AdaLigand"
+$RemoteTargetDir = "Matcher"
 
 function Resolve-MsysBin {
     $Candidates = @(
@@ -65,7 +65,7 @@ $RemoteSpec = "${RemoteUser}@${RemoteIP}:${RemoteFullDir}/"
 
 function Invoke-RemoteCommand {
     param([string]$Command)
-    & $SshPassExe -f $SshPassFilePosix $SshExe -p $RemotePort -o StrictHostKeyChecking=accept-new -o WarnWeakCrypto=no -o PreferredAuthentications=password -o PubkeyAuthentication=no -o NumberOfPasswordPrompts=1 "$RemoteUser@$RemoteIP" $Command
+    & $SshPassExe -f $SshPassFilePosix $SshExe -p $RemotePort -o StrictHostKeyChecking=yes -o WarnWeakCrypto=no -o PreferredAuthentications=password -o PubkeyAuthentication=no -o NumberOfPasswordPrompts=1 "$RemoteUser@$RemoteIP" $Command
 }
 
 Write-Host "==========================================================" -ForegroundColor Cyan
@@ -109,7 +109,7 @@ $env:Path = "$MsysBin;$env:Path"
 $env:MSYS2_ARG_CONV_EXCL = "*"
 $LocalPathPosix = (& $CygpathExe -u $LocalPath).Trim()
 $SshPassFilePosix = (& $CygpathExe -u $SshPassFile).Trim()
-$RemoteShell = "sshpass -f $SshPassFilePosix ssh -p $RemotePort -o StrictHostKeyChecking=accept-new -o WarnWeakCrypto=no -o PreferredAuthentications=password -o PubkeyAuthentication=no -o NumberOfPasswordPrompts=1"
+$RemoteShell = "sshpass -f $SshPassFilePosix ssh -p $RemotePort -o StrictHostKeyChecking=yes -o WarnWeakCrypto=no -o PreferredAuthentications=password -o PubkeyAuthentication=no -o NumberOfPasswordPrompts=1"
 
 Write-Host "[1/6] Checking remote rsync..." -ForegroundColor Yellow
 $CheckRsyncCmd = "command -v rsync >/dev/null 2>&1"
@@ -150,13 +150,10 @@ Write-Host "[4/6] Uploading local code with rsync..." -ForegroundColor Yellow
     --exclude="**/.pytest_cache/" `
     --exclude=".ruff_cache/" `
     --exclude="**/.ruff_cache/" `
-    --exclude="tests_output/" `
-    --exclude="Data_Preprocessing/Ori_Data/tests_output/" `
-    --exclude="Data_Preprocessing/Ori_Data/mini-example/" `
-    --exclude="Data_Preprocessing/Ori_Data/mini-example-20/" `
-    --exclude="Data_Preprocessing/Ori_Data/mini-example-reorg/" `
-    --exclude="Data_Preprocessing/Ori_Data/resolution-check-30/" `
-    --exclude="Data_Preprocessing/Ori_Data/adaligand_stage1.egg-info/" `
+    --exclude="outputs/" `
+    --exclude="results/" `
+    --exclude="tmp/" `
+    --exclude="wandb/" `
     -e $RemoteShell `
     "$LocalPathPosix/" `
     $RemoteSpec

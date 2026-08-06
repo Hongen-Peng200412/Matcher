@@ -1,6 +1,6 @@
 # Matcher 双模式数据契约
 
-本文规定 `matcher_v2` 两个 Dataset 返回的共同内存结构和各自的数据来源。盘上 A–G 与 Stage1 字段仍分别由 `Data_Preprocessing/Ori_Data/README.md` 和 `文档/讨论/BOX-level数据契约.md` 管理；本文不复制或改写生产方契约。
+本文规定 `matcher` 两个 Dataset 返回的共同内存结构和各自的数据来源。盘上 A–G 与 Stage1 字段仍由 AdaLigand 的 `Data_Preprocessing/Ori_Data/README.md` 和 `文档/讨论/BOX-level数据契约.md` 管理；本文不复制或改写生产方契约。
 
 ## 共同样本
 
@@ -32,11 +32,11 @@
 - 训练时同一 PDB 的全部候选密度执行同一个 90° 立方体旋转；验证、推理与评估不旋转。当前图网络只消费距离等旋转不变量，世界坐标不随密度改写。以后启用空间采样点时，点的局部坐标必须与密度执行同一旋转。
 - 不生成 miss、split、bias 或 context 候选；PDB 没有 occurrence 时在清单生成边界排除。
 
-模式一为未来 U-Net 采样点保留内存边界，但当前正式版本不启用点生成头；本次 checkpoint 只使用密度摘要。以后启用的点仍由 `matcher_v2/context.py` 组装，不写入模式一清单。
+模式一为未来 U-Net 采样点保留内存边界，但当前正式版本不启用点生成头；本次 checkpoint 只使用密度摘要。以后启用的点仍由 `matcher/context.py` 组装，不写入模式一清单。
 
 ## `stage1_context`
 
-模式二使用单独的正式 JSON 指针。运维工具扫描指定 Stage1 推理根目录，把已存在且具有对应 `_COMPLETE` 的产物路径写入指针；Dataset 只读取该 JSON，不在训练时扫描目录，也不做文件哈希校验。
+模式二使用单独的正式 JSON 指针。清单生成器扫描指定 Stage1 推理根目录，把已存在且具有对应 `_COMPLETE` 的产物路径、候选数和 occurrence ID 列表写入指针；Dataset 只读取该 JSON，不在训练时扫描产物目录，也不做文件哈希校验。读取时只核对冻结 ID 和两项数量，防止源文件变化后静默改变样本。
 
 每个 Stage1 F1-centered 候选读取：
 
@@ -61,4 +61,4 @@ Stage1 不同模型来源可能具有不同的 `voxel_final`、P 和 A 特征宽
 
 `ground_truth_context` 和 `stage1_context` 分别拥有显式推理数据入口和候选结果构造。二者复用模型前向输出、阈值搜索、checkpoint 选择和指标累计的纯计算，不建立通用数据插件或动态注册系统。
 
-当前 A/B/O 推理根据六个输出产生候选—slot 分数，再在一个 PDB 内解码。评估至少报告阈值扫描后的 precision、recall、F1 与 PR-AUC，并把验证选出的阈值冻结进 checkpoint；独立评估只使用冻结阈值，不重新扫描。
+当前 A/B/O 推理根据六个输出产生候选—slot 分数，再在一个 PDB 内解码。预测 slot 与真实 occurrence 的判对在相同配体身份内做最大匹配；同身份副本的 slot 编号可以交换，不同身份不能交换。评估至少报告阈值扫描后的 precision、recall、F1 与 PR-AUC，并把验证选出的阈值冻结进 checkpoint；独立评估只使用冻结阈值，不重新扫描。

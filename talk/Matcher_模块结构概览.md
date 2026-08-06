@@ -5,24 +5,24 @@
 建议按以下顺序阅读首版 Matcher：
 
 1. `matcher/README.md`：当前正式数据与模型接口。
-2. `matcher/anchor_data.py`：Anchor 路线的样本生成、Map/A/配体装配。
-3. `matcher/batching.py`：以 occurrence 为预算的 PDB 装箱和批量合并。
-4. `matcher/graph.py` 与 `matcher/map.py`：两类底层特征提取。
-5. `matcher/model.py`：8 个 Block、Phase1/Phase2、粗分支、细分支和预测头。
-6. `matcher/objectives.py`：Hungarian、O/O′ 与辅助损失。
-7. `matcher/consistency.py` 和 `matcher/oo_prime.py`：不反传诊断、当前路线解码与评估。
-8. `matcher/train.py`：单卡训练、验证、checkpoint、恢复和两阶段入口。
+2. `matcher/contracts.py`：两个模式共同使用的内存样本与批次字段。
+3. `matcher/data_ground_truth.py` 与 `matcher/data_stage1.py`：两个显式 Dataset；二者不共享盘上扫描或推理后处理。
+4. `matcher/batching.py`：以 occurrence 为预算的 PDB 装箱和批量合并。
+5. `matcher/graph.py`、`matcher/map.py` 与 `matcher/context.py`：图网络、密度骨干和 Stage1 条件叶子。
+6. `matcher/model_core.py` 与 `matcher/model.py`：共享科学算子、两阶段装配和六个预测头。
+7. `matcher/objectives.py`：身份内 Hungarian、六头主损失与辅助损失。
+8. `matcher/train.py`：双模式装配、模式一训练与验证、checkpoint 和恢复；`matcher/infer_ground_truth.py` 只负责模式一推理与评估。
 
 ## 依赖方向
 
-`anchor_data.py` 和 `batching.py` 不导入模型。`graph.py`、`map.py` 不读取盘上文件。`model.py` 只消费已经装配的张量，不判断数据来自 Anchor 还是未来 Stage1。`objectives.py` 消费模型原始输出与标签。`oo_prime.py` 只负责当前 O/O′ 解码和验证统计，不读取 Dataset 文件。`train.py` 是唯一把这些正式组件连接成训练流程的入口。
+两个 Dataset 和 `batching.py` 不导入模型。`graph.py`、`map.py`、`context.py` 不扫描盘上训练清单。模型只消费 `contracts.py` 定义的内存对象；`objectives.py` 消费模型原始输出与标签。模式一解码只位于 `decode_ground_truth.py`，模式二未来增加独立推理入口。`train.py` 是唯一把正式 Dataset、模型、目标函数和验证连接成训练流程的入口。
 
-未来 Stage1 路线应新增明确命名的数据与推理文件，并直接调用稳定的模型、目标函数或叶子算子；不能让 `anchor_data.py` 增加 `mode` 分支，也不能把当前 decoder 改成通用注册系统。
+模式二未来新增明确命名的训练验证和推理文件，不能把模式一 decoder 改成通用注册系统。
 
 ## 可读性约束
 
 - 每个长期模块只保留真实职责入口；只转发一次或只映射一行字段的函数直接内联。
 - 不创建 `utils.py/common.py/base.py`、DataModule、Trainer、Callback、Provider、Registry 或 Factory 层级。
-- 训练主调用链直接展示：读一份 YAML → Anchor Dataset → 装箱 → Matcher → loss → O/O′ evaluation → checkpoint。
+- 训练主调用链直接展示：读一份 YAML → 明确 Dataset → 装箱 → Matcher → loss → 对应模式 evaluation → checkpoint。
 - 外部文件和配置只在入口集中校验；模型内部信任 Dataset/Collator 已建立的契约。
 - 临时分析、smoke 和画像产物进入 `tmp/<任务名>/`，不能混入正式清单、配置或运行目录。

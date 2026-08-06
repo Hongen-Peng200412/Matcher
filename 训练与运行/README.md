@@ -1,16 +1,16 @@
-# AdaLigand 训练与运行入口
+# Matcher 训练与运行入口
 
 本目录提供一套可以随项目复制的 Slurm 任务提交系统。读者只需要准备一个 Bash 任务脚本，就可以申请计算资源、冻结本次执行所见的完整项目、保留启动证据，并按需通过锁文件控制开始时间、重复执行和退出。
 
-“任务根目录”指需要冻结并执行的项目目录。默认任务根目录是本目录的上一层，即 AdaLigand 项目根目录；脚本内部没有写死 `AdaLigand` 或 `Pocket_Plus`。
+“任务根目录”指需要冻结并执行的项目目录。默认任务根目录是本目录的上一层，即 Matcher 项目根目录；通用脚本内部不写死项目名称。
 
 ## 1. 直接启动正式任务
 
-先把任务脚本放入 `训练与运行/sh/`，例如 `训练与运行/sh/prepare_labels.sh`，然后在服务器的 AdaLigand 项目根目录运行：
+先把任务脚本放入 `训练与运行/sh/`，然后在服务器的 Matcher 项目根目录运行：
 
 ```bash
 bash 训练与运行/submit_task.sh \
-  --sh prepare_labels.sh \
+  --sh 训练与运行/sh/mode1/prepare_manifest_cpu.sh \
   --resource cpu \
   --cpus 16
 ```
@@ -19,10 +19,10 @@ GPU 示例：
 
 ```bash
 bash 训练与运行/submit_task.sh \
-  --sh 训练与运行/sh/train_stage1.sh \
-  --resource h100 \
-  --gpus 2 \
-  --cpus 48
+  --sh 训练与运行/sh/mode1/train.sh \
+  --resource a800 \
+  --gpus 1 \
+  --cpus 24
 ```
 
 `--sh` 接受三种等价写法：只有文件名、相对于任务根目录的路径、任务根目录内的绝对路径。三种写法都会记录为同一个项目内相对路径，并从同一份 release 执行。
@@ -53,7 +53,7 @@ release 是只读运行副本，不是训练结果目录。任务产生的 check
 完整模式默认把控制记录放在：
 
 ```text
-$HOME/Feedback/AdaLigand/
+$HOME/Feedback/Matcher/
 ├── allocations/<job-id>/
 │   ├── out
 │   ├── err
@@ -63,9 +63,9 @@ $HOME/Feedback/AdaLigand/
 ├── launches/<job-id>/<launch-id>/
 │   ├── launch.json
 │   └── run_cmd.sh
-└── releases/AdaLigand_<内容哈希>/
+└── releases/Matcher_<内容哈希>/
     ├── manifest.json
-    └── AdaLigand/
+    └── Matcher/
 ```
 
 - `allocations/` 保存 Slurm 资源内当前可控制的执行状态和合并日志。
@@ -169,8 +169,6 @@ bash 训练与运行/submit_task.sh \
 
 无卡验证不能证明服务器分区、QOS、GPU 驱动、训练环境和真实数据可用。正式提交前仍需检查服务器资源和任务脚本自己的运行条件。
 
-## 13. 与既有提交系统的关系
+## 13. 项目边界
 
-AdaLigand 原有的 `与服务器交互/sbatch/` 保存旧任务脚本和旧提交方式。新正式任务优先使用本目录；正在运行的旧作业继续使用它们启动时已经冻结的代码，不应为了迁移而修改或重启。
-
-迁移不会自动改写旧脚本，也不会删除 CPC、数据处理或推理任务的既有能力。需要复用旧任务时，应先把任务主体整理为 `训练与运行/sh/` 中可冷读的项目入口，再通过本目录提交。
+Matcher 的正式任务只从 `/home/penghongen/My_Project/Matcher` 冻结 release。A–G 与 Stage1 产物仍由 AdaLigand 生产并从其正式存储目录读取；Matcher 的 checkpoint、指标和推理结果写入 `/storage/penghongen/Matcher/Results`，不写回 AdaLigand 代码目录。
