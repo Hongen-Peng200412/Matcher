@@ -1,0 +1,95 @@
+# Matcher v2 模式一 Phase2：从 Phase1 BEST 建立新 stem 与细分支，冻结前四个 Block。
+run:
+  phase: 2
+  seed: 3407
+  device: cuda
+  bf16: true
+  max_epochs: 20
+  val_per_epoch: 5
+  output_dir: /storage/penghongen/AdaLigand/Results/matcher_v2/ground_truth_context/seed_3407_occ48/phase2
+  phase1_checkpoint: /storage/penghongen/AdaLigand/Results/matcher_v2/ground_truth_context/seed_3407_occ48/phase1/best.pt
+  resume_checkpoint: null
+
+data:
+  mode: ground_truth_context
+  data_root: /storage/penghongen/AdaLigand/Ori_Data
+  manifest: /storage/penghongen/AdaLigand/Ori_Data/matcher_v2/ground_truth_context/manifest.json
+  map_size: 48
+  receptor_envelope_angstrom: 10.0
+  occurrence_budget_per_batch: 48
+  num_workers: 8
+  graph_radius: 4.0
+  graph_max_radius_neighbors: 48
+  graph_rbf_bins: 16
+
+model:
+  A_node_input_dim: 49
+  node_dim: 128
+  edge_dim: 64
+  repr_dim: 256
+  num_heads: 8
+  coarse_layers_per_block: 2
+  coarse_ffn_dim: 512
+  phase1_blocks: 4
+  phase2_blocks: 4
+  dropout: 0.1
+  map_channels: [24, 48, 72, 96]
+  map_candidate_chunk_size: 32
+  map_norm_groups: 8
+  map_bottleneck_heads: 4
+  map_bottleneck_layers: 1
+  map_bottleneck_ffn_dim: 128
+  map_activation_checkpoint: true
+  map_scale_summary_dim: 64
+  map_summary_hidden_dim: 512
+  candidate_bias_rbf_bins: 32
+  candidate_bias_hidden_dim: 64
+  candidate_bias_distance_scale: 12.0
+  graph_activation_checkpoint: true
+  phase2_use_FiLM_plus: true
+  phase2_condition_mlp_ratio: 2.0
+  phase2_condition_dropout: 0.0
+  fine_pair_chunk_size: 2048
+  fine_pair_activation_checkpoint: true
+  fine_attention_use_ffn: false
+  fine_attention_ffn_hidden_dim: 512
+  fine_readout_dim: 512
+  initial_prior: 0.05
+  stage1_V_feature_dim: 48
+  stage1_P_feature_dim: 112
+  stage1_A_feature_dim: 176
+
+objective:
+  deep_supervision_weight: 0.5
+  continuous_weight: 1.0
+  hard_weight: 1.0
+  entity_auxiliary_weight: 0.1
+  fine_pair_auxiliary_weight: 0.1
+
+optimizer:
+  lr: 5.0e-5
+  betas: [0.9, 0.999]
+  eps: 1.0e-8
+  weight_decay: 0.01
+  gradient_clip_norm: 0.5
+
+scheduler:
+  warmup_ratio: 0.005
+  warmup_steps: null
+  warmup_start_factor: 0.33
+  factor: 0.3
+  patience: 2
+  threshold: 0.003
+  min_lr: 0.0
+  stop_after_lr_reductions: 3
+
+evaluation:
+  threshold_step: 0.003
+
+wandb:
+  enabled: true
+  project: AdaLigand_Matcher
+  group: matcher_v2_ground_truth_seed_3407_occ48
+  name: matcher_v2_ground_truth_seed_3407_occ48_phase2
+  run_id: matcher-v2-gt-3407-p2
+  log_every_n_steps: 10
