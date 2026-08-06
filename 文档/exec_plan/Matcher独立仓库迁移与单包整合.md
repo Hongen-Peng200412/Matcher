@@ -18,6 +18,9 @@
 - [x] 2026-08-06：实现端点 `75ad965` 与学习端点 `1cb04f9` 的 tree 均为 `8e43f2ff82b4d9edbed20ca674138d30bd8461a5`；`Learn/CUMULATIVE` 已快进，主工作区干净。Python 编译、YAML 解析、Bash、PowerShell 与本地 26 项测试均通过。
 - [x] 2026-08-06：AdaLigand 已从活动树删除 Matcher 运行代码，并在独立的实现线与学习线完成等价收口；A–G、Stage1、BOX 契约、总体讨论和旧执行证据保留。两个临时暂停的 Stage1 automation 已恢复原来的 3 小时间隔与原线程。
 - [x] 2026-08-06：只执行安全同步，把仓库写入空的 `/home/penghongen/My_Project/Matcher`。同步后删除两个未跟踪的空 `matcher_v2` 目录；远端确认不存在任何名为 `matcher_v2` 的目录。服务器使用 `Pocket_Plus_centos7_cu121_allgpu` 环境完成 YAML、全部 shell/sbatch 和 Stage3 轻量导入检查，26 项测试全部通过；未申请 GPU、未运行删除式同步。
+- [x] 2026-08-06：把 PyTorch `file_system` 张量共享策略从训练入口下沉到共同 `build_loader`。训练、验证和独立推理现在遵守同一文件句柄策略，避免训练后新推理进程再次触发旧 `Too many open files` 问题；本地和服务器均为 26 项测试通过。
+- [x] 2026-08-06：CPU Job `337745` 使用 release `Matcher_145f92c138a3` 生成正式 mode1 清单。train/validation/calibration 分别为 12,881/188/89 个 PDB 和 180,382/2,914/1,386 个 occurrence；新清单与迁移前清单字节级相同，SHA-256 均为 `7845463785b27927ebd509f50167075f08241f6beda3c5117a713d9d3c5e8131`。
+- [ ] H200 simple Job `337744` 等待资源，只读重算旧 Phase2 BEST 在身份感知指标下的 validation 结果；任务不设时限、不保留 allocation、不写正式结果根，也不训练参数。
 - [ ] 诊断旧模式一 Phase2 最佳 F1 `0.15238526` 的主要原因，形成修改与重训建议。
 - [ ] 向用户展示最终 YAML、shell 和无 `--time` 的提交命令；得到新授权后才提交 GPU 重训。
 
@@ -43,3 +46,11 @@
 - Python：`/home/penghongen/anaconda3/envs/Pocket_Plus_centos7_cu121_allgpu/bin/python`。
 - 静态检查：两个正式 YAML 可解析；仓库内所有 `.sh` 与 `.sbatch` 均通过 `bash -n`；`import matcher.stage3` 不会连带导入 `matcher.train` 或 Dataset。
 - 回归结果：`26 passed, 8 warnings in 17.79s`。警告来自 PyTorch Transformer nested tensor 与 checkpoint CPU autocast 的弃用提示，不是测试失败。
+
+## 旧 F1 诊断
+
+- 旧 Phase2 BEST 位于 `global_step=16729`。旧固定 slot 指标为 precision `0.22512755`、recall `0.12113933`、F1 `0.15751896`、阈值 `0.12`，共预测 1,568 对、判对 353 对、validation occurrence 总数 2,914。
+- 旧 checkpoint 已由当前 85,801,217 参数模型严格加载成功，说明可在不转换权重的情况下重算指标。
+- validation 中 146/188 个 PDB 含同身份多 occurrence；2,732/2,914 个 occurrence（93.75%）属于重复身份组。共 354 个重复身份组，最大单组 90 个 occurrence。calibration 的对应比例为 1,307/1,386（94.30%）。
+- 训练使用身份内 Hungarian，且同身份 slot 不代表固定真实 occurrence；旧验证却按 slot 下标判分。这个错误覆盖绝大多数 validation occurrence，并直接控制 BEST、学习率下降和提前停止，因此不能在身份感知重评完成前把 `0.1575` 解释为模型能力。
+- 当前证据支持先保持模型与训练分布不变，只用修正后的指标重评并从头训练一个基线；若身份感知结果仍低，再讨论六头打分权重、损失或架构。
