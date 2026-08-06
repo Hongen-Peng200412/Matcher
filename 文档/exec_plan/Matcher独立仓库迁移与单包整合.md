@@ -15,9 +15,9 @@
 - [x] 2026-08-06：正式配置迁至 `configs/mode1/`，正式脚本迁至 `训练与运行/sh/mode1/`；代码、控制证据和结果分别使用 `/home/penghongen/My_Project/Matcher`、`/home/penghongen/Feedback/Matcher` 与 `/storage/penghongen/Matcher/Results`。
 - [x] 2026-08-06：完成契约与可读性双审查。模式二正式训练在独立验证实现前明确拒绝模式一后处理；Stage1 指针升级为 schema 2，冻结 occurrence ID 与两项数量；旧两头整模继承收敛为共享编排核心与唯一六头实现。
 - [x] 2026-08-06：修正同身份多 occurrence 的评估错误。训练允许同身份 slot 交换，因此验证现在也在同身份内最大匹配；不同配体身份仍不能交换。旧训练的固定 slot 指标会低估这类样本，不能直接作为新评估的基线。
-- [ ] 完成脚本静态验证、实现线提交与学习线等价收口。
-- [ ] 从 AdaLigand 活动树删除 Matcher 运行代码，只保留最新生产方事实、契约、历史证据和跨仓库索引。
-- [ ] 只执行安全同步并完成服务器无卡 smoke；不运行删除式同步。
+- [x] 2026-08-06：实现端点 `75ad965` 与学习端点 `1cb04f9` 的 tree 均为 `8e43f2ff82b4d9edbed20ca674138d30bd8461a5`；`Learn/CUMULATIVE` 已快进，主工作区干净。Python 编译、YAML 解析、Bash、PowerShell 与本地 26 项测试均通过。
+- [x] 2026-08-06：AdaLigand 已从活动树删除 Matcher 运行代码，并在独立的实现线与学习线完成等价收口；A–G、Stage1、BOX 契约、总体讨论和旧执行证据保留。两个临时暂停的 Stage1 automation 已恢复原来的 3 小时间隔与原线程。
+- [x] 2026-08-06：只执行安全同步，把仓库写入空的 `/home/penghongen/My_Project/Matcher`。同步后删除两个未跟踪的空 `matcher_v2` 目录；远端确认不存在任何名为 `matcher_v2` 的目录。服务器使用 `Pocket_Plus_centos7_cu121_allgpu` 环境完成 YAML、全部 shell/sbatch 和 Stage3 轻量导入检查，26 项测试全部通过；未申请 GPU、未运行删除式同步。
 - [ ] 诊断旧模式一 Phase2 最佳 F1 `0.15238526` 的主要原因，形成修改与重训建议。
 - [ ] 向用户展示最终 YAML、shell 和无 `--time` 的提交命令；得到新授权后才提交 GPU 重训。
 
@@ -35,3 +35,11 @@
 - 契约审查确认两个模式与 Stage3 叶子未因迁移失真；可读性审查确认无重复包、失效入口和不必要嵌套。
 - 实现分支与学习分支端点树完全一致，`Learn/CUMULATIVE` 为唯一最新提交。
 - AdaLigand 与 Matcher 两个工作区均干净；暂停的 Stage1 automation 恢复原状态。
+
+## 服务器隔离 smoke 证据
+
+- 本机安全同步入口：`C:\Users\15919\Desktop\Matcher\与服务器交互\sync_code.ps1`。
+- 远端代码根：`/home/penghongen/My_Project/Matcher`；同步前目录存在但为空。
+- Python：`/home/penghongen/anaconda3/envs/Pocket_Plus_centos7_cu121_allgpu/bin/python`。
+- 静态检查：两个正式 YAML 可解析；仓库内所有 `.sh` 与 `.sbatch` 均通过 `bash -n`；`import matcher.stage3` 不会连带导入 `matcher.train` 或 Dataset。
+- 回归结果：`26 passed, 8 warnings in 17.79s`。警告来自 PyTorch Transformer nested tensor 与 checkpoint CPU autocast 的弃用提示，不是测试失败。
