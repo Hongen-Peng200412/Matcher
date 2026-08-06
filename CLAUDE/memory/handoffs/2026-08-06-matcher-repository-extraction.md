@@ -17,6 +17,10 @@ Matcher 已完成独立仓库迁移、单包整合、AdaLigand 活动代码退�
 - Matcher 实现端点 `75ad965` 与学习端点 `1cb04f9` tree 完全相同；`Learn/CUMULATIVE` 已快进。
 - AdaLigand 已删除活动 Matcher 包、配置、训练入口和旧画像脚本，并完成自身实现线与学习线等价收口；Stage1 automation 已恢复。
 - 安全同步已写入 `/home/penghongen/My_Project/Matcher`。远端不存在 `matcher_v2` 目录；YAML、shell/sbatch、Stage3 轻量导入和 26 项回归全部通过。
+- 共同 `build_loader` 已统一设置 PyTorch `file_system` 共享策略，覆盖训练、验证和独立推理；本地与服务器回归仍为 26 项通过。
+- CPU Job `337745` 已生成 `/storage/penghongen/AdaLigand/Ori_Data/matcher/ground_truth_context/manifest.json`。它与旧清单字节级相同，SHA-256 为 `7845463785b27927ebd509f50167075f08241f6beda3c5117a713d9d3c5e8131`。
+- validation 的 2,914 个 occurrence 中有 2,732 个属于重复身份组；旧固定 slot 指标与训练的身份内 Hungarian 不一致，影响范围不是边缘样本。
+- H200 simple Job `337744` 已提交，只读重评旧 Phase2 BEST；当前等待资源，不设时限、不保留 allocation、不写正式结果根。
 
 ## Decisions
 
@@ -30,7 +34,7 @@ Matcher 已完成独立仓库迁移、单包整合、AdaLigand 活动代码退�
 
 ## Next Actions
 
-1. 用旧 validation 与 checkpoint 量化同身份固定 slot 指标的低估幅度，并区分指标错误与模型学习不足。
+1. 等待 Job `337744` 完成，读取 `/storage/penghongen/tmp/matcher_legacy_metric_reval_20260806/metrics.json`，量化固定 slot 指标的低估幅度。
 2. 根据诊断结果形成最小修改与重训建议；科学定义变化须重新确认。
 3. 展示最终 Phase1/Phase2 YAML、正式训练 shell 与无 `--time` 的提交命令，获得用户明确授权后才提交 GPU 训练。
 
