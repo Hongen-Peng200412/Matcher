@@ -197,6 +197,7 @@ def _load_training_weights(
 def build_loader(config: DictConfig, split: str, training: bool) -> tuple[Dataset, DataLoader]:
     """训练、验证、推理共用的 occurrence 预算装箱入口。"""
 
+    torch.multiprocessing.set_sharing_strategy("file_system")
     dataset = build_dataset(config, split, training)
     sampler = OccurrenceBudgetBatchSampler(
         dataset.occurrence_counts,
@@ -332,7 +333,6 @@ def run_training(config: DictConfig, resume_checkpoint: Path | None = None) -> N
             "正式训练当前只支持 ground_truth_context；"
             "stage1_context 需使用独立验证入口。"
         )
-    torch.multiprocessing.set_sharing_strategy("file_system")
     seed_everything(int(config.run.seed))
     device = torch.device(str(config.run.device))
     model = build_matcher(config)
