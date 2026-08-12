@@ -1,0 +1,139 @@
+"""组合 RAUNet、四模态融合、六分类头和两个候选区域辅助头。"""
+
+from __future__ import annotations
+
+from typing import TypedDict
+
+import torch
+from torch import nn
+
+from ..contracts import CandidateBatch
+from ..schema import CLASS_NAMES
+from .config import MatcherModelConfig
+from .fusion import (
+    CandidateConditionedAggregator,
+    MeanMaxAggregator,
+    MODALITY_INPUT_DIMS,
+    TokenProjector,
+    gather_voxel_features,
+)
+from .raunet import RaUnetBackbone
+
+
+class CandidateEncoderOutput(TypedDict):
+    """固定候选编码器供损失、指标和完整 Matcher 使用的输出字段。"""
+
+    candidate_embedding: torch.Tensor
+    class_logits: torch.Tensor
+    ligand_area_logits: torch.Tensor
+    binding_area_logits: torch.Tensor
+    voxel_features: torch.Tensor
+
+
+class VoxelBinaryHead(nn.Module):
+    """从 U-Net 最高分辨率特征产生一个候选区域 logit 网格。"""
+
+    def __init__(self, channels: int) -> None:
+        super().__init__()
+        self.layers = nn.Sequential(
+            nn.Conv3d(channels, channels, kernel_size=1),
+            nn.ReLU(),
+            nn.Conv3d(channels, 1, kernel_size=1),
+        )
+
+    def forward(self, features: torch.Tensor) -> torch.Tensor:
+        """返回去掉单通道轴的 ``(B,48,48,48)`` logits。"""
+
+        return self.layers(features)[:, 0]
+
+
+class CandidateEncoder(nn.Module):
+    """编码一个 Stage1 候选，不读取任何配体语言或配体图信息。"""
+
+    def __init__(self, config: MatcherModelConfig) -> None:
+        super().__init__()
+        self.config = config
+        self.voxel_backbone = RaUnetBackbone(
+            input_channels=105,
+            feature_channels=config.voxel_feature_channels,
+            planes=config.raunet_planes,
+            recycle_iterations=config.recycle_iterations,
+            gradient_checkpointing=config.gradient_checkpointing,
+            bottleneck_attention_layers=config.bottleneck_attention_layers,
+        )
+        self.candidate_summary = nn.Sequential(
+            nn.LayerNorm(config.voxel_feature_channels * 2),
+            nn.Linear(config.voxel_feature_channels * 2, config.model_dim),
+            nn.GELU(),
+            nn.LayerNorm(config.model_dim),
+        )
+        self.token_projectors = nn.ModuleDict(
+            {
+                name: TokenProjector(input_dim, config.model_dim, config.dropout)
+                for name, input_dim in MODALITY_INPUT_DIMS.items()
+            }
+        )
+        self.voxel_modulators = nn.ModuleDict(
+            {
+                name: nn.Sequential(
+                    nn.Linear(config.voxel_feature_channels, config.model_dim),
+                    nn.GELU(),
+                    nn.Linear(config.model_dim, config.model_dim),
+                )
+                for name in ("v", "pp")
+            }
+        )
+        if config.aggregation == "mean_max":
+            self.aggregator: nn.Module = MeanMaxAggregator(config.model_dim, config.dropout)
+        else:
+            self.aggregator = CandidateConditionedAggregator(
+                config.model_dim,
+                config.attention_heads,
+                config.dropout,
+            )
+        self.class_head = nn.Sequential(
+            nn.Linear(config.model_dim, config.model_dim),
+            nn.GELU(),
+            nn.Dropout(config.dropout),
+            nn.Linear(config.model_dim, len(CLASS_NAMES)),
+        )
+        self.ligand_area_head = VoxelBinaryHead(config.voxel_feature_channels)
+        self.binding_area_head = VoxelBinaryHead(config.voxel_feature_channels)
+
+    def forward(self, batch: CandidateBatch) -> CandidateEncoderOutput:
+        """返回六分类、两个局部区域 logits 和供身份匹配复用的候选表示。"""
+
+        # 磁盘缓存固定为 float16；CPU 测试和未启用 autocast 的推理需要显式与
+        # 主干参数对齐，GPU 自动混合精度仍可在算子内部选择 BF16/FP16。
+        voxel_input = batch["voxel_input"].to(
+            dtype=self.voxel_backbone.input_projection.weight.dtype
+        )
+        voxel_features = self.voxel_backbone(voxel_input)
+        pooled = torch.cat(
+            (voxel_features.mean(dim=(2, 3, 4)), voxel_features.amax(dim=(2, 3, 4))),
+            dim=-1,
+        )
+        candidate_summary = self.candidate_summary(pooled)
+
+        modalities: dict[str, tuple[torch.Tensor, torch.Tensor]] = {}
+        for name in ("a", "p", "v", "pp"):
+            mask = batch[f"{name}_mask"]
+            projected = self.token_projectors[name](batch[f"{name}_tokens"], mask)
+            if name in ("v", "pp"):
+                sampled = gather_voxel_features(
+                    voxel_features,
+                    batch[f"{name}_index_zyx"],
+                    mask,
+                )
+                projected = projected + self.voxel_modulators[name](sampled)
+                projected = projected * mask[..., None].to(dtype=projected.dtype)
+            modalities[name] = (projected, mask)
+
+        candidate_embedding = self.aggregator(candidate_summary, modalities)
+        return {
+            "candidate_embedding": candidate_embedding,
+            "class_logits": self.class_head(candidate_embedding),
+            "ligand_area_logits": self.ligand_area_head(voxel_features),
+            "binding_area_logits": self.binding_area_head(voxel_features),
+            "voxel_features": voxel_features,
+        }
