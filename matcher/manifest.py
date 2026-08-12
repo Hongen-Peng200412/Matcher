@@ -1,4 +1,13 @@
-"""扫描冻结 Stage1 F1 候选，并发布新 Matcher 的版本化监督清单。"""
+"""扫描冻结 Stage1 F1 候选，并发布新 Matcher 的版本化监督清单。
+
+``manifest.json`` 固定源目录、覆盖阈值、语言表示选择种子、六分类顺序、三个
+划分的文件名和摘要。每个 ``<split>_candidates.jsonl`` 对应一个 Stage1 候选，
+记录完整组件覆盖率标签、匹配 occurrence、object_key 和语言监督可用性；每个
+``<split>_identities.jsonl`` 对应一个 ``(pdb_id,object_key)`` 小分子身份，记录
+配体图与两种冻结语言表示的选择证据。``excluded_pdb.jsonl`` 单独记录整 PDB
+排除原因，任何排除项都不进入训练或指标分母。所有文件位于
+``<output_root>/manifests/closed_set_v1/``，由覆盖阈值与选择种子共同决定身份。
+"""
 
 from __future__ import annotations
 
@@ -263,15 +272,23 @@ def _read_occurrences(data_root: Path, pdb_id: str) -> list[dict[str, Any]]:
 
     path = data_root / "parse" / pdb_id / "occurrences.jsonl"
     records = load_jsonl(path)
-    candidate_ids = [int(record["candidate_id"]) for record in records]
-    if len(candidate_ids) != len(set(candidate_ids)):
-        raise ValueError(f"{path} 含重复 candidate_id。")
     for record in records:
-        if str(record.get("pdb_id", "")).lower() != pdb_id:
-            raise ValueError(f"{path} 的 pdb_id 与目录名不一致。")
         for field in ("candidate_id", "object_key", "type_tag"):
             if field not in record:
                 raise KeyError(f"{path} 缺少 occurrence 字段 {field}。")
+        if str(record.get("pdb_id", "")).lower() != pdb_id:
+            raise ValueError(f"{path} 的 pdb_id 与目录名不一致。")
+        try:
+            int(record["candidate_id"])
+        except (TypeError, ValueError) as error:
+            raise ValueError(f"{path} 的 candidate_id 必须可转换为整数。") from error
+        if not isinstance(record["object_key"], str) or not record["object_key"]:
+            raise ValueError(f"{path} 的 object_key 必须为非空字符串。")
+        if str(record["type_tag"]) not in {"ion", "nucleotide_like", "peptide_like", "small_molecule", "sugar", "other"}:
+            raise ValueError(f"{path} 含不支持的 type_tag={record['type_tag']!r}。")
+    candidate_ids = [int(record["candidate_id"]) for record in records]
+    if len(candidate_ids) != len(set(candidate_ids)):
+        raise ValueError(f"{path} 含重复 candidate_id。")
     return sorted(records, key=lambda record: int(record["candidate_id"]))
 
 

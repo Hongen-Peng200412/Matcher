@@ -1,10 +1,10 @@
-"""按 PDB 保持读取局部性，并把候选级变长 token 与配体图拼成固定物理批次。"""
+"""全局随机排列候选，并把变长 token 与配体图拼成固定物理批次。"""
 
 from __future__ import annotations
 
 import math
 import random
-from typing import Any, Iterator
+from typing import Any, Iterator, cast
 
 import numpy as np
 import torch
@@ -12,11 +12,16 @@ from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import Sampler
 
 from .candidate_data import CandidateDataset
-from .schema import LANGUAGE_EMBEDDING_DIM
+from .contracts import CandidateBatch, CandidateItem
+from .schema import LANGUAGE_EMBEDDING_DIM, PP_TOKEN_DIM, V_TOKEN_DIM
 
 
-class PdbGroupedBatchSampler(Sampler[list[int]]):
-    """先连续排列每个 PDB 的候选，再切成固定大小批次以复用大体积源文件。"""
+class ShuffledBatchSampler(Sampler[list[int]]):
+    """在整个候选清单上随机排列，再切成固定物理批次。
+
+    采样顺序有意忽略 PDB 归属，避免同一 PDB 的相关候选连续进入模型。I/O
+    局部性由每个 DataLoader 工作进程的大字节预算 LRU 负责，而不改变样本顺序。
+    """
 
     def __init__(
         self,
@@ -36,23 +41,17 @@ class PdbGroupedBatchSampler(Sampler[list[int]]):
         self.epoch = 0
 
     def set_epoch(self, epoch: int) -> None:
-        """设置决定当前训练周期 PDB 顺序和 PDB 内候选顺序的整数。"""
+        """设置决定当前训练周期全局候选排列的整数。"""
 
         self.epoch = int(epoch)
 
     def __iter__(self) -> Iterator[list[int]]:
-        """生成物理批次；训练批次在 drop_last=True 时始终具有固定样本数。"""
+        """生成全局洗牌后的物理批次。"""
 
         generator = random.Random(self.seed + self.epoch)
-        pdb_ids = sorted(self.dataset.indices_by_pdb)
+        ordered_indices = list(range(len(self.dataset)))
         if self.shuffle:
-            generator.shuffle(pdb_ids)
-        ordered_indices: list[int] = []
-        for pdb_id in pdb_ids:
-            indices = list(self.dataset.indices_by_pdb[pdb_id])
-            if self.shuffle:
-                generator.shuffle(indices)
-            ordered_indices.extend(indices)
+            generator.shuffle(ordered_indices)
         for start in range(0, len(ordered_indices), self.batch_size):
             batch = ordered_indices[start : start + self.batch_size]
             if len(batch) == self.batch_size or not self.drop_last:
@@ -66,11 +65,12 @@ class PdbGroupedBatchSampler(Sampler[list[int]]):
         return math.ceil(len(self.dataset) / self.batch_size)
 
 
-def collate_candidates(items: list[dict[str, Any]]) -> dict[str, Any]:
-    """填充 A/P/V/PP 与身份维度，并把所有 LigandObject 图连接成一个图批次。"""
+def collate_candidates(items: list[CandidateItem]) -> CandidateBatch:
+    """按 ``CandidateBatch`` 契约填充四模态、身份维度并连接配体图。"""
 
     if not items:
         raise ValueError("候选批次不能为空。")
+    _validate_token_index_alignment(items)
     batch: dict[str, Any] = {
         "metadata": [item["metadata"] for item in items],
         "voxel_input": torch.from_numpy(np.stack([item["voxel_input"] for item in items])),
@@ -86,16 +86,26 @@ def collate_candidates(items: list[dict[str, Any]]) -> dict[str, Any]:
             dtype=torch.long,
         ),
     }
-    for prefix in ("a", "p", "v", "pp"):
-        padded, mask = _pad_float_sequences([item[f"{prefix}_tokens"] for item in items])
-        batch[f"{prefix}_tokens"] = padded
-        batch[f"{prefix}_mask"] = mask
-    for prefix in ("v", "pp"):
-        batch[f"{prefix}_index_zyx"] = _pad_index_sequences(
-            [item[f"{prefix}_index_zyx"] for item in items]
-        )
+    batch["a_tokens"], batch["a_mask"] = _pad_float_sequences(
+        [item["a_tokens"] for item in items]
+    )
+    batch["p_tokens"], batch["p_mask"] = _pad_float_sequences(
+        [item["p_tokens"] for item in items]
+    )
+    batch["v_tokens"], batch["v_mask"] = _pad_float_sequences(
+        [item["v_tokens"] for item in items]
+    )
+    batch["pp_tokens"], batch["pp_mask"] = _pad_float_sequences(
+        [item["pp_tokens"] for item in items]
+    )
+    batch["v_index_zyx"] = _pad_index_sequences(
+        [item["v_index_zyx"] for item in items]
+    )
+    batch["pp_index_zyx"] = _pad_index_sequences(
+        [item["pp_index_zyx"] for item in items]
+    )
     batch.update(_collate_identities(items))
-    return batch
+    return cast(CandidateBatch, batch)
 
 
 def _pad_float_sequences(arrays: list[np.ndarray]) -> tuple[torch.Tensor, torch.Tensor]:
@@ -120,7 +130,7 @@ def _pad_index_sequences(arrays: list[np.ndarray]) -> torch.Tensor:
     return pad_sequence(tensors, batch_first=True, padding_value=0)
 
 
-def _collate_identities(items: list[dict[str, Any]]) -> dict[str, Any]:
+def _collate_identities(items: list[CandidateItem]) -> dict[str, Any]:
     """填充语言表示并连接与每个有效身份一一对应的配体图。"""
 
     batch_size = len(items)
@@ -153,6 +163,11 @@ def _collate_identities(items: list[dict[str, Any]]) -> dict[str, Any]:
             LANGUAGE_EMBEDDING_DIM,
         ):
             raise ValueError("身份名称、语言表示和配体图数量不一致。")
+        target = int(item["identity_target"])
+        if target < -1 or target >= len(object_keys):
+            raise ValueError(
+                f"identity_target={target} 超出当前样本的 {len(object_keys)} 个身份。"
+            )
         identity_object_keys.append(object_keys)
         if object_keys:
             language[sample_index, : len(object_keys)] = torch.from_numpy(embeddings)
@@ -192,6 +207,25 @@ def _collate_identities(items: list[dict[str, Any]]) -> dict[str, Any]:
         "graph_to_identity": torch.tensor(graph_to_identity, dtype=torch.long),
         **graph_batch,
     }
+
+
+def _validate_token_index_alignment(items: list[CandidateItem]) -> None:
+    """核对 V/PP 的 token 数、索引数和固定特征宽度。"""
+
+    for item_index, item in enumerate(items):
+        pairs = (
+            ("V", item["v_tokens"], item["v_index_zyx"], V_TOKEN_DIM),
+            ("PP", item["pp_tokens"], item["pp_index_zyx"], PP_TOKEN_DIM),
+        )
+        for name, tokens, indices, width in pairs:
+            if tokens.ndim != 2 or tokens.shape[1] != width:
+                raise ValueError(
+                    f"items[{item_index}] 的 {name} token 必须为 (N,{width})。"
+                )
+            if indices.shape != (tokens.shape[0], 3):
+                raise ValueError(
+                    f"items[{item_index}] 的 {name} token 与 ZYX 索引数量不一致。"
+                )
 
 
 def _empty_or_concatenated_graph(

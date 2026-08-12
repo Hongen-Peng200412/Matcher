@@ -3,11 +3,16 @@
 from __future__ import annotations
 
 import json
+from typing import cast
 
 import numpy as np
+import pytest
 
-from matcher.batching import PdbGroupedBatchSampler, collate_candidates
+from matcher import locking
+from matcher.batching import ShuffledBatchSampler, collate_candidates
+from matcher.cache import ByteBudgetLru
 from matcher.candidate_data import CandidateDataset
+from matcher.contracts import CandidateItem
 from matcher.geometry import crop_center_48, hard_scatter_receptor, keep_local_48
 from matcher.labels import OccurrenceMask, assign_candidate_target
 from matcher.manifest import build_manifest, load_jsonl
@@ -86,10 +91,77 @@ def test_manifest_and_dataset_keep_pdb_but_drop_missing_smi_occurrence(tmp_path)
     assert item["language_embeddings"].shape == (1, 768)
     assert item["ligand_area_target"][24, 24, 24]
     assert item["binding_area_target"][24, 24, 24]
+    assert item["binding_area_target"][24, 24, 25]
+    assert int(item["binding_area_target"].sum()) == 2
 
-    batch = collate_candidates([item])
+    batch = collate_candidates([cast(CandidateItem, item)])
     assert batch["voxel_input"].shape == (1, 105, 48, 48, 48)
     assert batch["identity_mask"].tolist() == [[True]]
     assert batch["graph_edge_index"].shape == (2, 2)
-    sampler = PdbGroupedBatchSampler(dataset, batch_size=1, shuffle=True, drop_last=True, seed=7)
+    sampler = ShuffledBatchSampler(dataset, batch_size=1, shuffle=True, drop_last=True, seed=7)
     assert list(sampler) == [[0]]
+
+
+def test_shuffled_sampler_ignores_pdb_groups_and_is_epoch_deterministic() -> None:
+    """候选全局洗牌，不读取 Dataset 上可能存在的 PDB 分组字段。"""
+
+    class SixCandidates:
+        indices_by_pdb = {"first": [0, 1, 2], "second": [3, 4, 5]}
+
+        def __len__(self) -> int:
+            return 6
+
+    dataset = cast(CandidateDataset, SixCandidates())
+    sampler = ShuffledBatchSampler(dataset, batch_size=2, shuffle=True, drop_last=True, seed=11)
+    first = list(sampler)
+    assert sorted(index for batch in first for index in batch) == list(range(6))
+    assert first != [[0, 1], [2, 3], [4, 5]]
+    assert list(sampler) == first
+    sampler.set_epoch(1)
+    assert list(sampler) != first
+
+
+def test_byte_budget_lru_promotes_hits_and_evicts_by_array_bytes() -> None:
+    """LRU 按实际数组字节数限制每个 worker 的 PDB 缓存。"""
+
+    cache: ByteBudgetLru[str, np.ndarray] = ByteBudgetLru(maximum_bytes=16)
+    cache.put("a", np.zeros(2, dtype=np.float32))
+    cache.put("b", np.zeros(2, dtype=np.float32))
+    assert cache.get("a") is not None
+    cache.put("c", np.zeros(2, dtype=np.float32))
+    assert list(cache.keys()) == ["a", "c"]
+    assert cache.get("b") is None
+
+
+def test_file_lock_does_not_unlock_after_lock_failure(tmp_path, monkeypatch) -> None:
+    """取得锁失败时只关闭句柄，不调用尚未成立的解锁操作。"""
+
+    unlock_called = False
+
+    def fail_lock(_handle) -> None:
+        raise RuntimeError("lock failed")
+
+    def record_unlock(_handle) -> None:
+        nonlocal unlock_called
+        unlock_called = True
+
+    monkeypatch.setattr(locking, "_lock", fail_lock)
+    monkeypatch.setattr(locking, "_unlock", record_unlock)
+    with pytest.raises(RuntimeError, match="lock failed"):
+        with locking.exclusive_file_lock(tmp_path / "failed.lock"):
+            raise AssertionError("不应进入锁内代码。")
+    assert not unlock_called
+
+
+def test_file_lock_preserves_body_error_when_unlock_also_fails(tmp_path, monkeypatch) -> None:
+    """锁内原始异常优先于释放锁时的次生异常。"""
+
+    monkeypatch.setattr(locking, "_lock", lambda _handle: None)
+
+    def fail_unlock(_handle) -> None:
+        raise RuntimeError("unlock failed")
+
+    monkeypatch.setattr(locking, "_unlock", fail_unlock)
+    with pytest.raises(ValueError, match="body failed"):
+        with locking.exclusive_file_lock(tmp_path / "body.lock"):
+            raise ValueError("body failed")

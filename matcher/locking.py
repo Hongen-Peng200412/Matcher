@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator, TextIO
@@ -16,9 +17,18 @@ def exclusive_file_lock(path: Path) -> Iterator[None]:
     handle = path.open("a+", encoding="utf-8")
     try:
         _lock(handle)
-        yield
+        try:
+            yield
+        finally:
+            pending_exception = sys.exc_info()[1]
+            try:
+                _unlock(handle)
+            except BaseException as unlock_error:
+                if pending_exception is None:
+                    raise
+                if hasattr(pending_exception, "add_note"):
+                    pending_exception.add_note(f"释放文件锁时另有异常：{unlock_error!r}")
     finally:
-        _unlock(handle)
         handle.close()
 
 

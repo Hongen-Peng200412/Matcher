@@ -1,4 +1,11 @@
-"""构造并共享缓存 Matcher 候选中心 48³ 的 Find_0 105 通道体素输入。"""
+"""构造并共享缓存 Matcher 候选中心 ``48³`` 的 Find_0 体素输入。
+
+每个候选缓存位于
+``<output_root>/cache/voxel_input_v1/<split>/<pdb>/candidate_<index>.npy``。
+顶层对象是 ``(105,48,48,48)`` float16 NPY：前 56 通道严格沿用 Find_0
+密度顺序，后 49 通道是完整受体原子的 hard-floor/sum 特征。float16 是正式
+缓存量化契约；模型侧进入 GPU 后再由自动混合精度选择计算类型。
+"""
 
 from __future__ import annotations
 
@@ -8,6 +15,7 @@ from typing import Any
 
 import numpy as np
 
+from .cache import ByteBudgetLru
 from .density import DENSITY_CHANNEL_NAMES, build_density_channels
 from .geometry import crop_center_48, hard_scatter_receptor
 from .locking import exclusive_file_lock
@@ -26,9 +34,14 @@ VOXEL_INPUT_SHAPE = (
 class VoxelInputStore:
     """按候选读取 float16 缓存，首次缺失时从 A–G 和 F1-centered 原子构造。"""
 
-    def __init__(self, roots: SourceRoots) -> None:
+    def __init__(self, roots: SourceRoots, source_cache_bytes: int = 1024**3) -> None:
+        if source_cache_bytes < 0:
+            raise ValueError("source_cache_bytes 不能为负数。")
         self.roots = roots
-        self._source_cache: dict[tuple[str, str], dict[str, Any]] = {}
+        self.source_cache_bytes = int(source_cache_bytes)
+        self._source_cache: ByteBudgetLru[tuple[str, str], dict[str, Any]] = ByteBudgetLru(
+            self.source_cache_bytes
+        )
 
     def load(self, split_name: str, pdb_id: str, candidate_index: int) -> np.ndarray:
         """返回一个只读语义的 ``(105,48,48,48)`` float16 数组。"""
@@ -76,7 +89,7 @@ class VoxelInputStore:
         return cached
 
     def _load_sources(self, split_name: str, pdb_id: str) -> dict[str, Any]:
-        """在当前进程缓存最近两个 PDB 的完整密度图与 F1-centered 必要字段。"""
+        """按字节预算缓存最近使用的 PDB 完整密度图和受体字段。"""
 
         key = (split_name, pdb_id)
         cached = self._source_cache.get(key)
@@ -123,9 +136,7 @@ class VoxelInputStore:
             "receptor_coords": receptor_coords,
             "receptor_features": receptor_features,
         }
-        self._source_cache[key] = cached
-        while len(self._source_cache) > 2:
-            del self._source_cache[next(iter(self._source_cache))]
+        self._source_cache.put(key, cached)
         return cached
 
     def _cache_path(self, split_name: str, pdb_id: str, candidate_index: int) -> Path:
@@ -142,7 +153,7 @@ class VoxelInputStore:
         """DataLoader 派生 worker 时不复制父进程的大数组缓存。"""
 
         state = self.__dict__.copy()
-        state["_source_cache"] = {}
+        state["_source_cache"] = ByteBudgetLru(self.source_cache_bytes)
         return state
 
 

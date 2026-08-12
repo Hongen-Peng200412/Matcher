@@ -7,12 +7,19 @@ from pathlib import Path
 
 import numpy as np
 
+from .cache import ByteBudgetLru
 from .schema import safe_object_filename
 
 
 @dataclass(frozen=True)
 class LigandGraph:
-    """保存一个去重配体身份的节点类别、连续属性和双向化学键。"""
+    """保存一个去重配体身份的节点类别、连续属性和双向化学键。
+
+    ``element/charge/residue_id`` 是对齐到 N 个原子的整数类别。15 维节点连续
+    特征依次为 chirality(7)、in_ring(4)、is_present(1) 和中心化后除以
+    10 Å 的参考 XYZ(3)。``edge_index`` 为 ``(2,E)`` 双向端点；10 维边特征
+    依次为 bond type(5)、in_ring(4) 和原子间距离除以 10 Å(1)。
+    """
 
     element: np.ndarray
     charge: np.ndarray
@@ -23,11 +30,14 @@ class LigandGraph:
 
 
 class LigandGraphStore:
-    """按 object_key 读取并在单个 DataLoader worker 内缓存配体图。"""
+    """按 object_key 读取配体图，并在单 worker 的独立字节预算内缓存。"""
 
-    def __init__(self, data_root: Path) -> None:
+    def __init__(self, data_root: Path, cache_bytes: int = 512 * 1024**2) -> None:
+        if cache_bytes < 0:
+            raise ValueError("cache_bytes 不能为负数。")
         self.data_root = data_root
-        self._cache: dict[str, LigandGraph] = {}
+        self.cache_bytes = int(cache_bytes)
+        self._cache: ByteBudgetLru[str, LigandGraph] = ByteBudgetLru(self.cache_bytes)
 
     def load(self, object_key: str) -> LigandGraph:
         """返回经过字段和端点验证的双向 LigandObject 图。"""
@@ -37,14 +47,14 @@ class LigandGraphStore:
             return cached
         path = self.data_root / "ligand_objects" / f"{safe_object_filename(object_key)}.npz"
         graph = _load_ligand_graph(path, object_key)
-        self._cache[object_key] = graph
+        self._cache.put(object_key, graph)
         return graph
 
     def __getstate__(self) -> dict[str, object]:
         """DataLoader 派生 worker 时不复制父进程图缓存。"""
 
         state = self.__dict__.copy()
-        state["_cache"] = {}
+        state["_cache"] = ByteBudgetLru(self.cache_bytes)
         return state
 
 

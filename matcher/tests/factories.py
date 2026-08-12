@@ -47,8 +47,12 @@ def build_synthetic_roots(root: Path) -> SourceRoots:
     receptor_dtype = np.float32
     np.savez(
         data_root / f"parse/{pdb_id}/receptor_tokens.npz",
-        coords=np.asarray([[40.5, 40.5, 40.5]], dtype=receptor_dtype),
-        feat=np.ones((1, 49), dtype=receptor_dtype),
+        # 第二个结合原子故意不进入下方 A token 子集，用于保护完整监督语义。
+        coords=np.asarray(
+            [[40.5, 40.5, 40.5], [41.5, 40.5, 40.5]],
+            dtype=receptor_dtype,
+        ),
+        feat=np.ones((2, 49), dtype=receptor_dtype),
     )
     grid = np.linspace(-1.0, 1.0, 80**3, dtype=np.float32).reshape(1, 80, 80, 80)
     geometry = {
@@ -66,7 +70,7 @@ def build_synthetic_roots(root: Path) -> SourceRoots:
     )
     np.savez(
         data_root / f"labels/{pdb_id}/atom_labels.npz",
-        binding_atom=np.asarray([True]),
+        binding_atom=np.asarray([True, True]),
     )
     _write_centered(stage1_pdb / "centered/F1_centered.npz", candidate_mask)
     probability = np.zeros((80, 80, 80), dtype=np.float32)
