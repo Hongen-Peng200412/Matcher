@@ -635,7 +635,30 @@ def _train_epoch(
         scaler.update()
         optimizer.zero_grad(set_to_none=True)
         global_step += 1
-        compute_seconds += time.perf_counter() - compute_started_at
+        is_first_stage_step = global_step == 1
+        if is_first_stage_step:
+            torch.cuda.synchronize(device)
+        global_step_compute_seconds = time.perf_counter() - compute_started_at
+        compute_seconds += global_step_compute_seconds
+        if is_first_stage_step:
+            print(
+                json.dumps(
+                    {
+                        "event": "first_global_step_accepted",
+                        "stage": stage.name,
+                        "global_step": global_step,
+                        "global_batch_size": group_sample_count,
+                        "identity_eligible_count": group_eligible_count,
+                        "preclip_gradient_norm": gradient_norm,
+                        "peak_cuda_allocated_bytes": torch.cuda.max_memory_allocated(device),
+                        "peak_cuda_reserved_bytes": torch.cuda.max_memory_reserved(device),
+                        "global_step_compute_seconds": global_step_compute_seconds,
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
+                flush=True,
+            )
     elapsed_seconds = time.perf_counter() - started_at
     identity_diagnostics: IdentityDiagnostics | None
     if isinstance(model, ClosedSetMatcher):
