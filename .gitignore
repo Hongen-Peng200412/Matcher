@@ -9,3 +9,4 @@ outputs/
 results/
 tmp/
 wandb/
+*.review/
