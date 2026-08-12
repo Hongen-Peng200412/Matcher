@@ -76,6 +76,10 @@ bash 训练与运行/submit_task.sh --sh 训练与运行/sh/train_experiment.sh 
 | `340898` | `matcher-molf-detached` | 1×A100 | MoLFormer/detached | PENDING/Priority |
 | `340899` | `matcher-molf-joint` | 1×A100 | MoLFormer/joint | PENDING/Priority |
 
+2026-08-13 06:47（Asia/Shanghai）只读查询 `squeue --start` 时，调度器给出的暂定开始时间是：四个 A100 任务均为 `2026-08-16 06:32:11`，三个 A800 任务均为 `2026-08-18 14:53:47`。这些时间是 Slurm 根据当前优先级和已知任务计算的预测，不是资源承诺；七个任务仍为 `PENDING (Priority)`，因此尚未创建可操作的 `pre_lock`。
+
+同一时点核对了用户提示的其它 A100 专用分区。`a100_2` 只包含 `gnode02`、`gnode04` 和不提供 GPU 的 `master`；其中两台 GPU 节点已经包含在当前 `a100` 分区的 `gnode01–08` 中。把单卡任务从 `a100` 扩展到 `a100,a100_2` 不会增加可用 GPU 节点，反而不能改变同一节点上的资源竞争，因此保留当前更宽的 `a100` 分区。账户允许 `a100g1/a100g2/a100g4/a100g6/cpu96/nvlinkg8`；当前四个 A100 任务使用 `a100g4`，与四张 A100 的并行上限一致，三个 A800 任务已经由调度器正常接受。没有取消、重提或修改任何任务。
+
 ## 资源、输出与监控
 
 正式源码同步目标是 `/home/penghongen/My_Project/Matcher`。业务产物只能位于 `/storage/penghongen/tmp/Matcher/`；release、launch、Slurm 日志和四锁位于 `/home/penghongen/Feedback/Matcher/`，不属于业务产物根的限制对象。
