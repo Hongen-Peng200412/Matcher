@@ -6,7 +6,7 @@
 ``<split>_identities.jsonl`` 对应一个 ``(pdb_id,object_key)`` 小分子身份，记录
 配体图与两种冻结语言表示的选择证据。``excluded_pdb.jsonl`` 单独记录整 PDB
 排除原因，任何排除项都不进入训练或指标分母。所有文件位于
-``<output_root>/manifests/closed_set_v1/``，由覆盖阈值与选择种子共同决定身份。
+``<output_root>/manifests/closed_set_v<schema>/``，由覆盖阈值与选择种子共同决定身份。
 """
 
 from __future__ import annotations
@@ -98,17 +98,32 @@ def build_manifest(
             "excluded": len(pdb_directories) - included_pdb,
         }
 
-    train_object_keys = {
-        identity["object_key"] for identity in split_identities["train"]
+    train_positive_object_keys = {
+        family: {
+            candidate["matched_object_key"]
+            for candidate in split_candidates["train"]
+            if candidate["class_name"] == "small_molecule"
+            and candidate["matched_object_key"] is not None
+            and candidate["language_target_available"][family]
+        }
+        for family in LANGUAGE_FAMILIES
     }
     for split_name in SPLIT_NAMES:
         for identity in split_identities[split_name]:
-            identity["seen_in_train"] = identity["object_key"] in train_object_keys
+            identity["seen_in_train_by_language"] = {
+                family: identity["object_key"] in train_positive_object_keys[family]
+                for family in LANGUAGE_FAMILIES
+            }
         for candidate in split_candidates[split_name]:
             object_key = candidate["matched_object_key"]
-            candidate["identity_seen_in_train"] = (
-                object_key in train_object_keys if object_key is not None else None
-            )
+            candidate["identity_seen_in_train_by_language"] = {
+                family: (
+                    object_key in train_positive_object_keys[family]
+                    if object_key is not None
+                    else None
+                )
+                for family in LANGUAGE_FAMILIES
+            }
 
     files: dict[str, dict[str, str]] = {}
     for split_name in SPLIT_NAMES:
@@ -134,6 +149,10 @@ def build_manifest(
         "language_selection_rule": (
             "对每个 (pdb_id, object_key, language_family) 的有效 occurrence 编号排序；"
             "用固定字节加权和与 selection_seed 决定循环起点，选择该位置的 occurrence。"
+        ),
+        "seen_identity_rule": (
+            "按语言模型分别判断；只有 object_key 在 train 候选中作为可监督的"
+            " small_molecule 正目标出现过，才标记为 seen。"
         ),
         "class_names": list(CLASS_NAMES),
         "splits": files,
@@ -523,6 +542,13 @@ def _summarize(
             )
             for family in LANGUAGE_FAMILIES
         }
+        seen_positive_identities = {
+            family: sum(
+                identity["seen_in_train_by_language"][family]
+                for identity in identities
+            )
+            for family in LANGUAGE_FAMILIES
+        }
         result["splits"][split_name] = {
             "candidate_count": len(candidates),
             "class_counts": dict(sorted(Counter(item["class_name"] for item in candidates).items())),
@@ -530,6 +556,7 @@ def _summarize(
             "unique_object_key_count": len({item["object_key"] for item in identities}),
             "language_available_identity_count": language_available,
             "language_multi_smiles_identity_count": language_smiles_conflicts,
+            "seen_positive_identity_count": seen_positive_identities,
         }
     result["excluded_pdb_reason_counts"] = dict(
         sorted(Counter(item["reason"] for item in exclusions).items())

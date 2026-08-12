@@ -84,6 +84,9 @@ def _load_ligand_graph(path: Path, object_key: str) -> LigandGraph:
     reference_position = np.asarray(atoms["ref_pos"], dtype=np.float32)
     if reference_position.shape != (atom_count, 3) or not np.isfinite(reference_position).all():
         raise ValueError(f"{path}:atoms.ref_pos 必须为有限 (N,3)。")
+    residue_id = np.asarray(atoms["residue_id"], dtype=np.int64)
+    if np.any(residue_id < 0) or np.any(residue_id >= 512):
+        raise ValueError(f"{path}:atoms.residue_id 必须位于 [0,512)。")
     centered_position = (reference_position - reference_position.mean(axis=0, keepdims=True)) / 10.0
     node_continuous = np.concatenate(
         (
@@ -114,7 +117,7 @@ def _load_ligand_graph(path: Path, object_key: str) -> LigandGraph:
     return LigandGraph(
         element=np.asarray(atoms["element"], dtype=np.int64),
         charge=np.asarray(atoms["charge"], dtype=np.int64),
-        residue_id=np.asarray(atoms["residue_id"], dtype=np.int64),
+        residue_id=residue_id,
         node_continuous=node_continuous.astype(np.float32, copy=False),
         edge_index=edge_index,
         edge_features=edge_features.astype(np.float32, copy=False),

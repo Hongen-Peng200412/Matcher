@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
-MANIFEST_SCHEMA_VERSION = 1
+MANIFEST_SCHEMA_VERSION = 2
 VOXEL_CACHE_SCHEMA_VERSION = 1
 
 CLASS_NAMES = (

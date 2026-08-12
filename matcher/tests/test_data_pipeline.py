@@ -15,6 +15,7 @@ from matcher.candidate_data import CandidateDataset
 from matcher.contracts import CandidateItem
 from matcher.geometry import crop_center_48, hard_scatter_receptor, keep_local_48
 from matcher.labels import OccurrenceMask, assign_candidate_target
+from matcher.ligand_graph import LigandGraphStore
 from matcher.manifest import build_manifest, load_jsonl
 from matcher.schema import SourceRoots
 
@@ -66,10 +67,19 @@ def test_manifest_and_dataset_keep_pdb_but_drop_missing_smi_occurrence(tmp_path)
     exclusions = load_jsonl(manifest_path.parent / "excluded_pdb.jsonl")
     assert {item["reason"] for item in exclusions} == {"blob_exceed", "missing_required_product"}
     identities = load_jsonl(manifest_path.parent / "train_identities.jsonl")
+    candidates = load_jsonl(manifest_path.parent / "train_candidates.jsonl")
     smi = identities[0]["language"]["smi_ted_289m"]
     assert smi["selected_candidate_id"] == 1
     assert smi["valid_candidate_ids"] == [1]
     assert smi["failed_occurrences"] == [{"candidate_id": 0, "reason": "missing_file"}]
+    assert identities[0]["seen_in_train_by_language"] == {
+        "molformer": True,
+        "smi_ted_289m": True,
+    }
+    assert candidates[0]["identity_seen_in_train_by_language"] == {
+        "molformer": True,
+        "smi_ted_289m": True,
+    }
 
     dataset = CandidateDataset(
         roots=SourceRoots(roots.data_root, roots.stage1_root, roots.output_root),
@@ -88,6 +98,7 @@ def test_manifest_and_dataset_keep_pdb_but_drop_missing_smi_occurrence(tmp_path)
     assert item["pp_tokens"].shape == (4, 4)
     assert item["identity_object_keys"] == ["CCD:LIG"]
     assert item["identity_target"] == 0
+    assert item["metadata"]["identity_seen_in_train"] is True
     assert item["language_embeddings"].shape == (1, 768)
     assert item["ligand_area_target"][24, 24, 24]
     assert item["binding_area_target"][24, 24, 24]
@@ -107,6 +118,43 @@ def test_manifest_and_dataset_keep_pdb_but_drop_missing_smi_occurrence(tmp_path)
         sample_count_multiple=1,
     )
     assert list(sampler) == [[0]]
+
+
+def test_seen_identity_requires_train_positive_for_current_language_family(tmp_path) -> None:
+    """某语言模型没有可监督正目标时，同一 object_key 在该语言下必须标为 unseen。"""
+
+    roots = build_synthetic_roots(tmp_path)
+    missing_smi = (
+        roots.language_root
+        / "smi_ted_289m/1abc/candidate_1.npz"
+    )
+    missing_smi.unlink()
+    manifest_path = build_manifest(roots, coverage_threshold=0.30, selection_seed=3407)
+    candidate = load_jsonl(manifest_path.parent / "train_candidates.jsonl")[0]
+    assert candidate["language_target_available"] == {
+        "molformer": True,
+        "smi_ted_289m": False,
+    }
+    assert candidate["identity_seen_in_train_by_language"] == {
+        "molformer": True,
+        "smi_ted_289m": False,
+    }
+
+
+def test_ligand_graph_rejects_residue_id_outside_embedding_table(tmp_path) -> None:
+    """LigandObject 的 residue_id 必须在模型 512 类嵌入表范围内。"""
+
+    roots = build_synthetic_roots(tmp_path)
+    graph_path = roots.data_root / "ligand_objects/CCD_LIG.npz"
+    with np.load(graph_path, allow_pickle=False) as archive:
+        atoms = archive["atoms"].copy()
+        bonds = archive["bonds"].copy()
+        name = archive["name"].copy()
+    atoms["residue_id"][0] = 512
+    np.savez_compressed(graph_path, atoms=atoms, bonds=bonds, name=name)
+    store = LigandGraphStore(roots.data_root, cache_bytes=0)
+    with pytest.raises(ValueError, match="residue_id.*512"):
+        store.load("CCD:LIG")
 
 
 def test_shuffled_sampler_ignores_pdb_groups_and_is_epoch_deterministic() -> None:

@@ -143,7 +143,11 @@ class CandidateDataset(Dataset[CandidateItem]):
             "pdb_id": pdb_id,
             "candidate_index": candidate_index,
             "matched_object_key": record["matched_object_key"],
-            "identity_seen_in_train": record["identity_seen_in_train"],
+            "identity_seen_in_train": (
+                record["identity_seen_in_train_by_language"][self.language_family]
+                if self.language_family is not None
+                else None
+            ),
         }
         item: dict[str, Any] = {
             "metadata": metadata,
