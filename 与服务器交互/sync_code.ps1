@@ -148,6 +148,8 @@ Write-Host "[4/6] Uploading local code with rsync..." -ForegroundColor Yellow
     --exclude="*.pyc" `
     --exclude=".pytest_cache/" `
     --exclude="**/.pytest_cache/" `
+    --exclude=".mypy_cache/" `
+    --exclude="**/.mypy_cache/" `
     --exclude=".ruff_cache/" `
     --exclude="**/.ruff_cache/" `
     --exclude="outputs/" `

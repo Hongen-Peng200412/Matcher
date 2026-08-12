@@ -10,19 +10,28 @@
 
 ```bash
 bash 训练与运行/submit_task.sh \
-  --sh 训练与运行/sh/mode1/prepare_manifest_cpu.sh \
+  --sh 训练与运行/sh/precompute_data.sh \
   --resource cpu \
-  --cpus 16
+  --cpus 16 \
+  -- \
+  --data-root /storage/penghongen/AdaLigand/Ori_Data \
+  --stage1-root /storage/penghongen/AdaLigand_stage1_inference/Find_0-CPC1-ligand_PRAUC_0.675477/artifacts/Find_0 \
+  --output-root /storage/penghongen/tmp/Matcher \
+  --coverage-threshold 0.30 \
+  --selection-seed 3407 \
+  --splits train validation \
+  --workers 16
 ```
 
 GPU 示例：
 
 ```bash
 bash 训练与运行/submit_task.sh \
-  --sh 训练与运行/sh/mode1/train.sh \
+  --sh 训练与运行/sh/train_experiment.sh \
   --resource a800 \
   --gpus 1 \
-  --cpus 24
+  --cpus 16 \
+  -- --plan configs/experiments/initial/full_scratch_smi_ted_light_289m_oracle.yaml
 ```
 
 `--sh` 接受三种等价写法：只有文件名、相对于任务根目录的路径、任务根目录内的绝对路径。三种写法都会记录为同一个项目内相对路径，并从同一份 release 执行。
@@ -171,4 +180,12 @@ bash 训练与运行/submit_task.sh \
 
 ## 13. 项目边界
 
-Matcher 的正式任务只从 `/home/penghongen/My_Project/Matcher` 冻结 release。A–G 与 Stage1 产物仍由 AdaLigand 生产并从其正式存储目录读取；Matcher 的 checkpoint、指标和推理结果写入 `/storage/penghongen/Matcher/Results`，不写回 AdaLigand 代码目录。
+Matcher 的正式任务只从 `/home/penghongen/My_Project/Matcher` 冻结 release。A–G 与 Stage1 产物仍由 AdaLigand 生产并从其正式存储目录只读加载；Matcher 的版本化清单、105 通道缓存、checkpoint、指标和评估结果只能写入 `/storage/penghongen/tmp/Matcher/`，不写回 AdaLigand 代码目录。release、launch、Slurm 日志和四锁写入 `/home/penghongen/Feedback/Matcher/`，不属于业务产物根限制。
+
+## 14. 当前 Matcher 任务脚本
+
+- `sh/build_manifest.sh`：只构建或核验版本化监督清单，不遍历候选体素缓存。
+- `sh/precompute_data.sh`：先构建或复用清单，再按 PDB 复用完整密度图并生成 train/validation 的 105 通道体素缓存。
+- `sh/train_experiment.sh`：读取 `configs/experiments/initial/*.yaml`，顺序执行一个或多个训练阶段。
+
+`build_manifest.sh` 与 `precompute_data.sh` 的清单参数必须显式提供 `data-root/stage1-root/output-root/coverage-threshold/selection-seed`。`train_experiment.sh` 只接收 `--plan`，其它科学与训练参数都由 YAML 唯一声明。
