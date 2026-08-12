@@ -1,0 +1,53 @@
+# matcher.experiment_config.load_experiment_plan 读取本文件，matcher.experiment.run_plan 执行 stages。
+# 单张 A100 从零训练弱聚合完整 Matcher；使用 MoLFormer 和 oracle 身份门控。
+# null 语义：class_weights=null 表示类别不加权；maximum_epochs=null 表示不设轮数上限；
+# initialize_candidate_from=null 表示从零训练。language_family/identity_variant 仅候选预训练时才可为 null。
+plan_name: full_scratch_molformer_oracle
+output_root: /storage/penghongen/tmp/Matcher/experiments  # 顶层：run、阶段、checkpoint 和指标的根目录。
+data:
+  # data 声明冻结输入、命中阈值、固定表示选择种子和每个工作进程的 I/O 预算。
+  # data_root 是只读 A–G、密度图、受体字段、配体图和两套冻结语言表示的共同来源。
+  data_root: /storage/penghongen/AdaLigand/Ori_Data
+  # stage1_root 是只读 Find_0 F1 候选、A/P/V 和完整概率图来源。
+  stage1_root: /storage/penghongen/AdaLigand_stage1_inference/Find_0-CPC1-ligand_PRAUC_0.675477/artifacts/Find_0
+  output_root: /storage/penghongen/tmp/Matcher  # data 内：版本化清单与 105 通道体素缓存根。
+  coverage_threshold: 0.30  # 候选覆盖率和 occurrence 覆盖率都达到该值才命中。
+  selection_seed: 3407  # 固定每个配体身份采用哪一个有效 occurrence 语言表示。
+  pp_top_k: 1024  # 每个候选从完整概率图最多采样的 PP token 数。
+  num_workers: 16  # 每个训练进程的 DataLoader 工作进程数。
+  prefetch_factor: 2  # 每个工作进程预先准备的物理批次数。
+  # 每个工作进程的四类最近最少使用缓存总上限，单位 GiB；按需增长，不预分配。
+  cache_gib_per_worker: 16
+stages:
+  # model 定义网络；training 定义优化、批量、数值精度、损失和早停。
+  - name: full_scratch_molformer_oracle
+    task_name: full_matcher
+    language_family: molformer
+    identity_variant: oracle
+    model:
+      aggregation: mean_max
+      model_dim: 256
+      attention_heads: 8
+      dropout: 0.10
+      voxel_feature_channels: 48
+      # 顺序：enc0、enc1、enc2、enc3、bottleneck、dec3、dec2、dec1、dec0。
+      raunet_planes: [64, 256, 256, 256, 256, 256, 128, 64, 64]
+      recycle_iterations: 3
+      gradient_checkpointing: true
+      bottleneck_attention_layers: 4
+      graph_layers: 4
+    training:
+      seed: 3407
+      physical_batch_size: 8  # 每次前向的候选数。
+      gradient_accumulation: 4  # 四个物理批次合成一次参数更新。
+      global_batch_size: 32  # 8 × 4；与 A800 实验一致。
+      learning_rate: 1.0e-4
+      weight_decay: 1.0e-4
+      maximum_epochs: null  # 不设轮数上限，只由连续两次 validation 无改善结束。
+      patience_bad_epochs: 2
+      precision: bf16
+      gradient_clip_norm: 1.0
+      class_weights: null  # 六类交叉熵不额外加权。
+      # 权重依次作用于六分类、配体区域、受体结合区域和闭集身份损失。
+      loss_weights: {classification: 1.0, ligand_area: 0.10, binding_area: 0.10, identity: 1.0}
+    initialize_candidate_from: null  # 从随机初始化开始，不加载候选预训练参数。
