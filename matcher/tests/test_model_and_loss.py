@@ -10,12 +10,11 @@ import torch
 from matcher.batching import collate_candidates
 from matcher.candidate_data import CandidateDataset
 from matcher.contracts import CandidateBatch, CandidateItem
-from matcher.losses import IdentityLossVariant, LossWeights, compute_matcher_loss
+from matcher.losses import IdentityLossVariant, LossWeights, MatcherLossBatch, compute_matcher_loss
 from matcher.manifest import build_manifest
 from matcher.model import CandidateEncoder, ClosedSetMatcher, MatcherModelConfig
 from matcher.model.config import AggregationName
-from matcher.model.fusion import CandidateConditionedAggregator
-from matcher.model.fusion import gather_voxel_features
+from matcher.model.fusion import CandidateConditionedAggregator, gather_voxel_features
 from matcher.model.ligand_matcher import (
     IdentityEncoder,
     IdentityRepresentations,
@@ -140,6 +139,7 @@ def test_identity_variants_gate_only_numerator_and_joint_reaches_class_probabili
     base_batch = {
         "class_target": torch.tensor([4, 4, 0]),
         "identity_target": torch.tensor([0, 1, 0]),
+        "identity_mask": torch.ones((3, 2), dtype=torch.bool),
         "ligand_area_target": torch.zeros((3, 1, 1, 1), dtype=torch.bool),
         "binding_area_target": torch.zeros((3, 1, 1, 1), dtype=torch.bool),
     }
@@ -161,7 +161,7 @@ def test_identity_variants_gate_only_numerator_and_joint_reaches_class_probabili
         }
         result = compute_matcher_loss(
             outputs,
-            cast(CandidateBatch, base_batch),
+            cast(MatcherLossBatch, base_batch),
             weights,
             identity_variant=variant,
             class_weights=None,
@@ -190,10 +190,11 @@ def test_identity_loss_without_eligible_candidate_stays_finite_with_padded_logit
         "identity_logits": identity_logits,
     }
     batch = cast(
-        CandidateBatch,
+        MatcherLossBatch,
         {
             "class_target": torch.tensor([0, 4]),
             "identity_target": torch.tensor([-1, -1]),
+            "identity_mask": torch.ones((2, 3), dtype=torch.bool),
             "ligand_area_target": torch.zeros((2, 1, 1, 1), dtype=torch.bool),
             "binding_area_target": torch.zeros((2, 1, 1, 1), dtype=torch.bool),
         },
@@ -287,6 +288,29 @@ def test_identity_graph_and_inventory_scores_start_as_exact_zero_increments() ->
     assert scorer.inventory_gate.grad is not None
     assert torch.isfinite(scorer.graph_gate.grad)
     assert torch.isfinite(scorer.inventory_gate.grad)
+
+
+def test_single_identity_inventory_score_stays_zero_after_gate_opens() -> None:
+    """即使清单门已训练为非零，单身份样本仍没有可贡献的其他身份上下文。"""
+
+    scorer = IdentityScorer(model_dim=16, dropout=0.0).eval()
+    scorer.inventory_gate.data.fill_(1.0)
+    scorer.graph_gate.data.zero_()
+    candidate = torch.randn(2, 16)
+    native = torch.randn(2, 1, 16)
+    representations = cast(
+        IdentityRepresentations,
+        {
+            "native": native,
+            "graph": torch.randn(2, 1, 16),
+            "inventory": torch.zeros(2, 1, 16),
+        },
+    )
+    mask = torch.ones((2, 1), dtype=torch.bool)
+    with torch.no_grad():
+        logits = scorer(candidate, representations, mask)
+        native_only = scorer.native(candidate, native)
+    assert torch.equal(logits, native_only)
 
 
 def test_model_config_and_voxel_gather_reject_invalid_contracts() -> None:

@@ -1,4 +1,8 @@
-"""由 ``RaUnetBackbone`` 把候选中心 ``(B,105,48,48,48)`` 体素输入编码为 ``(B,C_v,48,48,48)`` 特征。符号 ``B/C/D/H/W`` 分别表示批次、通道、深度、高度和宽度，``L=D×H×W`` 表示展平空间位置数。"""
+"""由 ``RaUnetBackbone`` 把候选中心 ``(B,105,48,48,48)`` 编码为同分辨率特征。
+
+符号 ``B/C/Z/Y/X/K`` 分别表示批次、通道、深度、高度、宽度和注意力头数，
+``L=Z×Y×X`` 表示展平空间位置数。
+"""
 
 from __future__ import annotations
 
@@ -37,7 +41,7 @@ def _grid_positions(
 
 
 def _apply_three_axis_rope(values: torch.Tensor, positions: torch.Tensor) -> torch.Tensor:
-    """将 ``(B,H,L,C_h)`` 的头通道轴等分给 Z/Y/X，每轴相邻通道成对旋转，返回同形张量。"""
+    """将 ``(B,K,L,C_h)`` 的头通道轴等分给 Z/Y/X，每轴相邻通道成对旋转，返回同形张量。"""
 
     axis_channels = values.shape[-1] // 3
     if axis_channels % 2 != 0:
@@ -66,7 +70,7 @@ def _apply_three_axis_rope(values: torch.Tensor, positions: torch.Tensor) -> tor
 
 
 def _upsample_add(coarse: torch.Tensor, skip: torch.Tensor) -> torch.Tensor:
-    """将 ``coarse`` 三线性插值到 ``skip`` 的 ``(D,H,W)`` 后逐元素相加，返回与 ``skip`` 同形特征。"""
+    """将 ``coarse`` 三线性插值到 ``skip`` 的 ``(Z,Y,X)`` 后逐元素相加，返回与 ``skip`` 同形特征。"""
 
     return skip + F.interpolate(
         coarse,
@@ -77,7 +81,7 @@ def _upsample_add(coarse: torch.Tensor, skip: torch.Tensor) -> torch.Tensor:
 
 
 class ResidualBottleneck3d(nn.Module):
-    """用瓶颈残差块下采样。构造参数是输入/输出通道和 stride；前向输入 ``(B,C_in,D,H,W)``，输出 ``(B,C_out,D/s,H/s,W/s)``。"""
+    """用瓶颈残差块按 stride 下采样。构造参数是输入/输出通道和 stride；前向把 ``(B,C_in,Z,Y,X)`` 变为 ``(B,C_out,ceil(Z/s),ceil(Y/s),ceil(X/s))``。"""
 
     expansion = 4
 
@@ -123,7 +127,7 @@ class ResidualBottleneck3d(nn.Module):
 
 
 class Res2NetBlock3d(nn.Module):
-    """执行同形层级残差卷积。构造参数是通道 ``C`` 和层级分支数 ``scale``；前向输入/输出都是 ``(B,C,D,H,W)``。"""
+    """执行同形层级残差卷积。构造参数是通道 ``C`` 和层级分支数 ``scale``；前向输入/输出都是 ``(B,C,Z,Y,X)``。"""
 
     def __init__(self, channels: int, scale: int) -> None:
         super().__init__()
@@ -160,13 +164,13 @@ class Res2NetBlock3d(nn.Module):
 
 
 def _res2_stack(channels: int, scale: int) -> nn.Sequential:
-    """构造四个同宽 ``Res2NetBlock3d`` 解码块，输入/输出都是 ``(B,C,D,H,W)``。"""
+    """构造四个同宽 ``Res2NetBlock3d`` 解码块，输入/输出都是 ``(B,C,Z,Y,X)``。"""
 
     return nn.Sequential(*(Res2NetBlock3d(channels, scale) for _ in range(4)))
 
 
 class ConvResidual3d(nn.Module):
-    """用两层卷积融合门控特征。构造参数是输入/输出通道；前向保留 ``(B,D,H,W)`` 并把通道改为 ``C_out``。"""
+    """用两层卷积融合门控特征。构造参数是输入/输出通道；前向把 ``(B,C_in,Z,Y,X)`` 变换为 ``(B,C_out,Z,Y,X)``。"""
 
     def __init__(self, input_channels: int, output_channels: int) -> None:
         super().__init__()
@@ -191,7 +195,7 @@ class ConvResidual3d(nn.Module):
 
 
 class AttentionGate3d(nn.Module):
-    """用粗特征门控跳跃特征。构造参数是 skip/coarse/输出通道；前向输入粗 ``(B,C_c,d,h,w)`` 与细 ``(B,C_s,D,H,W)``，输出 ``(B,C_out,D,H,W)``。"""
+    """用粗特征门控跳跃特征。构造参数是 skip/coarse/输出通道；前向输入低分辨率粗特征与 ``(B,C_s,Z,Y,X)`` 细特征，输出 ``(B,C_out,Z,Y,X)``。"""
 
     def __init__(
         self,
@@ -266,11 +270,11 @@ class GatedTransition(nn.Module):
 
 
 class RotarySelfAttention3d(nn.Module):
-    """在最深网格执行 RoPE 自注意力。构造参数是通道 ``C`` 和头数 ``H``；前向输入/输出都是 ``(B,C,D,H,W)``，注意力对 key 位置轴 ``L`` 求和并保留 query 位置轴。"""
+    """在最深网格执行 RoPE 自注意力。构造参数是通道 ``C`` 和头数 ``K``；前向输入/输出都是 ``(B,C,Z,Y,X)``，注意力对 key 位置轴 ``L`` 求和并保留 query 位置轴。"""
 
     def __init__(self, channels: int, head_count: int) -> None:
         super().__init__()
-        if channels % head_count != 0:
+        if head_count <= 0 or channels <= 0 or channels % head_count != 0:
             raise ValueError("瓶颈通道数必须能被注意力头数整除。")
         # 原 RAUNet 为每个头分配 ``channels/head_count×6`` 个 Q/K/V 通道。
         head_channels = channels // head_count * 6
@@ -305,7 +309,7 @@ class RotarySelfAttention3d(nn.Module):
         return tokens.transpose(1, 2).reshape(batch_size, channels, depth, height, width)
 
     def _split_heads(self, values: torch.Tensor) -> torch.Tensor:
-        """把 ``(B,L,H×C)`` 投影结果改排为 ``(B,H,L,C)``。"""
+        """把 ``(B,L,K×C_h)`` 投影结果改排为 ``(B,K,L,C_h)``。"""
 
         batch_size, token_count, _ = values.shape
         return values.reshape(
@@ -384,7 +388,7 @@ class RaUnetBackbone(nn.Module):
 
         if voxel_input.ndim != 5 or voxel_input.shape[1] != self.input_channels:
             raise ValueError(
-                f"voxel_input 必须为 (B,{self.input_channels},D,H,W)，"
+                f"voxel_input 必须为 (B,{self.input_channels},Z,Y,X)，"
                 f"实际为 {tuple(voxel_input.shape)}。"
             )
         if voxel_input.shape[-3:] != (48, 48, 48):
@@ -412,7 +416,7 @@ class RaUnetBackbone(nn.Module):
         voxel_input: torch.Tensor,
         recycle: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """返回 ``(B,C_v,D,H,W)`` 最终特征与供下轮回收的 ``(B,C_0,D,H,W)`` decoded0。"""
+        """返回 ``(B,C_v,Z,Y,X)`` 最终特征与供下轮回收的 ``(B,C_0,Z,Y,X)`` decoded0。"""
 
         fused = self.input_activation(
             self.input_norm(self.input_projection(voxel_input)) + self.recycle_norm(recycle)

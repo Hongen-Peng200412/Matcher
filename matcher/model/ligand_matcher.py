@@ -1,4 +1,8 @@
-"""由 ``ClosedSetMatcher`` 组合候选编码器与配体身份分支，并以 ``FullMatcherOutput`` 返回六分类、区域和闭集身份结果。"""
+"""由 ``ClosedSetMatcher`` 组合候选编码器与配体身份分支。
+
+符号 ``B/I/D_m/N/E/G/K/F_e`` 分别表示批次、批内最大身份数、模型宽度、
+连接后的原子数、有向边数、配体图数、注意力头数和边特征宽度。
+"""
 
 from __future__ import annotations
 
@@ -16,7 +20,7 @@ from .config import MatcherModelConfig
 
 
 class IdentityRepresentations(TypedDict):
-    """三种身份表示：``native`` 是 ``(B,I,D)`` 语言基线；``graph`` 是 ``(B,I,D)`` 原生表示查询自身未池化原子 token 的结果；``inventory`` 是 ``(B,I,D)`` 排除自身后读取其他原生身份的结果。"""
+    """三种身份表示：``native`` 是 ``(B,I,D_m)`` 语言基线；``graph`` 是 ``(B,I,D_m)`` 原生表示查询自身未池化原子 token 的结果；``inventory`` 是 ``(B,I,D_m)`` 排除自身后读取其他原生身份的结果。"""
 
     native: torch.Tensor
     graph: torch.Tensor
@@ -24,7 +28,7 @@ class IdentityRepresentations(TypedDict):
 
 
 class FullMatcherOutput(CandidateEncoderOutput):
-    """完整输出：继承候选输出五个字段；``identity_logits`` 是 ``(B,I)`` 闭集分数；``identity_native/graph/inventory`` 是三个 ``(B,I,D)`` 身份表示。"""
+    """完整输出：继承候选输出五个字段；``identity_logits`` 是 ``(B,I)`` 闭集分数；``identity_native/graph/inventory`` 是三个 ``(B,I,D_m)`` 身份表示。"""
 
     identity_logits: torch.Tensor
     identity_native: torch.Tensor
@@ -33,7 +37,7 @@ class FullMatcherOutput(CandidateEncoderOutput):
 
 
 class GraphMessageLayer(nn.Module):
-    """沿双向化学键更新原子 token。构造参数是模型宽度 ``D``、键特征宽度和 dropout；前向输入 ``(N,D)`` 节点、``(2,E)`` 有向边与 ``(E,F_e)`` 边特征，输出 ``(N,D)``。"""
+    """沿双向化学键更新原子 token。构造参数是模型宽度 ``D_m``、键特征宽度和 dropout；前向输入 ``(N,D_m)`` 节点、``(2,E)`` 有向边与 ``(E,F_e)`` 边特征，输出 ``(N,D_m)``；``graph_edge_index[0]`` 是源原子，``graph_edge_index[1]`` 是目标原子。"""
 
     def __init__(self, model_dim: int, edge_dim: int, dropout: float) -> None:
         super().__init__()
@@ -57,7 +61,7 @@ class GraphMessageLayer(nn.Module):
         edge_index: torch.Tensor,
         edge_features: torch.Tensor,
     ) -> torch.Tensor:
-        """求和轴是指向同一目标节点的边轴 ``E``；节点轴 ``N`` 和通道轴 ``D`` 保留。"""
+        """求和轴是指向同一目标节点的边轴 ``E``；节点轴 ``N`` 和通道轴 ``D_m`` 保留。"""
 
         if edge_index.shape != (2, edge_features.shape[0]):
             raise ValueError("graph_edge_index 必须是与边特征对齐的 (2,E)。")
@@ -76,7 +80,7 @@ class GraphMessageLayer(nn.Module):
 
 
 class LigandGraphEncoder(nn.Module):
-    """保留每个配体图的原子 token。构造参数是模型宽度 ``D``、消息层数和 dropout；前向读取 ``CandidateBatch`` 图字段，输出 ``(N,D)`` 而不做 mean/max 池化。"""
+    """保留每个配体图的原子 token。构造参数是模型宽度 ``D_m``、消息层数和 dropout；前向读取 ``CandidateBatch`` 图字段，输出 ``(N,D_m)`` 而不做 mean/max 池化。"""
 
     def __init__(self, model_dim: int, layer_count: int, dropout: float) -> None:
         super().__init__()
@@ -91,7 +95,7 @@ class LigandGraphEncoder(nn.Module):
         )
 
     def forward(self, batch: CandidateBatch) -> torch.Tensor:
-        """将 ``N`` 个原子的元素、电荷、残基编号和 15 维连续特征融合后，沿 ``E`` 条有向键更新并返回 ``(N,D)``。"""
+        """将 ``N`` 个原子的元素、电荷、残基编号和 15 维连续特征融合后，沿 ``E`` 条有向键更新并返回 ``(N,D_m)``。"""
 
         element = batch["graph_element"]
         charge = batch["graph_charge"]
@@ -114,11 +118,18 @@ class LigandGraphEncoder(nn.Module):
 
 
 class GraphIdentityAttention(nn.Module):
-    """以原生语言表示查询自身原子 token。构造参数是模型宽度 ``D``、头数 ``H`` 和 dropout；前向输入 ``(B,I,D)`` native、``(N,D)`` 节点及图映射，输出 ``(B,I,D)``。"""
+    """以原生语言表示查询自身原子 token。
+
+    构造参数是模型宽度 ``D_m``、头数 ``K`` 和 dropout。前向输入
+    ``(B,I,D_m)`` native、``(N,D_m)`` 节点；``node_graph_index`` 是
+    ``(N,)`` 且把节点映射到 ``[0,G)``，``graph_to_sample`` 是 ``(G,)``
+    且把图映射到 ``[0,B)``，``graph_to_identity`` 是 ``(G,)`` 且把图映射到
+    相应样本的 ``[0,I)``。输出为 ``(B,I,D_m)``。
+    """
 
     def __init__(self, model_dim: int, head_count: int, dropout: float) -> None:
         super().__init__()
-        if model_dim % head_count != 0:
+        if head_count <= 0 or model_dim <= 0 or model_dim % head_count != 0:
             raise ValueError("model_dim 必须能被配体图注意力头数整除。")
         self.model_dim = model_dim
         self.head_count = head_count
@@ -138,11 +149,19 @@ class GraphIdentityAttention(nn.Module):
         graph_to_sample: torch.Tensor,
         graph_to_identity: torch.Tensor,
     ) -> torch.Tensor:
-        """点积求和轴是每头通道 ``D/H``，softmax 求和轴是同一图的节点轴，保留图轴 ``G`` 和头轴 ``H``。"""
+        """点积求和轴是每头通道 ``D_m/K``，softmax 求和轴是同一图的节点轴，保留图轴 ``G`` 和头轴 ``K``。"""
 
         graph_count = int(graph_to_sample.shape[0])
         if graph_count == 0:
             return torch.zeros_like(native)
+        if native.ndim != 3 or nodes.ndim != 2 or nodes.shape[1] != self.model_dim:
+            raise ValueError("native 必须为 (B,I,D_m)，nodes 必须为 (N,D_m)。")
+        if graph_to_sample.ndim != 1 or graph_to_identity.shape != graph_to_sample.shape:
+            raise ValueError("graph_to_sample 和 graph_to_identity 必须是同形 (G,) 张量。")
+        if torch.any(graph_to_sample < 0) or torch.any(graph_to_sample >= native.shape[0]):
+            raise ValueError("graph_to_sample 超出批次轴 [0,B)。")
+        if torch.any(graph_to_identity < 0) or torch.any(graph_to_identity >= native.shape[1]):
+            raise ValueError("graph_to_identity 超出身份轴 [0,I)。")
         if node_graph_index.shape != (nodes.shape[0],):
             raise ValueError("graph_node_graph_index 必须与原子 token 轴对齐。")
         if torch.any(node_graph_index < 0) or torch.any(node_graph_index >= graph_count):
@@ -171,11 +190,11 @@ class GraphIdentityAttention(nn.Module):
 
 
 class SelfExcludingInventoryAttention(nn.Module):
-    """以每个原生身份查询同一 PDB 其他原生身份。构造参数是模型宽度 ``D``、头数 ``H`` 和 dropout；前向输入 ``(B,I,D)`` 与 ``(B,I)`` 有效掩码，输出 ``(B,I,D)`` 上下文。"""
+    """以每个原生身份查询同一 PDB 其他原生身份。构造参数是模型宽度 ``D_m``、头数 ``K`` 和 dropout；前向输入 ``(B,I,D_m)`` 与 ``(B,I)`` 有效掩码，输出 ``(B,I,D_m)`` 上下文。"""
 
     def __init__(self, model_dim: int, head_count: int, dropout: float) -> None:
         super().__init__()
-        if model_dim % head_count != 0:
+        if head_count <= 0 or model_dim <= 0 or model_dim % head_count != 0:
             raise ValueError("model_dim 必须能被身份清单注意力头数整除。")
         self.model_dim = model_dim
         self.head_count = head_count
@@ -188,10 +207,12 @@ class SelfExcludingInventoryAttention(nn.Module):
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, identities: torch.Tensor, identity_mask: torch.Tensor) -> torch.Tensor:
-        """注意力的 query/key 轴均为 ``I``；最后一轴 key 做 softmax，``(B,1,I,I)`` 掩码向 ``H`` 头广播并屏蔽无效身份与对角线。"""
+        """注意力的 query/key 轴均为 ``I``；最后一轴 key 做 softmax，``(B,1,I,I)`` 掩码向 ``K`` 头广播并屏蔽无效身份与对角线。"""
 
         if identities.ndim != 3 or identities.shape[:2] != identity_mask.shape:
-            raise ValueError("identities 必须为 (B,I,D)，identity_mask 必须为 (B,I)。")
+            raise ValueError("identities 必须为 (B,I,D_m)，identity_mask 必须为 (B,I)。")
+        if identity_mask.dtype != torch.bool:
+            raise TypeError("identity_mask 必须是 bool。")
         batch_size, identity_count, _ = identities.shape
         if identity_count == 0:
             return identities
@@ -212,7 +233,7 @@ class SelfExcludingInventoryAttention(nn.Module):
         return result * identity_mask[..., None].to(dtype=result.dtype)
 
     def _heads(self, values: torch.Tensor) -> torch.Tensor:
-        """把 ``(B,I,D)`` 改排为 ``(B,H,I,D/H)``。"""
+        """把 ``(B,I,D_m)`` 改排为 ``(B,K,I,D_m/K)``。"""
 
         batch_size, identity_count, _ = values.shape
         return values.reshape(
@@ -224,7 +245,7 @@ class SelfExcludingInventoryAttention(nn.Module):
 
 
 class IdentityEncoder(nn.Module):
-    """产生原生、配体图和自排除清单三种表示。构造参数 ``config`` 定义 ``D/H``、图层数和 dropout；前向读取语言、图及映射字段，输出 ``IdentityRepresentations``。"""
+    """产生原生、配体图和自排除清单三种表示。构造参数 ``config`` 定义 ``D_m/K``、图层数和 dropout；前向读取语言、图及映射字段，输出 ``IdentityRepresentations``。"""
 
     def __init__(self, config: MatcherModelConfig) -> None:
         super().__init__()
@@ -281,7 +302,7 @@ class IdentityEncoder(nn.Module):
 
 
 class PairScorer(nn.Module):
-    """对候选和一类身份表示打分。构造参数是模型宽度 ``D`` 和 dropout；前向输入 ``(B,D)`` 与 ``(B,I,D)``，输出 ``(B,I)``。"""
+    """对候选和一类身份表示打分。构造参数是模型宽度 ``D_m`` 和 dropout；前向输入 ``(B,D_m)`` 与 ``(B,I,D_m)``，输出 ``(B,I)``。"""
 
     def __init__(self, model_dim: int, dropout: float) -> None:
         super().__init__()
@@ -297,7 +318,7 @@ class PairScorer(nn.Module):
         )
 
     def forward(self, candidate: torch.Tensor, identities: torch.Tensor) -> torch.Tensor:
-        """余弦点积对通道轴 ``D`` 求和，保留批次轴 ``B`` 和身份轴 ``I``，再加逐身份兼容性残差。"""
+        """余弦点积对通道轴 ``D_m`` 求和，保留批次轴 ``B`` 和身份轴 ``I``，再加逐身份兼容性残差。"""
 
         candidate_projected = F.normalize(self.candidate(candidate), dim=-1)
         identity_projected = F.normalize(self.identity(identities), dim=-1)
@@ -318,7 +339,7 @@ class PairScorer(nn.Module):
 
 
 class IdentityScorer(nn.Module):
-    """合并三条候选—身份分支。构造参数是模型宽度 ``D`` 和 dropout；native 始终参与，graph/inventory 出口标量门从严格零开始；前向输出 ``(B,I)``。"""
+    """合并三条候选—身份分支。构造参数是模型宽度 ``D_m`` 和 dropout；native 始终参与，graph/inventory 出口标量门从严格零开始；前向输出 ``(B,I)``。"""
 
     def __init__(self, model_dim: int, dropout: float) -> None:
         super().__init__()
@@ -342,14 +363,19 @@ class IdentityScorer(nn.Module):
             identities["graph"].shape != identities["native"].shape
             or identities["inventory"].shape != identities["native"].shape
         ):
-            raise ValueError("三种身份表示必须具有同一 (B,I,D) 形状。")
+            raise ValueError("三种身份表示必须具有同一 (B,I,D_m) 形状。")
         if identities["native"].shape[:2] != identity_mask.shape:
             raise ValueError("三种身份表示必须与 (B,I) 掩码对齐。")
         if identity_mask.shape[1] == 0:
             return candidate.new_empty((candidate.shape[0], 0))
         logits = self.native(candidate, identities["native"])
         logits = logits + self.graph_gate * self.graph(candidate, identities["graph"])
-        logits = logits + self.inventory_gate * self.inventory(candidate, identities["inventory"])
+        inventory_increment = self.inventory(candidate, identities["inventory"])
+        has_other_identity = identity_mask.sum(dim=1, keepdim=True) > 1
+        inventory_increment = inventory_increment * has_other_identity.to(
+            dtype=inventory_increment.dtype
+        )
+        logits = logits + self.inventory_gate * inventory_increment
         return logits.masked_fill(~identity_mask, torch.finfo(logits.dtype).min)
 
 

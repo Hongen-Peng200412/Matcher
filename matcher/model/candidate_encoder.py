@@ -21,7 +21,7 @@ from .raunet import RaUnetBackbone
 
 
 class CandidateEncoderOutput(TypedDict):
-    """令 ``B/D/C_v`` 为批次、模型宽度和体素特征通道：``candidate_embedding`` 是 ``(B,D)`` 候选表示；``class_logits`` 是 ``(B,6)`` 六分类分数；``ligand_area_logits`` 是 ``(B,48,48,48)`` 配体区域分数；``binding_area_logits`` 是 ``(B,48,48,48)`` 结合区域分数；``voxel_features`` 是 ``(B,C_v,48,48,48)`` RAUNet 特征。"""
+    """令 ``B/D_m/C_v`` 为批次、模型宽度和体素特征通道：``candidate_embedding`` 是 ``(B,D_m)`` 候选表示；``class_logits`` 是 ``(B,6)`` 六分类分数；``ligand_area_logits`` 是 ``(B,48,48,48)`` 配体区域分数；``binding_area_logits`` 是 ``(B,48,48,48)`` 结合区域分数；``voxel_features`` 是 ``(B,C_v,48,48,48)`` RAUNet 特征。"""
 
     candidate_embedding: torch.Tensor
     class_logits: torch.Tensor

@@ -1,14 +1,17 @@
-"""用 ``compute_matcher_loss`` 计算候选基础损失与三种身份门控，并以 ``LossOutput`` 返回可记录分量。"""
+"""用 ``compute_matcher_loss`` 计算候选基础损失与三种身份门控，并以 ``LossOutput`` 返回可记录分量。
+
+符号 ``B`` 表示物理批量，``I`` 表示批内最大身份数，``Z/Y/X`` 表示三个体素空间轴。
+"""
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Literal, TypedDict
 
 import torch
 from torch.nn import functional as F
 
-from .contracts import CandidateBatch
 from .schema import SMALL_MOLECULE_INDEX
 
 
@@ -25,10 +28,25 @@ class LossWeights:
     identity: float
 
     def __post_init__(self) -> None:
-        """拒绝负权重。"""
+        """拒绝非有限值和负权重。"""
 
-        if any(value < 0.0 for value in self.__dict__.values()):
-            raise ValueError("损失权重不能为负数。")
+        if any(not math.isfinite(value) or value < 0.0 for value in self.__dict__.values()):
+            raise ValueError("损失权重必须是有限非负数。")
+
+
+class MatcherLossBatch(TypedDict):
+    """声明损失函数实际读取的目标字段。
+
+    ``class_target`` 和 ``identity_target`` 是 int64 ``(B,)``；后者以 ``-1``
+    表示没有身份监督。``ligand_area_target`` 和 ``binding_area_target`` 是 bool
+    ``(B,Z,Y,X)``。``identity_mask`` 是 bool ``(B,I)``，真值表示有效身份槽。
+    """
+
+    class_target: torch.Tensor
+    ligand_area_target: torch.Tensor
+    binding_area_target: torch.Tensor
+    identity_target: torch.Tensor
+    identity_mask: torch.Tensor
 
 
 class LossOutput(TypedDict):
@@ -45,12 +63,12 @@ class LossOutput(TypedDict):
 
 def compute_matcher_loss(
     outputs: dict[str, torch.Tensor],
-    batch: CandidateBatch,
+    batch: MatcherLossBatch,
     weights: LossWeights,
     identity_variant: IdentityLossVariant | None,
     class_weights: torch.Tensor | None,
 ) -> LossOutput:
-    """读取 ``outputs`` 的 ``class_logits`` ``(B,6)``、两个 ``(B,D,H,W)`` 区域分数和完整 Matcher 才需的 ``identity_logits`` ``(B,I)``，再与 ``CandidateBatch`` 对应目标计算 ``LossOutput``。
+    """读取 ``outputs`` 的 ``class_logits`` ``(B,6)``、两个 ``(B,Z,Y,X)`` 区域分数和完整 Matcher 才需的 ``identity_logits`` ``(B,I)``，再与 ``MatcherLossBatch`` 对应目标计算 ``LossOutput``。
 
     身份项只覆盖真实六分类标签为 small_molecule 且当前语言模型存在目标表示的
     候选。三个变体都除以这类候选的真实数量，不以 ``p_small`` 权重和作分母。
@@ -108,10 +126,10 @@ def compute_matcher_loss(
 
 
 def balanced_voxel_loss(logits: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
-    """对同形 ``(B,D,H,W)`` logits/target 分样本平均正负体素 BCE 与软 Dice，返回批次标量均值。"""
+    """对同形 ``(B,Z,Y,X)`` logits/target 分样本平均正负体素 BCE 与软 Dice，返回批次标量均值。"""
 
     if logits.shape != target.shape or logits.ndim != 4:
-        raise ValueError("区域 logits/target 必须具有相同的 (B,D,H,W) 形状。")
+        raise ValueError("区域 logits/target 必须具有相同的 (B,Z,Y,X) 形状。")
     target_float = target.to(dtype=logits.dtype)
     element = F.binary_cross_entropy_with_logits(logits, target_float, reduction="none")
     flat_loss = element.flatten(1)
@@ -133,12 +151,19 @@ def balanced_voxel_loss(logits: torch.Tensor, target: torch.Tensor) -> torch.Ten
 def _identity_loss(
     identity_logits: torch.Tensor,
     class_logits: torch.Tensor,
-    batch: CandidateBatch,
+    batch: MatcherLossBatch,
     variant: IdentityLossVariant,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """对 ``(B,I)`` 身份分数实现三种门控交叉熵，返回损失标量与真实有效小分子计数。"""
 
     target = batch["identity_target"]
+    identity_mask = batch["identity_mask"]
+    if (
+        identity_mask.dtype != torch.bool
+        or identity_mask.ndim != 2
+        or identity_mask.shape != identity_logits.shape
+    ):
+        raise ValueError("identity_mask 必须是与 identity_logits 同形的 bool (B,I) 张量。")
     eligible = (batch["class_target"] == SMALL_MOLECULE_INDEX) & (target >= 0)
     count = eligible.sum()
     if not torch.any(eligible):
@@ -150,7 +175,7 @@ def _identity_loss(
         raise ValueError("存在身份监督目标时 identity_logits 的身份轴不能为零。")
     if torch.any(selected_target >= selected_logits.shape[1]):
         raise ValueError("identity_target 超出 identity_logits 的身份轴。")
-    if "identity_mask" in batch and not torch.all(batch["identity_mask"][eligible, selected_target]):
+    if not torch.all(identity_mask[eligible, selected_target]):
         raise ValueError("identity_target 必须指向 identity_mask 中的有效身份。")
     per_candidate = F.cross_entropy(selected_logits, selected_target, reduction="none")
     if variant == "oracle":

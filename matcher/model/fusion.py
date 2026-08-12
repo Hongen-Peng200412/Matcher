@@ -1,4 +1,8 @@
-"""编码 A/P/V/PP 原始 token，并以 ``MeanMaxAggregator`` 或 ``CandidateConditionedAggregator`` 返回 ``(B,D)`` 候选表示。符号 ``B/N/F/D/C/H`` 分别表示批次、token 数、原特征宽度、模型宽度、体素通道和注意力头数。"""
+"""编码 A/P/V/PP 原始 token，并以两种聚合器返回 ``(B,D_m)`` 候选表示。
+
+符号 ``B/N/F/D_m/C_v/K`` 分别表示批次、token 数、原特征宽度、模型宽度、
+体素特征通道和注意力头数；``Z/Y/X`` 表示三个体素空间轴。
+"""
 
 from __future__ import annotations
 
@@ -25,10 +29,16 @@ def gather_voxel_features(
     index_zyx: torch.Tensor,
     mask: torch.Tensor,
 ) -> torch.Tensor:
-    """按中心 ``48³`` 的整数 ZYX 索引读取 V/PP 特征，返回 ``(B,N,C)``。"""
+    """按整数 ZYX 索引从 ``(B,C_v,Z,Y,X)`` 读取 V/PP，返回 ``(B,N,C_v)``。
+
+    ``index_zyx`` 是 int64 ``(B,N,3)``；``mask`` 必须是 bool ``(B,N)``，
+    真值表示相应索引和 token 有效，假值位置返回严格零。
+    """
 
     if volume.ndim != 5 or index_zyx.ndim != 3 or index_zyx.shape[-1] != 3:
-        raise ValueError("volume 必须为 (B,C,D,H,W)，index_zyx 必须为 (B,N,3)。")
+        raise ValueError("volume 必须为 (B,C_v,Z,Y,X)，index_zyx 必须为 (B,N,3)。")
+    if index_zyx.dtype != torch.long or mask.dtype != torch.bool:
+        raise TypeError("index_zyx 必须是 int64，mask 必须是 bool。")
     if index_zyx.shape[:2] != mask.shape or index_zyx.shape[0] != volume.shape[0]:
         raise ValueError("体素索引、掩码和特征图的批次/token 轴不一致。")
     valid_indices = index_zyx[mask]
@@ -50,10 +60,16 @@ def gather_voxel_features(
 
 
 def _masked_mean_max(tokens: torch.Tensor, mask: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-    """对 ``(B,N,D)`` 变长 token 返回均值和最大值，空集合返回两个 ``(B,D)`` 零张量。"""
+    """对 ``(B,N,D_m)`` 变长 token 返回均值和最大值。
+
+    ``mask`` 必须是 bool ``(B,N)``，真值表示有效 token；空集合返回两个
+    ``(B,D_m)`` 零张量。
+    """
 
     if tokens.ndim != 3 or tokens.shape[:2] != mask.shape:
         raise ValueError("tokens/mask 形状不一致。")
+    if mask.dtype != torch.bool:
+        raise TypeError("mask 必须是 bool。")
     if tokens.shape[1] == 0:
         empty = torch.zeros(
             (tokens.shape[0], tokens.shape[2]),
@@ -72,7 +88,7 @@ def _masked_mean_max(tokens: torch.Tensor, mask: torch.Tensor) -> tuple[torch.Te
 
 
 class TokenProjector(nn.Module):
-    """逐 token 投影一种原始模态。构造参数为输入宽度、模型宽度和 dropout；前向输入 ``(B,N,F)`` 与 ``(B,N)`` 布尔掩码，真值表示有效 token，输出 dtype 由投影算子决定的 ``(B,N,D)``。"""
+    """逐 token 投影一种原始模态。构造参数为输入宽度、模型宽度和 dropout；前向输入 ``(B,N,F)`` 与 ``(B,N)`` 布尔掩码，真值表示有效 token，输出 dtype 由投影算子决定的 ``(B,N,D_m)``。"""
 
     def __init__(self, input_dim: int, model_dim: int, dropout: float) -> None:
         super().__init__()
@@ -85,16 +101,18 @@ class TokenProjector(nn.Module):
         )
 
     def forward(self, tokens: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
-        """返回补零位置严格为零的 ``(B,N,D)`` 投影。"""
+        """返回补零位置严格为零的 ``(B,N,D_m)`` 投影。"""
 
         if tokens.ndim != 3 or mask.shape != tokens.shape[:2]:
             raise ValueError("tokens 必须为 (B,N,F)，mask 必须为对应 (B,N)。")
+        if mask.dtype != torch.bool:
+            raise TypeError("mask 必须是 bool。")
         projected = self.projection(tokens)
         return projected * mask[..., None].to(dtype=projected.dtype)
 
 
 class CandidateCrossAttention(nn.Module):
-    """以候选摘要查询一种模态。构造参数为模型宽度、头数、dropout 和零输出开关；前向输入 ``(B,D)`` query、``(B,N,D)`` token 与真值表示有效 token 的 ``(B,N)`` 掩码，输出 ``(B,D)`` 增量。"""
+    """以候选摘要查询一种模态。构造参数为模型宽度、头数、dropout 和零输出开关；前向输入 ``(B,D_m)`` query、``(B,N,D_m)`` token 与真值表示有效 token 的 ``(B,N)`` 掩码，输出 ``(B,D_m)`` 增量。"""
 
     def __init__(
         self,
@@ -104,7 +122,7 @@ class CandidateCrossAttention(nn.Module):
         zero_output: bool,
     ) -> None:
         super().__init__()
-        if model_dim % head_count != 0:
+        if head_count <= 0 or model_dim <= 0 or model_dim % head_count != 0:
             raise ValueError("model_dim 必须能被交叉注意力头数整除。")
         self.model_dim = model_dim
         self.head_count = head_count
@@ -124,12 +142,14 @@ class CandidateCrossAttention(nn.Module):
         tokens: torch.Tensor,
         mask: torch.Tensor,
     ) -> torch.Tensor:
-        """在每个 ``B/H`` 内对 query 和 key 的 ``D/H`` 通道求点积，对 token 轴 ``N`` 做 softmax 并求 value 加权和；``(B,1,1,N)`` 有效掩码向 ``H`` 广播，无有效 token 时返回 ``(B,D)`` 严格零增量。"""
+        """在每个 ``B/K`` 内对 query 和 key 的 ``D_m/K`` 通道求点积，对 token 轴 ``N`` 做 softmax 并求 value 加权和；``(B,1,1,N)`` 有效掩码向 ``K`` 广播，无有效 token 时返回 ``(B,D_m)`` 严格零增量。"""
 
         if candidate_query.ndim != 2 or candidate_query.shape[1] != self.model_dim:
             raise ValueError("candidate_query 必须为 (B,model_dim)。")
         if tokens.ndim != 3 or tokens.shape[:2] != mask.shape:
             raise ValueError("tokens/mask 的批次和 token 轴不一致。")
+        if mask.dtype != torch.bool:
+            raise TypeError("mask 必须是 bool。")
         if tokens.shape[0] != candidate_query.shape[0] or tokens.shape[2] != self.model_dim:
             raise ValueError("交叉注意力的批次或通道宽度不一致。")
         if tokens.shape[1] == 0:
@@ -159,7 +179,7 @@ class CandidateCrossAttention(nn.Module):
 
 
 class MeanMaxAggregator(nn.Module):
-    """对四模态取掩码均值/最大值。构造参数为模型宽度和 dropout；前向输入 ``(B,D)`` 候选摘要与 A/P/V/PP token/掩码映射，输出 ``(B,D)`` 候选表示。"""
+    """对四模态取掩码均值/最大值。构造参数为模型宽度和 dropout；前向输入 ``(B,D_m)`` 候选摘要与 A/P/V/PP token/掩码映射，输出 ``(B,D_m)`` 候选表示。"""
 
     def __init__(self, model_dim: int, dropout: float) -> None:
         super().__init__()
@@ -189,7 +209,7 @@ class MeanMaxAggregator(nn.Module):
 
 
 class CandidateConditionedAggregator(nn.Module):
-    """用候选摘要分别查询四模态。构造参数为模型宽度、头数和 dropout；前向输入 ``(B,D)`` 候选摘要与 A/P/V/PP token/掩码映射，输出 ``(B,D)`` 候选表示。"""
+    """用候选摘要分别查询四模态。构造参数为模型宽度、头数和 dropout；前向输入 ``(B,D_m)`` 候选摘要与 A/P/V/PP token/掩码映射，输出 ``(B,D_m)`` 候选表示。"""
 
     def __init__(self, model_dim: int, head_count: int, dropout: float) -> None:
         super().__init__()
