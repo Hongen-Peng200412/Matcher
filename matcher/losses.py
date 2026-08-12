@@ -32,7 +32,7 @@ class LossWeights:
 
 
 class LossOutput(TypedDict):
-    """损失输出：``total`` 是加权总损失；``classification`` 是六分类损失；``ligand_area`` 是配体区域损失；``binding_area`` 是结合区域损失；``identity`` 是门控后身份损失；``identity_eligible_count`` 是有效真实小分子数。"""
+    """损失输出：``total/classification/ligand_area/binding_area/identity`` 均是浮点标量；``classification_denominator`` 是六分类权重和浮点标量；``identity_eligible_count`` 是 int64 标量真实有效小分子数。"""
 
     total: torch.Tensor
     classification: torch.Tensor
@@ -50,7 +50,7 @@ def compute_matcher_loss(
     identity_variant: IdentityLossVariant | None,
     class_weights: torch.Tensor | None,
 ) -> LossOutput:
-    """由候选输出与 ``CandidateBatch`` 计算 ``LossOutput``，并按 oracle/detached/joint 规则选择性加入身份损失。
+    """读取 ``outputs`` 的 ``class_logits`` ``(B,6)``、两个 ``(B,D,H,W)`` 区域分数和完整 Matcher 才需的 ``identity_logits`` ``(B,I)``，再与 ``CandidateBatch`` 对应目标计算 ``LossOutput``。
 
     身份项只覆盖真实六分类标签为 small_molecule 且当前语言模型存在目标表示的
     候选。三个变体都除以这类候选的真实数量，不以 ``p_small`` 权重和作分母。
@@ -148,6 +148,10 @@ def _identity_loss(
     selected_target = target[eligible]
     if selected_logits.shape[1] == 0:
         raise ValueError("存在身份监督目标时 identity_logits 的身份轴不能为零。")
+    if torch.any(selected_target >= selected_logits.shape[1]):
+        raise ValueError("identity_target 超出 identity_logits 的身份轴。")
+    if "identity_mask" in batch and not torch.all(batch["identity_mask"][eligible, selected_target]):
+        raise ValueError("identity_target 必须指向 identity_mask 中的有效身份。")
     per_candidate = F.cross_entropy(selected_logits, selected_target, reduction="none")
     if variant == "oracle":
         multiplier = torch.ones_like(per_candidate)

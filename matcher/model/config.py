@@ -10,7 +10,7 @@ AggregationName = Literal["mean_max", "candidate_cross_attention"]
 
 @dataclass(frozen=True)
 class MatcherModelConfig:
-    """保存候选预训练与完整 Matcher 的聚合方式、模型宽度、头数、dropout、体素特征宽度、RAUNet 九级通道、recycle 次数、checkpoint 开关、瓶颈注意力层数和图消息层数。"""
+    """模型配置：``aggregation`` 是 ``mean_max/candidate_cross_attention``；``model_dim/attention_heads/dropout`` 是共同宽度、头数和丢弃率；``voxel_feature_channels`` 是 RAUNet 输出宽度；``raunet_planes`` 顺序为 ``(enc0,enc1,enc2,enc3,bottleneck,dec3,dec2,dec1,dec0)``；``recycle_iterations`` 是回收轮数；``gradient_checkpointing`` 决定训练时是否激活重计算；``bottleneck_attention_layers/graph_layers`` 是瓶颈注意力与配体图消息层数。"""
 
     aggregation: AggregationName
     model_dim: int

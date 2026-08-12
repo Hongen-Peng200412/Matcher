@@ -1,4 +1,4 @@
-"""由 ``RaUnetBackbone`` 把候选中心 ``(B,105,48,48,48)`` 体素输入编码为 ``(B,C_v,48,48,48)`` 特征。"""
+"""由 ``RaUnetBackbone`` 把候选中心 ``(B,105,48,48,48)`` 体素输入编码为 ``(B,C_v,48,48,48)`` 特征。符号 ``B/C/D/H/W`` 分别表示批次、通道、深度、高度和宽度，``L=D×H×W`` 表示展平空间位置数。"""
 
 from __future__ import annotations
 
@@ -14,8 +14,70 @@ from torch.utils.checkpoint import checkpoint
 DEFAULT_PLANES = (64, 256, 256, 256, 256, 256, 128, 64, 64)
 
 
+def _largest_divisor_not_above(value: int, maximum: int) -> int:
+    """返回不超过 ``maximum`` 且能整除正整数 ``value`` 的最大头数。"""
+
+    for candidate in range(min(value, maximum), 0, -1):
+        if value % candidate == 0:
+            return candidate
+    raise AssertionError("正整数至少能被 1 整除。")
+
+
+def _grid_positions(
+    depth: int,
+    height: int,
+    width: int,
+    device: torch.device,
+    dtype: torch.dtype,
+) -> torch.Tensor:
+    """以 Z、Y、X 行主序返回 ``(L,3)`` RoPE 坐标；原点是 ``(0,0,0)``，每轴无物理单位间距为 1.5，不解释为 Å。"""
+
+    axes = [torch.arange(size, device=device, dtype=dtype) for size in (depth, height, width)]
+    return torch.stack(torch.meshgrid(*axes, indexing="ij"), dim=-1).reshape(-1, 3) * 1.5
+
+
+def _apply_three_axis_rope(values: torch.Tensor, positions: torch.Tensor) -> torch.Tensor:
+    """将 ``(B,H,L,C_h)`` 的头通道轴等分给 Z/Y/X，每轴相邻通道成对旋转，返回同形张量。"""
+
+    axis_channels = values.shape[-1] // 3
+    if axis_channels % 2 != 0:
+        raise ValueError("每个空间轴的旋转位置编码通道必须为偶数。")
+    rotated_parts = []
+    frequency_index = torch.arange(
+        axis_channels // 2,
+        device=values.device,
+        dtype=torch.float32,
+    )
+    inverse_frequency = torch.exp(
+        -math.log(100.0) * frequency_index / max(axis_channels // 2, 1)
+    ).to(dtype=values.dtype)
+    for axis, part in enumerate(values.split(axis_channels, dim=-1)):
+        angles = positions[:, axis, None] * inverse_frequency[None, :]
+        cosine = angles.cos()[None, None]
+        sine = angles.sin()[None, None]
+        even = part[..., 0::2]
+        odd = part[..., 1::2]
+        rotated = torch.stack(
+            (even * cosine - odd * sine, even * sine + odd * cosine),
+            dim=-1,
+        ).flatten(-2)
+        rotated_parts.append(rotated)
+    return torch.cat(rotated_parts, dim=-1)
+
+
+def _upsample_add(coarse: torch.Tensor, skip: torch.Tensor) -> torch.Tensor:
+    """将 ``coarse`` 三线性插值到 ``skip`` 的 ``(D,H,W)`` 后逐元素相加，返回与 ``skip`` 同形特征。"""
+
+    return skip + F.interpolate(
+        coarse,
+        size=skip.shape[-3:],
+        mode="trilinear",
+        align_corners=True,
+    )
+
+
 class ResidualBottleneck3d(nn.Module):
-    """用 ``1×1×1 → 3×3×3 → 1×1×1`` 残差块完成一次下采样。"""
+    """用瓶颈残差块下采样。构造参数是输入/输出通道和 stride；前向输入 ``(B,C_in,D,H,W)``，输出 ``(B,C_out,D/s,H/s,W/s)``。"""
 
     expansion = 4
 
@@ -61,7 +123,7 @@ class ResidualBottleneck3d(nn.Module):
 
 
 class Res2NetBlock3d(nn.Module):
-    """在不改变空间形状的前提下执行层级残差卷积。"""
+    """执行同形层级残差卷积。构造参数是通道 ``C`` 和层级分支数 ``scale``；前向输入/输出都是 ``(B,C,D,H,W)``。"""
 
     def __init__(self, channels: int, scale: int) -> None:
         super().__init__()
@@ -97,8 +159,14 @@ class Res2NetBlock3d(nn.Module):
         return self.activation(mixed + inputs)
 
 
+def _res2_stack(channels: int, scale: int) -> nn.Sequential:
+    """构造四个同宽 ``Res2NetBlock3d`` 解码块，输入/输出都是 ``(B,C,D,H,W)``。"""
+
+    return nn.Sequential(*(Res2NetBlock3d(channels, scale) for _ in range(4)))
+
+
 class ConvResidual3d(nn.Module):
-    """融合注意力门输出，并用两层卷积恢复局部空间信息。"""
+    """用两层卷积融合门控特征。构造参数是输入/输出通道；前向保留 ``(B,D,H,W)`` 并把通道改为 ``C_out``。"""
 
     def __init__(self, input_channels: int, output_channels: int) -> None:
         super().__init__()
@@ -123,7 +191,7 @@ class ConvResidual3d(nn.Module):
 
 
 class AttentionGate3d(nn.Module):
-    """用粗分辨率特征控制同尺度跳跃特征的多头门值。"""
+    """用粗特征门控跳跃特征。构造参数是 skip/coarse/输出通道；前向输入粗 ``(B,C_c,d,h,w)`` 与细 ``(B,C_s,D,H,W)``，输出 ``(B,C_out,D,H,W)``。"""
 
     def __init__(
         self,
@@ -180,7 +248,7 @@ class AttentionGate3d(nn.Module):
 
 
 class GatedTransition(nn.Module):
-    """在瓶颈 token 上执行带乘法门的通道前馈变换。"""
+    """对瓶颈 token 执行通道门控前馈。构造参数是通道 ``C``；前向输入/输出均是 ``(B,L,C)``。"""
 
     def __init__(self, channels: int) -> None:
         super().__init__()
@@ -198,7 +266,7 @@ class GatedTransition(nn.Module):
 
 
 class RotarySelfAttention3d(nn.Module):
-    """在 RAUNet 最深的三维规则网格上执行旋转位置编码自注意力。"""
+    """在最深网格执行 RoPE 自注意力。构造参数是通道 ``C`` 和头数 ``H``；前向输入/输出都是 ``(B,C,D,H,W)``，注意力对 key 位置轴 ``L`` 求和并保留 query 位置轴。"""
 
     def __init__(self, channels: int, head_count: int) -> None:
         super().__init__()
@@ -248,8 +316,11 @@ class RotarySelfAttention3d(nn.Module):
         ).transpose(1, 2)
 
 
+# ================================================================================================
+
+
 class RaUnetBackbone(nn.Module):
-    """复现 Find_0 所用 RAUNet 宽度、四级编解码和三轮 recycle。"""
+    """复现 Find_0 RAUNet。构造参数是输入/最终通道、九级 ``(enc0,enc1,enc2,enc3,bottleneck,dec3,dec2,dec1,dec0)``、recycle 次数、激活重计算开关和瓶颈注意力层数；前向输入 ``(B,C_in,48,48,48)``，输出 ``(B,C_v,48,48,48)``。"""
 
     def __init__(
         self,
@@ -316,6 +387,8 @@ class RaUnetBackbone(nn.Module):
                 f"voxel_input 必须为 (B,{self.input_channels},D,H,W)，"
                 f"实际为 {tuple(voxel_input.shape)}。"
             )
+        if voxel_input.shape[-3:] != (48, 48, 48):
+            raise ValueError(f"Matcher RAUNet 的空间形状必须为 (48,48,48)，实际为 {tuple(voxel_input.shape[-3:])}。")
         recycle = torch.zeros(
             (voxel_input.shape[0], self.planes[0], *voxel_input.shape[-3:]),
             device=voxel_input.device,
@@ -372,71 +445,3 @@ class RaUnetBackbone(nn.Module):
         if not (self.gradient_checkpointing and self.training and torch.is_grad_enabled()):
             return module(*inputs)
         return checkpoint(module, *inputs, use_reentrant=False, preserve_rng_state=False)
-
-
-def _res2_stack(channels: int, scale: int) -> nn.Sequential:
-    """构造固定四层的同宽 Res2Net 解码段。"""
-
-    return nn.Sequential(*(Res2NetBlock3d(channels, scale) for _ in range(4)))
-
-
-def _upsample_add(coarse: torch.Tensor, skip: torch.Tensor) -> torch.Tensor:
-    """把粗特征三线性插值到跳跃特征分辨率后逐元素相加。"""
-
-    return skip + F.interpolate(
-        coarse,
-        size=skip.shape[-3:],
-        mode="trilinear",
-        align_corners=True,
-    )
-
-
-def _largest_divisor_not_above(value: int, maximum: int) -> int:
-    """返回不超过 ``maximum`` 且能整除 ``value`` 的最大正整数。"""
-
-    for candidate in range(min(value, maximum), 0, -1):
-        if value % candidate == 0:
-            return candidate
-    raise AssertionError("正整数至少能被 1 整除。")
-
-
-def _grid_positions(
-    depth: int,
-    height: int,
-    width: int,
-    device: torch.device,
-    dtype: torch.dtype,
-) -> torch.Tensor:
-    """按展平顺序返回 ``(D×H×W,3)`` 的 ZYX 网格坐标。"""
-
-    axes = [torch.arange(size, device=device, dtype=dtype) for size in (depth, height, width)]
-    return torch.stack(torch.meshgrid(*axes, indexing="ij"), dim=-1).reshape(-1, 3) * 1.5
-
-
-def _apply_three_axis_rope(values: torch.Tensor, positions: torch.Tensor) -> torch.Tensor:
-    """把每个注意力头等分给 Z、Y、X 三轴并应用成对旋转。"""
-
-    axis_channels = values.shape[-1] // 3
-    if axis_channels % 2 != 0:
-        raise ValueError("每个空间轴的旋转位置编码通道必须为偶数。")
-    rotated_parts = []
-    frequency_index = torch.arange(
-        axis_channels // 2,
-        device=values.device,
-        dtype=torch.float32,
-    )
-    inverse_frequency = torch.exp(
-        -math.log(100.0) * frequency_index / max(axis_channels // 2, 1)
-    ).to(dtype=values.dtype)
-    for axis, part in enumerate(values.split(axis_channels, dim=-1)):
-        angles = positions[:, axis, None] * inverse_frequency[None, :]
-        cosine = angles.cos()[None, None]
-        sine = angles.sin()[None, None]
-        even = part[..., 0::2]
-        odd = part[..., 1::2]
-        rotated = torch.stack(
-            (even * cosine - odd * sine, even * sine + odd * cosine),
-            dim=-1,
-        ).flatten(-2)
-        rotated_parts.append(rotated)
-    return torch.cat(rotated_parts, dim=-1)

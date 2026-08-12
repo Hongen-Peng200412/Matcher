@@ -21,7 +21,7 @@ from .raunet import RaUnetBackbone
 
 
 class CandidateEncoderOutput(TypedDict):
-    """候选输出：``candidate_embedding`` 是 ``(B,D)`` 候选表示；``class_logits`` 是 ``(B,6)`` 六分类分数；``ligand_area_logits`` 是 ``(B,48,48,48)`` 配体区域分数；``binding_area_logits`` 是 ``(B,48,48,48)`` 结合区域分数；``voxel_features`` 是 ``(B,C_v,48,48,48)`` RAUNet 特征。"""
+    """令 ``B/D/C_v`` 为批次、模型宽度和体素特征通道：``candidate_embedding`` 是 ``(B,D)`` 候选表示；``class_logits`` 是 ``(B,6)`` 六分类分数；``ligand_area_logits`` 是 ``(B,48,48,48)`` 配体区域分数；``binding_area_logits`` 是 ``(B,48,48,48)`` 结合区域分数；``voxel_features`` 是 ``(B,C_v,48,48,48)`` RAUNet 特征。"""
 
     candidate_embedding: torch.Tensor
     class_logits: torch.Tensor
@@ -101,10 +101,9 @@ class CandidateEncoder(nn.Module):
         self.binding_area_head = VoxelBinaryHead(config.voxel_feature_channels)
 
     def forward(self, batch: CandidateBatch) -> CandidateEncoderOutput:
-        """返回六分类、两个局部区域 logits 和供身份匹配复用的候选表示。"""
+        """读取 ``voxel_input``、A/P/V/PP token/掩码及 V/PP ZYX 索引，返回 ``CandidateEncoderOutput`` 中的候选表示、六分类、两个区域分数和体素特征。"""
 
-        # 磁盘缓存固定为 float16；CPU 测试和未启用 autocast 的推理需要显式与
-        # 主干参数对齐，GPU 自动混合精度仍可在算子内部选择 BF16/FP16。
+        # 磁盘缓存是 float16；显式对齐主干参数 dtype 以兼容 CPU 测试，GPU autocast 仍可在算子内选择 BF16/FP16。
         voxel_input = batch["voxel_input"].to(
             dtype=self.voxel_backbone.input_projection.weight.dtype
         )

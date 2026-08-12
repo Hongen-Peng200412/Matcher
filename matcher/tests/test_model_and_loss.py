@@ -15,7 +15,13 @@ from matcher.manifest import build_manifest
 from matcher.model import CandidateEncoder, ClosedSetMatcher, MatcherModelConfig
 from matcher.model.config import AggregationName
 from matcher.model.fusion import CandidateConditionedAggregator
-from matcher.model.ligand_matcher import IdentityEncoder, SelfExcludingInventoryAttention
+from matcher.model.fusion import gather_voxel_features
+from matcher.model.ligand_matcher import (
+    IdentityEncoder,
+    IdentityRepresentations,
+    IdentityScorer,
+    SelfExcludingInventoryAttention,
+)
 from matcher.model.raunet import RaUnetBackbone
 
 from .factories import build_synthetic_roots
@@ -75,6 +81,10 @@ def test_candidate_encoder_shapes_and_pp_cross_attention_zero_initialization(tmp
     mask = torch.tensor([[True, True, True], [True, False, False]])
     increment = aggregator.branches["pp"](query, tokens, mask)
     assert torch.count_nonzero(increment) == 0
+    increment.sum().backward()
+    pp_output_gradient = aggregator.branches["pp"].output.weight.grad
+    assert pp_output_gradient is not None
+    assert torch.count_nonzero(pp_output_gradient) > 0
 
 
 def test_closed_set_matcher_forward_and_loss_are_finite(tmp_path) -> None:
@@ -253,3 +263,47 @@ def test_identity_encoder_rejects_duplicate_graph_for_one_identity(tmp_path) -> 
     encoder = IdentityEncoder(_small_config()).eval()
     with pytest.raises(ValueError, match="恰好对应一张"):
         encoder(batch)
+
+
+def test_identity_graph_and_inventory_scores_start_as_exact_zero_increments() -> None:
+    """配体图和清单分支本身保持可学，但其打分出口门在初始化时严格为零。"""
+
+    scorer = IdentityScorer(model_dim=16, dropout=0.0).train()
+    candidate = torch.randn(2, 16)
+    representations = cast(
+        IdentityRepresentations,
+        {
+            "native": torch.randn(2, 3, 16),
+            "graph": torch.randn(2, 3, 16),
+            "inventory": torch.randn(2, 3, 16),
+        },
+    )
+    mask = torch.ones((2, 3), dtype=torch.bool)
+    native_only = scorer.native(candidate, representations["native"])
+    logits = scorer(candidate, representations, mask)
+    assert torch.equal(logits, native_only)
+    logits.sum().backward()
+    assert scorer.graph_gate.grad is not None
+    assert scorer.inventory_gate.grad is not None
+    assert torch.isfinite(scorer.graph_gate.grad)
+    assert torch.isfinite(scorer.inventory_gate.grad)
+
+
+def test_model_config_and_voxel_gather_reject_invalid_contracts() -> None:
+    """非正注意力头、非正 RAUNet 宽度和有效 token 越界索引都应尽早拒绝。"""
+
+    values = _small_config().to_dict()
+    values["attention_heads"] = 0
+    with pytest.raises(ValueError, match="attention_heads"):
+        MatcherModelConfig.from_dict(values)
+    values = _small_config().to_dict()
+    values["raunet_planes"] = [4, 16, 16, 16, 16, 16, 8, 8, 0]
+    with pytest.raises(ValueError, match="raunet_planes"):
+        MatcherModelConfig.from_dict(values)
+
+    volume = torch.zeros((1, 2, 4, 4, 4))
+    indices = torch.tensor([[[9, 0, 0]]])
+    with pytest.raises(ValueError, match="超出"):
+        gather_voxel_features(volume, indices, torch.tensor([[True]]))
+    padded = gather_voxel_features(volume, indices, torch.tensor([[False]]))
+    assert torch.count_nonzero(padded) == 0

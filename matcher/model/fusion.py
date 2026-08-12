@@ -1,4 +1,4 @@
-"""编码 A/P/V/PP 原始 token，并以 ``MeanMaxAggregator`` 或 ``CandidateConditionedAggregator`` 返回候选表示。"""
+"""编码 A/P/V/PP 原始 token，并以 ``MeanMaxAggregator`` 或 ``CandidateConditionedAggregator`` 返回 ``(B,D)`` 候选表示。符号 ``B/N/F/D/C/H`` 分别表示批次、token 数、原特征宽度、模型宽度、体素通道和注意力头数。"""
 
 from __future__ import annotations
 
@@ -72,7 +72,7 @@ def _masked_mean_max(tokens: torch.Tensor, mask: torch.Tensor) -> tuple[torch.Te
 
 
 class TokenProjector(nn.Module):
-    """逐 token 投影一种原始模态。构造参数为输入宽度、模型宽度和 dropout；前向输入 ``(B,N,F)`` 与 ``(B,N)`` 掩码，输出 ``(B,N,D)``。"""
+    """逐 token 投影一种原始模态。构造参数为输入宽度、模型宽度和 dropout；前向输入 ``(B,N,F)`` 与 ``(B,N)`` 布尔掩码，真值表示有效 token，输出 dtype 由投影算子决定的 ``(B,N,D)``。"""
 
     def __init__(self, input_dim: int, model_dim: int, dropout: float) -> None:
         super().__init__()
@@ -124,7 +124,7 @@ class CandidateCrossAttention(nn.Module):
         tokens: torch.Tensor,
         mask: torch.Tensor,
     ) -> torch.Tensor:
-        """返回 ``(B,D)`` 模态增量；无有效 token 的样本严格返回零。"""
+        """在每个 ``B/H`` 内对 query 和 key 的 ``D/H`` 通道求点积，对 token 轴 ``N`` 做 softmax 并求 value 加权和；``(B,1,1,N)`` 有效掩码向 ``H`` 广播，无有效 token 时返回 ``(B,D)`` 严格零增量。"""
 
         if candidate_query.ndim != 2 or candidate_query.shape[1] != self.model_dim:
             raise ValueError("candidate_query 必须为 (B,model_dim)。")
