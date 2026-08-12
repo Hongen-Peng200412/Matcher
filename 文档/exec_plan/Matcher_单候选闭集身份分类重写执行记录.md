@@ -37,6 +37,8 @@
 | `aa19aa9` | 将 seen/unseen 冻结为语言模型特异的训练正目标契约，并收紧配体图 residue_id 范围 |
 | `aec0388` | 增加正式训练、评估、checkpoint、严格 JSON、七项 YAML 与边界回归测试 |
 | `b756ab6` | 接通 v2 清单与首轮实验脚本，并排除安全同步中的本地静态检查缓存 |
+| `85a5fd0` | 在每个阶段首个真实 global optimizer step 后记录显存、梯度与耗时验收事件 |
+| `354b489` | 消除 BRANCHED 独立 CCD 参考坐标系产生的跨组件伪几何，并记录 v2 清单审计 |
 
 ## 阶段审查与修复证据
 
@@ -132,7 +134,25 @@ bash 训练与运行/submit_task.sh \
   --selection-seed 3407
 ```
 
-- Job `340942` 使用 `cpu/cpu96`、16 核 CPU；2026-08-13 06:07（Asia/Shanghai）开始运行。该任务没有 `pre_hold` 或 `after_hold`，完成后自动释放 CPU allocation。
+- Job `340942` 使用 `cpu/cpu96`、16 核 CPU，运行 `00:11:20` 后以退出码 0 完成。该任务没有 `pre_hold` 或 `after_hold`，CPU allocation 已自动释放。
+
+## v2 清单与只读数据审计
+
+`closed_set_v2` 重新物化的候选数严格等于体素缓存口径：train `14,312`、validation `6,495`、calibration `3,363`。三个划分的 PDB 交集均为 0；发现/纳入/排除 PDB 分别是 train `550/493/57`、validation `200/183/17`、calibration `100/86/14`。全部 88 个排除项都是用户允许的 `blob_exceed`，没有 `missing_required_product` 被静默纳入排除。
+
+| 划分 | background | ion | nucleotide_like | peptide_like | small_molecule | sugar |
+|---|---:|---:|---:|---:|---:|---:|
+| train | 10,120 | 1,371 | 17 | 9 | 1,561 | 1,234 |
+| validation | 5,023 | 576 | 3 | 8 | 551 | 334 |
+| calibration | 2,489 | 307 | 3 | 0 | 320 | 244 |
+
+validation 含全部六类，因此首轮宏 F1 不会因缺类改变分母。calibration 不含 `peptide_like`；该事实不影响训练或模型选择，但最终一次保留评估必须同时报告固定六类口径与真实支持数，不能把缺类解释为模型能力。
+
+清单含 train/validation/calibration 身份记录 `724/297/111`。MoLFormer 三个划分全部有表示；SMI-TED Light 289M 在 validation 与 calibration 各缺 2 个身份表示，缺失只影响相应 occurrence/身份监督，不排除 PDB。两种语言模型的 `language_multi_smiles_identity_count` 都为 0，即当前纳入数据没有出现同一 `object_key` 的多个有效模型 SMILES；实现仍保留确定性固定选择契约。按训练可监督小分子正目标冻结的 seen 身份数，MoLFormer 与 SMI-TED 在 train/validation/calibration 都分别为 `583/178/69`。
+
+16 个跨 train/validation 索引的确定性候选全部与正式 float16 NPY 逐元素一致。量化前后最大绝对误差为 `0.0078086853`，平均绝对误差为 `2.0170709e-05`，均方根误差为 `8.5542191e-05`；首轮接受该磁盘量化，不改变体素 schema。
+
+386 个去重 LigandObject 都有图文件，`residue_id` 范围为 `[1,2]`，不超出 512 类嵌入表。审计发现 7 个由多个 Chemical Component Dictionary（CCD，化学组件字典）组件组成的 BRANCHED 图，各有一条跨 `residue_id` 原子组化学键；因为两套 CCD `ref_pos` 是独立参考坐标系，旧距离落在 `5.3021–70.4320 Å`，中位数 `12.8629 Å`，属于确定的伪几何。为不让服务器排卡等待用户即时回复，先按已授权的临时决策处理：节点参考坐标按 `residue_id` 原子组分别中心化；同一组内的键保留距离；不同组之间的化学键保留拓扑与键型，但距离通道置零。该修复不改变节点/边维度，新增回归测试，并在本记录中等待用户事后复核。
 
 ## 验证命令
 
@@ -143,11 +163,11 @@ python -m pytest matcher/tests -q
 git diff --check
 ```
 
-模型审查修复时的阶段证据是 mypy 31 个源文件零问题、pytest `22 passed`、compileall 与 `git diff --check` 通过。训练、测评、配置与产物边界完成后的最终冻结结果是 mypy 32 个源文件零问题、pytest `33 passed`、compileall、7 个 shell 的 `bash -n`、七个 YAML 正式解析与 `git diff --check` 通过；两组结果都保留，不用新结果覆盖旧阶段证据。
+模型审查修复时的阶段证据是 mypy 31 个源文件零问题、pytest `22 passed`、compileall 与 `git diff --check` 通过。训练、测评、配置与产物边界完成后的冻结结果是 mypy 32 个源文件零问题、pytest `33 passed`、compileall、7 个 shell 的 `bash -n`、七个 YAML 正式解析与 `git diff --check` 通过。BRANCHED 伪几何修复后的当前结果是 pytest `34 passed`、mypy 32 个源文件零问题、compileall 与 `git diff --check` 通过；三组结果都保留，不用新结果覆盖旧阶段证据。
 
 ## 待执行与待复核项
 
-- 等待 Job `340942` 完成 v2 清单，并审计类别计数、排除原因、语言表示覆盖率、residue_id 范围和 float16 量化误差；v1 体素缓存已经完整生成。
+- v2 清单与首轮数据审计已经完成；BRANCHED 伪几何修复已通过独立科学与严格表达审查，待重新安全同步并冻结放卡前源码哈希。
 - `pp_top_k=1024`、六分类 `class_weights=null`、区域辅助损失权重 `0.10/0.10` 和完整 Matcher validation 三指标等权选模是首轮显式起点，需根据清单摘要和首个稳定实验记录复核。
-- GPU 资源实际分配后，先在保留 allocation 的锁机制中完成一个 A100 与一个 A800 真实数据前向/反向/显存验收，再让对应正式命令持续运行。若 batch size 超出显存，按用户确认的顺序先将 RAUNet 通道降到原宽度的 3/4，再降低物理批量并增加梯度累积，始终保持 global batch 32。
+- GPU 资源实际分配后，删除 `pre_lock` 会直接启动正式命令；每个阶段的首个真实 global optimizer step 同时作为连续验收点。只有完成有限损失与梯度检查、参数更新和 CUDA 同步后，程序才打印一次 `first_global_step_accepted`，其中含 global batch、有效身份数、裁剪前梯度范数、峰值显存和首步计算耗时。这样不在验收与正式训练之间闲置 GPU；若 OOM 或非有限数值失败，程序不会打印成功事件，`after_hold` 仍会保留 allocation 供修订后重试。若 batch size 超出显存，按用户确认的顺序先将 RAUNet 通道降到原宽度的 3/4，再降低物理批量并增加梯度累积，始终保持 global batch 32。
 - 首个完整训练若超过 16 小时，只暂停后续随机种子；不中止当前训练，不设任何时间上限。

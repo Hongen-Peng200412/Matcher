@@ -109,6 +109,7 @@ def test_manifest_and_dataset_keep_pdb_but_drop_missing_smi_occurrence(tmp_path)
     assert batch["voxel_input"].shape == (1, 105, 48, 48, 48)
     assert batch["identity_mask"].tolist() == [[True]]
     assert batch["graph_edge_index"].shape == (2, 2)
+    assert batch["graph_edge_features"][:, -1].tolist() == pytest.approx([0.15, 0.15])
     sampler = ShuffledBatchSampler(
         dataset,
         batch_size=1,
@@ -155,6 +156,44 @@ def test_ligand_graph_rejects_residue_id_outside_embedding_table(tmp_path) -> No
     store = LigandGraphStore(roots.data_root, cache_bytes=0)
     with pytest.raises(ValueError, match="residue_id.*512"):
         store.load("CCD:LIG")
+
+
+def test_branched_graph_does_not_invent_cross_residue_geometry(tmp_path) -> None:
+    """多 CCD 组件配体按 ``residue_id`` 原子组中心化，跨组化学键距离必须为零。"""
+
+    roots = build_synthetic_roots(tmp_path)
+    graph_path = roots.data_root / "ligand_objects/CCD_LIG.npz"
+    with np.load(graph_path, allow_pickle=False) as archive:
+        atoms = archive["atoms"].copy()
+        bonds = archive["bonds"].copy()
+        name = archive["name"].copy()
+    expanded_atoms = np.zeros(4, dtype=atoms.dtype)
+    expanded_atoms["element"] = 6
+    expanded_atoms["is_present"] = True
+    expanded_atoms["residue_id"] = [1, 1, 2, 2]
+    expanded_atoms["ref_pos"] = [
+        [10.0, 0.0, 0.0],
+        [12.0, 0.0, 0.0],
+        [-20.0, 0.0, 0.0],
+        [-16.0, 0.0, 0.0],
+    ]
+    expanded_bonds = np.zeros(3, dtype=bonds.dtype)
+    expanded_bonds["atom_1"] = [0, 1, 2]
+    expanded_bonds["atom_2"] = [1, 2, 3]
+    expanded_bonds["type"][:, 0] = True
+    np.savez_compressed(
+        graph_path,
+        atoms=expanded_atoms,
+        bonds=expanded_bonds,
+        name=name,
+    )
+
+    graph = LigandGraphStore(roots.data_root, cache_bytes=0).load("CCD:LIG")
+    np.testing.assert_allclose(
+        graph.node_continuous[:, -3:],
+        [[-0.1, 0.0, 0.0], [0.1, 0.0, 0.0], [-0.2, 0.0, 0.0], [0.2, 0.0, 0.0]],
+    )
+    np.testing.assert_allclose(graph.edge_features[:, -1], [0.2, 0.0, 0.4] * 2)
 
 
 def test_shuffled_sampler_ignores_pdb_groups_and_is_epoch_deterministic() -> None:

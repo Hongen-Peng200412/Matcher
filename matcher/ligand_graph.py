@@ -16,9 +16,12 @@ class LigandGraph:
     """保存一个去重配体身份的节点类别、连续属性和双向化学键。
 
     ``element/charge/residue_id`` 是对齐到 N 个原子的整数类别。15 维节点连续
-    特征依次为 chirality(7)、in_ring(4)、is_present(1) 和中心化后除以
-    10 Å 的参考 XYZ(3)。``edge_index`` 为 ``(2,E)`` 双向端点；10 维边特征
-    依次为 bond type(5)、in_ring(4) 和原子间距离除以 10 Å(1)。
+    特征依次为 chirality(7)、in_ring(4)、is_present(1) 和按 ``residue_id`` 原子组独立
+    中心化后除以 10 Å 的参考 XYZ(3)。``edge_index`` 为 ``(2,E)`` 双向端点；
+    10 维边特征依次为 bond type(5)、in_ring(4) 和同一 ``residue_id`` 原子组内
+    距离除以 10 Å(1)。由多个 Chemical Component Dictionary（CCD，化学组件字典）
+    组件组成的 BRANCHED 配体，其不同 ``residue_id`` 原子组之间的化学键保留拓扑与
+    键型，但距离为零，因为各 CCD 组件的参考坐标系彼此独立。
     """
 
     element: np.ndarray
@@ -87,7 +90,15 @@ def _load_ligand_graph(path: Path, object_key: str) -> LigandGraph:
     residue_id = np.asarray(atoms["residue_id"], dtype=np.int64)
     if np.any(residue_id < 0) or np.any(residue_id >= 512):
         raise ValueError(f"{path}:atoms.residue_id 必须位于 [0,512)。")
-    centered_position = (reference_position - reference_position.mean(axis=0, keepdims=True)) / 10.0
+    # float32, (N,3)，每个 residue_id 原子组分别减去组内质心并除以 10 Å。
+    centered_position = np.empty_like(reference_position)
+    for current_residue_id in np.unique(residue_id):
+        # bool, (N,)，True 表示原子属于当前 residue_id 原子组。
+        residue_mask = residue_id == current_residue_id
+        centered_position[residue_mask] = (
+            reference_position[residue_mask]
+            - reference_position[residue_mask].mean(axis=0, keepdims=True)
+        ) / 10.0
     node_continuous = np.concatenate(
         (
             np.asarray(atoms["chirality"], dtype=np.float32),
@@ -107,7 +118,14 @@ def _load_ligand_graph(path: Path, object_key: str) -> LigandGraph:
         edge_index = np.concatenate((undirected, undirected[::-1]), axis=1)
         bond_type = np.asarray(bonds["type"], dtype=np.float32)
         bond_ring = np.asarray(bonds["in_ring"], dtype=np.float32)
-        distance = np.linalg.norm(reference_position[source] - reference_position[target], axis=1)
+        distance = np.zeros(source.shape[0], dtype=np.float32)
+        # bool, (K,)，True 表示原始化学键两端属于同一 residue_id 原子组，参考距离有效。
+        distance_valid = residue_id[source] == residue_id[target]
+        distance[distance_valid] = np.linalg.norm(
+            reference_position[source[distance_valid]]
+            - reference_position[target[distance_valid]],
+            axis=1,
+        )
         one_direction = np.concatenate((bond_type, bond_ring, (distance / 10.0)[:, None]), axis=1)
         edge_features = np.concatenate((one_direction, one_direction), axis=0)
     else:
