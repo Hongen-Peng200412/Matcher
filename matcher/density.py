@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import numpy as np
-from scipy import ndimage
+from scipy import ndimage  # type: ignore[import-untyped]
 
 
 DENSITY_CHANNEL_NAMES = tuple(

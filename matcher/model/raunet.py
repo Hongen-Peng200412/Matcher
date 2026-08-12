@@ -1,8 +1,7 @@
-"""为候选中心 ``48³`` 体素输入提供独立的 RAUNet 主干。"""
+"""由 ``RaUnetBackbone`` 把候选中心 ``(B,105,48,48,48)`` 体素输入编码为 ``(B,C_v,48,48,48)`` 特征。"""
 
 from __future__ import annotations
 
-import contextlib
 import math
 from collections.abc import Sequence
 
@@ -78,6 +77,7 @@ class Res2NetBlock3d(nn.Module):
             nn.Conv3d(channels, channels, kernel_size=3, padding=1, bias=False)
             for _ in range(scale - 1)
         )
+        self.pre_mix_norm = nn.InstanceNorm3d(channels * scale, affine=True)
         self.mix = nn.Sequential(
             nn.Conv3d(channels * scale, channels, kernel_size=1, bias=False),
             nn.InstanceNorm3d(channels, affine=True),
@@ -92,7 +92,8 @@ class Res2NetBlock3d(nn.Module):
         for index, chunk in enumerate(chunks[1:]):
             source = chunk if index == 0 else chunk + outputs[-1]
             outputs.append(self.hierarchical[index](source))
-        mixed = self.mix(self.activation(torch.cat(outputs, dim=1)))
+        concatenated = self.pre_mix_norm(torch.cat(outputs, dim=1))
+        mixed = self.mix(self.activation(concatenated))
         return self.activation(mixed + inputs)
 
 
@@ -129,11 +130,10 @@ class AttentionGate3d(nn.Module):
         skip_channels: int,
         coarse_channels: int,
         output_channels: int,
-        attention_channels: int = 64,
-        maximum_heads: int = 8,
     ) -> None:
         super().__init__()
-        head_count = _largest_divisor_not_above(coarse_channels, maximum_heads)
+        attention_channels = 64
+        head_count = _largest_divisor_not_above(coarse_channels, 8)
         self.head_count = head_count
         self.value_channels_per_head = coarse_channels // head_count
         self.query = nn.Sequential(
@@ -182,8 +182,9 @@ class AttentionGate3d(nn.Module):
 class GatedTransition(nn.Module):
     """在瓶颈 token 上执行带乘法门的通道前馈变换。"""
 
-    def __init__(self, channels: int, expansion: int = 3) -> None:
+    def __init__(self, channels: int) -> None:
         super().__init__()
+        expansion = 3
         self.left = nn.Linear(channels, channels * expansion, bias=False)
         self.right = nn.Linear(channels, channels * expansion, bias=False)
         self.output = nn.Linear(channels * expansion, channels, bias=False)
@@ -199,7 +200,7 @@ class GatedTransition(nn.Module):
 class RotarySelfAttention3d(nn.Module):
     """在 RAUNet 最深的三维规则网格上执行旋转位置编码自注意力。"""
 
-    def __init__(self, channels: int, head_count: int = 8) -> None:
+    def __init__(self, channels: int, head_count: int) -> None:
         super().__init__()
         if channels % head_count != 0:
             raise ValueError("瓶颈通道数必须能被注意力头数整除。")
@@ -252,12 +253,12 @@ class RaUnetBackbone(nn.Module):
 
     def __init__(
         self,
-        input_channels: int = 105,
-        feature_channels: int = 48,
-        planes: Sequence[int] = DEFAULT_PLANES,
-        recycle_iterations: int = 3,
-        gradient_checkpointing: bool = True,
-        bottleneck_attention_layers: int = 4,
+        input_channels: int,
+        feature_channels: int,
+        planes: Sequence[int],
+        recycle_iterations: int,
+        gradient_checkpointing: bool,
+        bottleneck_attention_layers: int,
     ) -> None:
         super().__init__()
         plane_values = tuple(int(value) for value in planes)
@@ -268,6 +269,8 @@ class RaUnetBackbone(nn.Module):
         enc0, enc1, enc2, enc3, bottleneck, dec3, dec2, dec1, dec0 = plane_values
         if not (enc3 == bottleneck == dec3):
             raise ValueError("当前 RAUNet 契约要求 enc3、bottleneck 和 dec3 通道相同。")
+        if dec0 != enc0:
+            raise ValueError("原 RAUNet 直接回收 decoded0，因此 dec0 必须等于 enc0。")
         self.input_channels = input_channels
         self.feature_channels = feature_channels
         self.planes = plane_values
@@ -304,7 +307,6 @@ class RaUnetBackbone(nn.Module):
         self.multiscale5 = nn.Conv3d(dec0, branch_channels, kernel_size=5, padding=2)
         self.multiscale7 = nn.Conv3d(dec0, branch_channels, kernel_size=7, padding=3)
         self.feature_projection = nn.Conv3d(branch_channels * 3, feature_channels, kernel_size=3, padding=1)
-        self.recycle_projection = nn.Conv3d(feature_channels, enc0, kernel_size=1)
 
     def forward(self, voxel_input: torch.Tensor) -> torch.Tensor:
         """返回 ``(B,C_feature,48,48,48)`` 的最高分辨率体素特征。"""
@@ -319,19 +321,25 @@ class RaUnetBackbone(nn.Module):
             device=voxel_input.device,
             dtype=voxel_input.dtype,
         )
-        final: torch.Tensor | None = None
+        final_feature: torch.Tensor | None = None
         for iteration in range(self.recycle_iterations):
             compute_gradients = iteration == self.recycle_iterations - 1
-            context = contextlib.nullcontext() if compute_gradients else torch.no_grad()
-            with context:
-                final = self._forward_once(voxel_input, recycle)
-                recycle = self.recycle_projection(final).detach()
-        if final is None:
+            if compute_gradients:
+                final_feature, _ = self._forward_once(voxel_input, recycle)
+            else:
+                with torch.no_grad():
+                    _, decoded0 = self._forward_once(voxel_input, recycle)
+                recycle = decoded0.detach()
+        if final_feature is None:
             raise AssertionError("至少应执行一次 RAUNet recycle。")
-        return final
+        return final_feature
 
-    def _forward_once(self, voxel_input: torch.Tensor, recycle: torch.Tensor) -> torch.Tensor:
-        """执行单轮编码、瓶颈注意力、解码和多尺度特征投影。"""
+    def _forward_once(
+        self,
+        voxel_input: torch.Tensor,
+        recycle: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """返回 ``(B,C_v,D,H,W)`` 最终特征与供下轮回收的 ``(B,C_0,D,H,W)`` decoded0。"""
 
         fused = self.input_activation(
             self.input_norm(self.input_projection(voxel_input)) + self.recycle_norm(recycle)
@@ -356,7 +364,7 @@ class RaUnetBackbone(nn.Module):
                 dim=1,
             )
         )
-        return self.feature_projection(multiscale)
+        return self.feature_projection(multiscale), decoded0
 
     def _heavy(self, module: nn.Module, *inputs: torch.Tensor) -> torch.Tensor:
         """训练时按配置对显存占用较大的模块启用激活重计算。"""
@@ -366,10 +374,10 @@ class RaUnetBackbone(nn.Module):
         return checkpoint(module, *inputs, use_reentrant=False, preserve_rng_state=False)
 
 
-def _res2_stack(channels: int, scale: int, layer_count: int = 4) -> nn.Sequential:
+def _res2_stack(channels: int, scale: int) -> nn.Sequential:
     """构造固定四层的同宽 Res2Net 解码段。"""
 
-    return nn.Sequential(*(Res2NetBlock3d(channels, scale) for _ in range(layer_count)))
+    return nn.Sequential(*(Res2NetBlock3d(channels, scale) for _ in range(4)))
 
 
 def _upsample_add(coarse: torch.Tensor, skip: torch.Tensor) -> torch.Tensor:

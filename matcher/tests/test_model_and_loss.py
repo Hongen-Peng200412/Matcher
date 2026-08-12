@@ -2,23 +2,26 @@
 
 from __future__ import annotations
 
-import json
 from typing import cast
 
+import pytest
 import torch
 
 from matcher.batching import collate_candidates
 from matcher.candidate_data import CandidateDataset
 from matcher.contracts import CandidateBatch, CandidateItem
-from matcher.losses import LossWeights, compute_matcher_loss
+from matcher.losses import IdentityLossVariant, LossWeights, compute_matcher_loss
 from matcher.manifest import build_manifest
 from matcher.model import CandidateEncoder, ClosedSetMatcher, MatcherModelConfig
+from matcher.model.config import AggregationName
 from matcher.model.fusion import CandidateConditionedAggregator
+from matcher.model.ligand_matcher import IdentityEncoder, SelfExcludingInventoryAttention
+from matcher.model.raunet import RaUnetBackbone
 
 from .factories import build_synthetic_roots
 
 
-def _small_config(aggregation: str = "mean_max") -> MatcherModelConfig:
+def _small_config(aggregation: AggregationName = "mean_max") -> MatcherModelConfig:
     """返回适合 CPU 契约测试的窄 RAUNet，空间层级与正式模型相同。"""
 
     return MatcherModelConfig(
@@ -27,7 +30,7 @@ def _small_config(aggregation: str = "mean_max") -> MatcherModelConfig:
         attention_heads=4,
         dropout=0.0,
         voxel_feature_channels=8,
-        raunet_planes=(4, 16, 16, 16, 16, 16, 8, 8, 8),
+        raunet_planes=(4, 16, 16, 16, 16, 16, 8, 8, 4),
         recycle_iterations=1,
         gradient_checkpointing=False,
         bottleneck_attention_layers=1,
@@ -81,12 +84,15 @@ def test_closed_set_matcher_forward_and_loss_are_finite(tmp_path) -> None:
     model = ClosedSetMatcher(_small_config()).train()
     output = model(batch)
     assert output["identity_logits"].shape == (1, 1)
-    assert output["identity_embeddings"].shape == (1, 1, 16)
+    assert output["identity_native"].shape == (1, 1, 16)
+    assert output["identity_graph"].shape == (1, 1, 16)
+    assert output["identity_inventory"].shape == (1, 1, 16)
     loss = compute_matcher_loss(
         output,
         batch,
-        LossWeights(),
+        LossWeights(classification=1.0, ligand_area=0.1, binding_area=0.1, identity=1.0),
         identity_variant="oracle",
+        class_weights=None,
     )
     assert torch.isfinite(loss["total"])
     assert loss["identity_eligible_count"].item() == 1
@@ -98,11 +104,17 @@ def test_both_aggregators_accept_empty_modalities_without_nan(tmp_path) -> None:
     """真实数据常见 A/V 空集；弱聚合和强聚合都必须以零摘要稳定继续前向。"""
 
     original = _batch(tmp_path, "candidate_pretrain")
-    for aggregation in ("mean_max", "candidate_cross_attention"):
+    aggregations = cast(tuple[AggregationName, ...], ("mean_max", "candidate_cross_attention"))
+    for aggregation in aggregations:
         batch = cast(CandidateBatch, dict(original))
-        for name, width in (("a", 229), ("p", 116), ("v", 52), ("pp", 4)):
-            batch[f"{name}_tokens"] = torch.empty((1, 0, width), dtype=torch.float32)
-            batch[f"{name}_mask"] = torch.empty((1, 0), dtype=torch.bool)
+        batch["a_tokens"] = torch.empty((1, 0, 229), dtype=torch.float32)
+        batch["a_mask"] = torch.empty((1, 0), dtype=torch.bool)
+        batch["p_tokens"] = torch.empty((1, 0, 116), dtype=torch.float32)
+        batch["p_mask"] = torch.empty((1, 0), dtype=torch.bool)
+        batch["v_tokens"] = torch.empty((1, 0, 52), dtype=torch.float32)
+        batch["v_mask"] = torch.empty((1, 0), dtype=torch.bool)
+        batch["pp_tokens"] = torch.empty((1, 0, 4), dtype=torch.float32)
+        batch["pp_mask"] = torch.empty((1, 0), dtype=torch.bool)
         batch["v_index_zyx"] = torch.empty((1, 0, 3), dtype=torch.long)
         batch["pp_index_zyx"] = torch.empty((1, 0, 3), dtype=torch.long)
         model = CandidateEncoder(_small_config(aggregation)).eval()
@@ -129,7 +141,7 @@ def test_identity_variants_gate_only_numerator_and_joint_reaches_class_probabili
 
     class_gradient_norms: dict[str, float] = {}
     losses: dict[str, float] = {}
-    for variant in ("oracle", "detached", "joint"):
+    for variant in cast(tuple[IdentityLossVariant, ...], ("oracle", "detached", "joint")):
         class_logits = torch.zeros((3, 6), requires_grad=True)
         outputs = {
             "class_logits": class_logits,
@@ -142,6 +154,7 @@ def test_identity_variants_gate_only_numerator_and_joint_reaches_class_probabili
             cast(CandidateBatch, base_batch),
             weights,
             identity_variant=variant,
+            class_weights=None,
         )
         gradient = torch.autograd.grad(result["total"], class_logits, retain_graph=True)[0]
         class_gradient_norms[variant] = float(gradient.abs().sum())
@@ -154,3 +167,89 @@ def test_identity_variants_gate_only_numerator_and_joint_reaches_class_probabili
     # 初始 p_small=1/6，因此 detached 与 joint 数值相同，且都只是 oracle 分子的 1/6。
     assert abs(losses["detached"] - losses["joint"]) < 1e-7
     assert abs(losses["oracle"] / 6.0 - losses["joint"]) < 1e-7
+
+
+def test_identity_loss_without_eligible_candidate_stays_finite_with_padded_logits() -> None:
+    """没有身份监督时，补零身份的有限极小分数不得通过零乘法产生 NaN。"""
+
+    identity_logits = torch.full((2, 3), torch.finfo(torch.float32).min, requires_grad=True)
+    outputs = {
+        "class_logits": torch.zeros((2, 6), requires_grad=True),
+        "ligand_area_logits": torch.zeros((2, 1, 1, 1), requires_grad=True),
+        "binding_area_logits": torch.zeros((2, 1, 1, 1), requires_grad=True),
+        "identity_logits": identity_logits,
+    }
+    batch = cast(
+        CandidateBatch,
+        {
+            "class_target": torch.tensor([0, 4]),
+            "identity_target": torch.tensor([-1, -1]),
+            "ligand_area_target": torch.zeros((2, 1, 1, 1), dtype=torch.bool),
+            "binding_area_target": torch.zeros((2, 1, 1, 1), dtype=torch.bool),
+        },
+    )
+    result = compute_matcher_loss(
+        outputs,
+        batch,
+        LossWeights(classification=1.0, ligand_area=0.1, binding_area=0.1, identity=1.0),
+        identity_variant="joint",
+        class_weights=None,
+    )
+    assert torch.isfinite(result["identity"])
+    assert result["identity"].item() == 0.0
+    result["total"].backward()
+    assert identity_logits.grad is not None
+    assert torch.count_nonzero(identity_logits.grad) == 0
+
+
+def test_raunet_three_recycles_have_no_dead_trainable_parameters() -> None:
+    """三轮 recycle 直接回收 decoded0，最后一轮反向应覆盖每个可训练参数。"""
+
+    backbone = RaUnetBackbone(
+        input_channels=3,
+        feature_channels=4,
+        planes=(4, 16, 16, 16, 16, 16, 8, 8, 4),
+        recycle_iterations=3,
+        gradient_checkpointing=False,
+        bottleneck_attention_layers=1,
+    ).train()
+    output = backbone(torch.randn(1, 3, 48, 48, 48, requires_grad=True))
+    output.square().mean().backward()
+    missing = [name for name, parameter in backbone.named_parameters() if parameter.grad is None]
+    assert missing == []
+
+
+def test_single_identity_inventory_is_an_exact_zero_increment() -> None:
+    """单身份清单没有其他身份可读，上下文分支必须返回严格零。"""
+
+    inventory = SelfExcludingInventoryAttention(16, 4, 0.0).eval()
+    identities = torch.randn(2, 1, 16)
+    mask = torch.ones((2, 1), dtype=torch.bool)
+    with torch.no_grad():
+        enriched = inventory(identities, mask)
+    assert torch.count_nonzero(enriched) == 0
+
+
+def test_identity_encoder_rejects_duplicate_graph_for_one_identity(tmp_path) -> None:
+    """同一样本的同一身份若映射两张图，必须拒绝而不是静默覆盖。"""
+
+    original = _batch(tmp_path, "full_matcher")
+    batch = cast(CandidateBatch, dict(original))
+    node_count = int(original["graph_element"].shape[0])
+    batch["graph_to_sample"] = original["graph_to_sample"].repeat(2)
+    batch["graph_to_identity"] = original["graph_to_identity"].repeat(2)
+    batch["graph_element"] = original["graph_element"].repeat(2)
+    batch["graph_charge"] = original["graph_charge"].repeat(2)
+    batch["graph_residue_id"] = original["graph_residue_id"].repeat(2)
+    batch["graph_node_continuous"] = original["graph_node_continuous"].repeat(2, 1)
+    batch["graph_node_graph_index"] = torch.cat(
+        (original["graph_node_graph_index"], original["graph_node_graph_index"] + 1)
+    )
+    batch["graph_edge_index"] = torch.cat(
+        (original["graph_edge_index"], original["graph_edge_index"] + node_count),
+        dim=1,
+    )
+    batch["graph_edge_features"] = original["graph_edge_features"].repeat(2, 1)
+    encoder = IdentityEncoder(_small_config()).eval()
+    with pytest.raises(ValueError, match="恰好对应一张"):
+        encoder(batch)

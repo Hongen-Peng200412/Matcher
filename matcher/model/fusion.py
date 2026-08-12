@@ -1,4 +1,4 @@
-"""编码 A/P/V/PP 原始 token，并提供弱聚合与候选条件交叉注意力。"""
+"""编码 A/P/V/PP 原始 token，并以 ``MeanMaxAggregator`` 或 ``CandidateConditionedAggregator`` 返回候选表示。"""
 
 from __future__ import annotations
 
@@ -20,8 +20,59 @@ MODALITY_INPUT_DIMS = {
 }
 
 
+def gather_voxel_features(
+    volume: torch.Tensor,
+    index_zyx: torch.Tensor,
+    mask: torch.Tensor,
+) -> torch.Tensor:
+    """按中心 ``48³`` 的整数 ZYX 索引读取 V/PP 特征，返回 ``(B,N,C)``。"""
+
+    if volume.ndim != 5 or index_zyx.ndim != 3 or index_zyx.shape[-1] != 3:
+        raise ValueError("volume 必须为 (B,C,D,H,W)，index_zyx 必须为 (B,N,3)。")
+    if index_zyx.shape[:2] != mask.shape or index_zyx.shape[0] != volume.shape[0]:
+        raise ValueError("体素索引、掩码和特征图的批次/token 轴不一致。")
+    valid_indices = index_zyx[mask]
+    if valid_indices.numel() and (
+        torch.any(valid_indices < 0)
+        or torch.any(valid_indices[:, 0] >= volume.shape[2])
+        or torch.any(valid_indices[:, 1] >= volume.shape[3])
+        or torch.any(valid_indices[:, 2] >= volume.shape[4])
+    ):
+        raise ValueError("V/PP 的有效 ZYX 索引超出 U-Net 特征图。")
+    safe = index_zyx.clamp_min(0)
+    safe_z = safe[..., 0].clamp_max(volume.shape[2] - 1)
+    safe_y = safe[..., 1].clamp_max(volume.shape[3] - 1)
+    safe_x = safe[..., 2].clamp_max(volume.shape[4] - 1)
+    batch = torch.arange(volume.shape[0], device=volume.device)[:, None]
+    channel_last = volume.permute(0, 2, 3, 4, 1)
+    selected = channel_last[batch, safe_z, safe_y, safe_x]
+    return selected * mask[..., None].to(dtype=selected.dtype)
+
+
+def _masked_mean_max(tokens: torch.Tensor, mask: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    """对 ``(B,N,D)`` 变长 token 返回均值和最大值，空集合返回两个 ``(B,D)`` 零张量。"""
+
+    if tokens.ndim != 3 or tokens.shape[:2] != mask.shape:
+        raise ValueError("tokens/mask 形状不一致。")
+    if tokens.shape[1] == 0:
+        empty = torch.zeros(
+            (tokens.shape[0], tokens.shape[2]),
+            device=tokens.device,
+            dtype=tokens.dtype,
+        )
+        return empty, empty
+    float_mask = mask[..., None].to(dtype=tokens.dtype)
+    mean = (tokens * float_mask).sum(dim=1) / float_mask.sum(dim=1).clamp_min(1.0)
+    maximum = tokens.masked_fill(~mask[..., None], torch.finfo(tokens.dtype).min).amax(dim=1)
+    maximum = torch.where(mask.any(dim=1, keepdim=True), maximum, torch.zeros_like(maximum))
+    return mean, maximum
+
+
+# ================================================================================================
+
+
 class TokenProjector(nn.Module):
-    """逐 token 投影一种原始模态，不改变 token 数和有效掩码。"""
+    """逐 token 投影一种原始模态。构造参数为输入宽度、模型宽度和 dropout；前向输入 ``(B,N,F)`` 与 ``(B,N)`` 掩码，输出 ``(B,N,D)``。"""
 
     def __init__(self, input_dim: int, model_dim: int, dropout: float) -> None:
         super().__init__()
@@ -38,18 +89,19 @@ class TokenProjector(nn.Module):
 
         if tokens.ndim != 3 or mask.shape != tokens.shape[:2]:
             raise ValueError("tokens 必须为 (B,N,F)，mask 必须为对应 (B,N)。")
-        return self.projection(tokens) * mask[..., None].to(dtype=tokens.dtype)
+        projected = self.projection(tokens)
+        return projected * mask[..., None].to(dtype=projected.dtype)
 
 
 class CandidateCrossAttention(nn.Module):
-    """以候选摘要为唯一 query，从一种完整模态 token 集读取增量。"""
+    """以候选摘要查询一种模态。构造参数为模型宽度、头数、dropout 和零输出开关；前向输入 ``(B,D)`` query、``(B,N,D)`` token 与真值表示有效 token 的 ``(B,N)`` 掩码，输出 ``(B,D)`` 增量。"""
 
     def __init__(
         self,
         model_dim: int,
         head_count: int,
         dropout: float,
-        zero_output: bool = False,
+        zero_output: bool,
     ) -> None:
         super().__init__()
         if model_dim % head_count != 0:
@@ -107,7 +159,7 @@ class CandidateCrossAttention(nn.Module):
 
 
 class MeanMaxAggregator(nn.Module):
-    """对四种模态分别取掩码均值和最大值，再与候选摘要融合。"""
+    """对四模态取掩码均值/最大值。构造参数为模型宽度和 dropout；前向输入 ``(B,D)`` 候选摘要与 A/P/V/PP token/掩码映射，输出 ``(B,D)`` 候选表示。"""
 
     def __init__(self, model_dim: int, dropout: float) -> None:
         super().__init__()
@@ -137,7 +189,7 @@ class MeanMaxAggregator(nn.Module):
 
 
 class CandidateConditionedAggregator(nn.Module):
-    """用候选摘要分别查询四种模态，并融合四个候选条件增量。"""
+    """用候选摘要分别查询四模态。构造参数为模型宽度、头数和 dropout；前向输入 ``(B,D)`` 候选摘要与 A/P/V/PP token/掩码映射，输出 ``(B,D)`` 候选表示。"""
 
     def __init__(self, model_dim: int, head_count: int, dropout: float) -> None:
         super().__init__()
@@ -173,51 +225,3 @@ class CandidateConditionedAggregator(nn.Module):
             tokens, mask = modalities[name]
             increments.append(self.branches[name](candidate_summary, tokens, mask))
         return self.fusion(torch.cat((candidate_summary, *increments), dim=-1))
-
-
-def gather_voxel_features(
-    volume: torch.Tensor,
-    index_zyx: torch.Tensor,
-    mask: torch.Tensor,
-) -> torch.Tensor:
-    """按中心 ``48³`` 的整数 ZYX 索引读取 V/PP 对应的 U-Net 特征。"""
-
-    if volume.ndim != 5 or index_zyx.ndim != 3 or index_zyx.shape[-1] != 3:
-        raise ValueError("volume 必须为 (B,C,D,H,W)，index_zyx 必须为 (B,N,3)。")
-    if index_zyx.shape[:2] != mask.shape or index_zyx.shape[0] != volume.shape[0]:
-        raise ValueError("体素索引、掩码和特征图的批次/token 轴不一致。")
-    valid_indices = index_zyx[mask]
-    if valid_indices.numel() and (
-        torch.any(valid_indices < 0)
-        or torch.any(valid_indices[:, 0] >= volume.shape[2])
-        or torch.any(valid_indices[:, 1] >= volume.shape[3])
-        or torch.any(valid_indices[:, 2] >= volume.shape[4])
-    ):
-        raise ValueError("V/PP 的有效 ZYX 索引超出 U-Net 特征图。")
-    safe = index_zyx.clamp_min(0)
-    safe_z = safe[..., 0].clamp_max(volume.shape[2] - 1)
-    safe_y = safe[..., 1].clamp_max(volume.shape[3] - 1)
-    safe_x = safe[..., 2].clamp_max(volume.shape[4] - 1)
-    batch = torch.arange(volume.shape[0], device=volume.device)[:, None]
-    channel_last = volume.permute(0, 2, 3, 4, 1)
-    selected = channel_last[batch, safe_z, safe_y, safe_x]
-    return selected * mask[..., None].to(dtype=selected.dtype)
-
-
-def _masked_mean_max(tokens: torch.Tensor, mask: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-    """对变长 token 计算数值稳定的均值和最大值，空集合返回零。"""
-
-    if tokens.ndim != 3 or tokens.shape[:2] != mask.shape:
-        raise ValueError("tokens/mask 形状不一致。")
-    if tokens.shape[1] == 0:
-        empty = torch.zeros(
-            (tokens.shape[0], tokens.shape[2]),
-            device=tokens.device,
-            dtype=tokens.dtype,
-        )
-        return empty, empty
-    float_mask = mask[..., None].to(dtype=tokens.dtype)
-    mean = (tokens * float_mask).sum(dim=1) / float_mask.sum(dim=1).clamp_min(1.0)
-    maximum = tokens.masked_fill(~mask[..., None], torch.finfo(tokens.dtype).min).amax(dim=1)
-    maximum = torch.where(mask.any(dim=1, keepdim=True), maximum, torch.zeros_like(maximum))
-    return mean, maximum

@@ -48,7 +48,7 @@ def _lock(handle: TextIO) -> None:
 
     import fcntl
 
-    fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+    fcntl.flock(handle.fileno(), fcntl.LOCK_EX)  # type: ignore[attr-defined]
 
 
 def _unlock(handle: TextIO) -> None:
@@ -63,4 +63,4 @@ def _unlock(handle: TextIO) -> None:
 
     import fcntl
 
-    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)  # type: ignore[attr-defined]

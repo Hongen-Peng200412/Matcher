@@ -30,14 +30,20 @@ class ShuffledBatchSampler(Sampler[list[int]]):
         shuffle: bool,
         drop_last: bool,
         seed: int,
+        sample_count_multiple: int | None,
     ) -> None:
         if batch_size <= 0:
             raise ValueError("batch_size 必须为正整数。")
+        if sample_count_multiple is not None and (
+            sample_count_multiple <= 0 or sample_count_multiple % batch_size != 0
+        ):
+            raise ValueError("sample_count_multiple 必须为 batch_size 的正整数倍。")
         self.dataset = dataset
         self.batch_size = batch_size
         self.shuffle = shuffle
         self.drop_last = drop_last
         self.seed = seed
+        self.sample_count_multiple = sample_count_multiple
         self.epoch = 0
 
     def set_epoch(self, epoch: int) -> None:
@@ -52,6 +58,9 @@ class ShuffledBatchSampler(Sampler[list[int]]):
         ordered_indices = list(range(len(self.dataset)))
         if self.shuffle:
             generator.shuffle(ordered_indices)
+        if self.sample_count_multiple is not None:
+            usable_count = len(ordered_indices) // self.sample_count_multiple
+            ordered_indices = ordered_indices[: usable_count * self.sample_count_multiple]
         for start in range(0, len(ordered_indices), self.batch_size):
             batch = ordered_indices[start : start + self.batch_size]
             if len(batch) == self.batch_size or not self.drop_last:
@@ -60,9 +69,12 @@ class ShuffledBatchSampler(Sampler[list[int]]):
     def __len__(self) -> int:
         """返回当前划分的物理批次数量。"""
 
+        sample_count = len(self.dataset)
+        if self.sample_count_multiple is not None:
+            sample_count = sample_count // self.sample_count_multiple * self.sample_count_multiple
         if self.drop_last:
-            return len(self.dataset) // self.batch_size
-        return math.ceil(len(self.dataset) / self.batch_size)
+            return sample_count // self.batch_size
+        return math.ceil(sample_count / self.batch_size)
 
 
 def collate_candidates(items: list[CandidateItem]) -> CandidateBatch:

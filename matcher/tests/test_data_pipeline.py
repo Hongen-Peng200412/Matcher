@@ -98,7 +98,14 @@ def test_manifest_and_dataset_keep_pdb_but_drop_missing_smi_occurrence(tmp_path)
     assert batch["voxel_input"].shape == (1, 105, 48, 48, 48)
     assert batch["identity_mask"].tolist() == [[True]]
     assert batch["graph_edge_index"].shape == (2, 2)
-    sampler = ShuffledBatchSampler(dataset, batch_size=1, shuffle=True, drop_last=True, seed=7)
+    sampler = ShuffledBatchSampler(
+        dataset,
+        batch_size=1,
+        shuffle=True,
+        drop_last=True,
+        seed=7,
+        sample_count_multiple=1,
+    )
     assert list(sampler) == [[0]]
 
 
@@ -112,13 +119,36 @@ def test_shuffled_sampler_ignores_pdb_groups_and_is_epoch_deterministic() -> Non
             return 6
 
     dataset = cast(CandidateDataset, SixCandidates())
-    sampler = ShuffledBatchSampler(dataset, batch_size=2, shuffle=True, drop_last=True, seed=11)
+    sampler = ShuffledBatchSampler(
+        dataset,
+        batch_size=2,
+        shuffle=True,
+        drop_last=True,
+        seed=11,
+        sample_count_multiple=2,
+    )
     first = list(sampler)
     assert sorted(index for batch in first for index in batch) == list(range(6))
     assert first != [[0, 1], [2, 3], [4, 5]]
     assert list(sampler) == first
     sampler.set_epoch(1)
     assert list(sampler) != first
+
+
+def test_a100_and_a800_samplers_use_the_same_global_batch_candidates() -> None:
+    """物理批次 8/16 都先把全局洗牌候选截断到 32 的整倍，因而每轮样本序列完全一致。"""
+
+    class FortyFiveCandidates:
+        def __len__(self) -> int:
+            return 45
+
+    dataset = cast(CandidateDataset, FortyFiveCandidates())
+    a100 = ShuffledBatchSampler(dataset, 8, True, True, 3407, 32)
+    a800 = ShuffledBatchSampler(dataset, 16, True, True, 3407, 32)
+    a100_indices = [index for batch in a100 for index in batch]
+    a800_indices = [index for batch in a800 for index in batch]
+    assert len(a100_indices) == 32
+    assert a100_indices == a800_indices
 
 
 def test_byte_budget_lru_promotes_hits_and_evicts_by_array_bytes() -> None:
