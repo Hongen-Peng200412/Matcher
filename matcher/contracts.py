@@ -54,21 +54,28 @@ class CandidateBatch(TypedDict):
     令 B 为物理批量，N_A/N_P/N_V/N_PP 为四模态各自的批内最大 token 数，
     I 为批内最大身份数，G/N/E 为连接后的配体图、节点和有向边总数：
 
-    - ``voxel_input`` 是 float16 ``(B,105,48,48,48)``；``class_target`` 与
-      ``full_candidate_voxel_count`` 是 int64 ``(B,)``；两个区域目标是 bool
-      ``(B,48,48,48)``。
-    - ``a/p/v/pp_tokens`` 是 float32
-      ``(B,N_*,229/116/52/4)``，补零位置对应 bool ``*_mask=False``；V/PP
-      的 int64 ``(B,N_*,3)`` ZYX 索引也以零填充，只有掩码为真时可读取。
-    - ``language_embeddings`` 是 float32 ``(B,I,768)``，``identity_mask``
-      是 bool ``(B,I)``；``identity_target`` 是 int64 ``(B,)``，``-1`` 表示
-      当前语言模型没有可监督目标，否则是该样本身份轴上的有效下标。
-    - 图类别字段和 ``graph_node_graph_index`` 是 int64 ``(N,)``，15 维节点
-      连续字段是 float32 ``(N,15)``；``graph_edge_index`` 是 int64
-      ``(2,E)``，10 维边字段是 float32 ``(E,10)``。``graph_node_graph_index``
-      把节点映射到 ``[0,G)``；int64 ``graph_to_sample/graph_to_identity`` 均为
-      ``(G,)``，把每张图映射到 ``(样本下标,该样本身份下标)``。每个有效身份
-      恰好对应一张图，候选预训练时 G/N/E 均可为零。
+    ``voxel_input`` 是 float16 ``(B,105,48,48,48)``。``class_target`` 是
+    int64 ``(B,)``。``full_candidate_voxel_count`` 是 int64 ``(B,)``。
+    ``ligand_area_target`` 和 ``binding_area_target`` 都是 bool
+    ``(B,48,48,48)``。
+
+    ``a_tokens/p_tokens/v_tokens/pp_tokens`` 分别是 float32
+    ``(B,N_A,229)/(B,N_P,116)/(B,N_V,52)/(B,N_PP,4)``。对应的
+    ``a_mask/p_mask/v_mask/pp_mask`` 是 bool ``(B,N_*)``，补零 token 的掩码
+    为假。``v_index_zyx`` 和 ``pp_index_zyx`` 分别是 int64
+    ``(B,N_V,3)/(B,N_PP,3)``；补零索引为零，只有对应掩码为真时可读取。
+
+    ``language_embeddings`` 是 float32 ``(B,I,768)``。``identity_mask`` 是
+    bool ``(B,I)``。``identity_target`` 是 int64 ``(B,)``；``-1`` 表示当前
+    语言模型没有可监督目标，否则是该样本身份轴上的有效下标。
+
+    ``graph_element/graph_charge/graph_residue_id`` 是 int64 ``(N,)``。
+    ``graph_node_continuous`` 是 float32 ``(N,15)``。
+    ``graph_node_graph_index`` 是 int64 ``(N,)``，把节点映射到 ``[0,G)``。
+    ``graph_edge_index`` 是 int64 ``(2,E)``。``graph_edge_features`` 是
+    float32 ``(E,10)``。``graph_to_sample`` 和 ``graph_to_identity`` 都是
+    int64 ``(G,)``，把每张图映射到样本下标和该样本的身份下标。每个有效
+    身份恰好对应一张图；候选预训练时 G/N/E 均可为零。
     """
 
     metadata: list[CandidateMetadata]

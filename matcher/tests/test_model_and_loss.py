@@ -94,6 +94,24 @@ def test_closed_set_matcher_forward_and_loss_are_finite(tmp_path) -> None:
     assert any(parameter.grad is not None for parameter in model.parameters())
 
 
+def test_both_aggregators_accept_empty_modalities_without_nan(tmp_path) -> None:
+    """真实数据常见 A/V 空集；弱聚合和强聚合都必须以零摘要稳定继续前向。"""
+
+    original = _batch(tmp_path, "candidate_pretrain")
+    for aggregation in ("mean_max", "candidate_cross_attention"):
+        batch = cast(CandidateBatch, dict(original))
+        for name, width in (("a", 229), ("p", 116), ("v", 52), ("pp", 4)):
+            batch[f"{name}_tokens"] = torch.empty((1, 0, width), dtype=torch.float32)
+            batch[f"{name}_mask"] = torch.empty((1, 0), dtype=torch.bool)
+        batch["v_index_zyx"] = torch.empty((1, 0, 3), dtype=torch.long)
+        batch["pp_index_zyx"] = torch.empty((1, 0, 3), dtype=torch.long)
+        model = CandidateEncoder(_small_config(aggregation)).eval()
+        with torch.no_grad():
+            output = model(batch)
+        assert torch.isfinite(output["candidate_embedding"]).all()
+        assert torch.isfinite(output["class_logits"]).all()
+
+
 def test_identity_variants_gate_only_numerator_and_joint_reaches_class_probability() -> None:
     """三种身份损失都除以真实有效数，且只有 joint 把身份梯度传给 p_small。"""
 
