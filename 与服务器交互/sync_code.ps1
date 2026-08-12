@@ -187,3 +187,8 @@ if ($LASTEXITCODE -eq 0) {
 else {
     Write-Host "Error fixing line endings." -ForegroundColor Red
 }
+
+# 这些空目录对应已经由当前重写删除的旧科学入口。安全同步不使用 rsync --delete，
+# 但删除空目录可以避免它们在服务器上继续被误认为活动入口；目录非空时 rmdir 会拒绝。
+$RemoveRetiredEmptyDirsCmd = "rmdir '$RemoteFullDir/configs/mode1' '$RemoteFullDir/训练与运行/sh/mode1' 2>/dev/null || true"
+Invoke-RemoteCommand $RemoveRetiredEmptyDirsCmd

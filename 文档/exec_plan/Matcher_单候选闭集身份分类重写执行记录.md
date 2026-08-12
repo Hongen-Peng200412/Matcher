@@ -154,6 +154,33 @@ validation 含全部六类，因此首轮宏 F1 不会因缺类改变分母。ca
 
 386 个去重 LigandObject 都有图文件，`residue_id` 范围为 `[1,2]`，不超出 512 类嵌入表。审计发现 7 个由多个 Chemical Component Dictionary（CCD，化学组件字典）组件组成的 BRANCHED 图，各有一条跨 `residue_id` 原子组化学键；因为两套 CCD `ref_pos` 是独立参考坐标系，旧距离落在 `5.3021–70.4320 Å`，中位数 `12.8629 Å`，属于确定的伪几何。为不让服务器排卡等待用户即时回复，先按已授权的临时决策处理：节点参考坐标按 `residue_id` 原子组分别中心化；同一组内的键保留距离；不同组之间的化学键保留拓扑与键型，但距离通道置零。该修复不改变节点/边维度，新增回归测试，并在本记录中等待用户事后复核。
 
+## 放卡前远端源码门禁
+
+安全同步只覆盖同名文件，不删除上一轮已经被 Git 移除的文件。首次远端全套 pytest 因此收集到旧 `test_contracts.py`、`test_decode.py`、`test_manifest.py`、`test_model.py` 和 `test_training.py`，旧测试又导入已经删除的 `MatcherSample`、`RawGraph`、`build_ground_truth_manifest` 等符号。该失败是远端源码树残留，不是新实现测试失败；若直接创建 release，旧文件也会被复制进去，因此在释放 GPU `pre_lock` 前必须闭合。
+
+只读差集使用：
+
+```powershell
+git diff --name-status 6220ece3595e48dae9ee1ef749146efa1048305c..HEAD
+rg --files matcher
+& "$env:USERPROFILE/.codex/tools/Invoke-ProjectSsh.ps1" `
+  -Command "cd /home/penghongen/My_Project/Matcher && find matcher -type f | sort"
+```
+
+删除操作只接受固定根 `/home/penghongen/My_Project/Matcher`，逐个把目标规范化后检查仍位于该根内。实际删除 30 个旧文件：`configs/mode1/` 两个 YAML、`训练与运行/sh/mode1/` 三个脚本/说明、旧 `matcher/README.md`、16 个旧科学模块，以及 9 个旧测试/工厂文件；同时删除 `matcher/` 下三个 `__pycache__` 和项目 `.pytest_cache`。这些删除与 `6220…HEAD` 的 Git 删除集合一一对应，未使用整目录 clean sync。缓存和旧科学文件不可从本轮工作恢复为活动入口；Git 历史仍可恢复旧文件。release、launch、四锁和 `/storage/penghongen/tmp/Matcher/` 均未触碰。
+
+清理后在服务器正式 `Pocket_Plus_centos7_cu121_allgpu` 环境运行：
+
+```bash
+cd /home/penghongen/My_Project/Matcher
+python -m pytest -q matcher/tests
+python -m matcher.experiment --help
+```
+
+结果为 `34 passed in 16.99s`，实验入口帮助命令退出码为 0。正式训练、图、清单、指标、首轮 YAML 与训练 shell 的本地/远端 SHA-256 逐项一致。
+
+安全同步器继续采用非删除式 rsync；本轮只增加两项收口行为：排除 `.mypy_cache/`，并在上传与行尾修复后使用 `rmdir` 尝试移除 `configs/mode1` 与 `训练与运行/sh/mode1`。`rmdir` 只会删除空目录，目录内若重新出现任何文件就会拒绝，因此不会把同步器扩大为隐式删除工具。
+
 ## 验证命令
 
 ```powershell
