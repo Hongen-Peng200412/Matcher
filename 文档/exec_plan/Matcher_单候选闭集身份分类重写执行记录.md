@@ -84,7 +84,7 @@ bash 训练与运行/submit_task.sh --sh 训练与运行/sh/train_experiment.sh 
 
 正式源码同步目标是 `/home/penghongen/My_Project/Matcher`。业务产物只能位于 `/storage/penghongen/tmp/Matcher/`；release、launch、Slurm 日志和四锁位于 `/home/penghongen/Feedback/Matcher/`，不属于业务产物根的限制对象。
 
-候选不按 PDB 排列。DataLoader 固定 16 worker、`prefetch_factor=2`；A100 每个 worker 最多使用 16 GiB LRU，A800 每个 worker 最多使用 32 GiB LRU。这是每个 worker 的上限，不是整个训练进程的总预算；LRU 不预分配内存。
+候选不按 PDB 排列。初次提交时 DataLoader 使用 16 个工作进程、`prefetch_factor=2`；A100 每个工作进程最多使用 16 GiB LRU，A800 每个工作进程最多使用 32 GiB LRU。这是每个工作进程的上限，不是整个训练进程的总预算；LRU 不预分配内存。I/O 审计后的新 release 已改为 train/validation 各 4 个非持久工作进程，完整原因、对照和不变边界见本记录后文；本段保留最初提交契约，不表示当前 release 仍固定使用 16。
 
 任务稳定训练后不设 heartbeat。有明确时间点或状态变化时以 30 分钟间隔检查；预计长时间无新事件时可改为 1 小时。没有状态变化不追加重复日志。
 
