@@ -427,6 +427,24 @@ bash 训练与运行/submit_task.sh \
 
 2026-08-13 16:24:29，Job `340895` 完成 epoch 0 的完整 validation，并写出 `history.jsonl`、`LAST.pt` 和 `BEST.pt`；选择分数为 `0.5529791207038862`。训练使用 14,304 个候选，447 次参数更新，纯计算 `1263.75 s`、DataLoader 等待 `51.18 s`、总计 `1317.12 s`，吞吐 `10.8600 candidates/s`。相同模型的 validation 读取 6,495 个候选却耗时 `13343.99 s`，吞吐只有 `0.486736 candidates/s`；六分类 macro-F1 为 `0.5220903`，以六分类判对为条件的身份 top-1 为 `0.6264501`，端到端身份 F1 为 `0.5103970`。16:34 的 Slurm 统计显示 Job `340894/340895` 累计读字节约为 `2.979/3.034 TB`，MaxRSS 约为 `548/673 GB`。这组同一真实运行的训练/验证耗时、累计读取和内存证据证明旧 release 的 validation 是 I/O/内存系统瓶颈，而不是三维模型计算瓶颈；Job `340895` 随后继续 epoch 1，现有 checkpoint 与指标保留。
 
+16:45 的 allocation 内 GPU 探针显示 Job `340894` 占用约 `38.8 GiB` 显存但 GPU 与显存带宽利用率均为 0%；它仍没有 `BEST.pt/LAST.pt`，16:34--16:41 累计读取只增加约 `0.8 GB`。同期 Job `340895` 为 GPU 100%，继续 epoch 1，因此只重启已经长期停滞的 oracle，不中断 detached。该决定使用的成熟方案不是尚未收口的参数搜索，而是已经完成全量预计算、双审和逐值验收的 PP cache schema v1；它确定消除旧 release 中完整 probability map 的跨 worker 重复解压。
+
+先再次安全同步当前项目，再使用以下控制端命令；本地临时脚本只保存精确断言和锁操作，不进入 release，完整前因后果保留在本记录：
+
+```powershell
+& '.\与服务器交互\other\Invoke-PasswordSsh.ps1' `
+  -Command 'bash -s' `
+  -InputFile '.\tmp\kill_and_hold_340894.sh'
+
+& '.\与服务器交互\other\Invoke-PasswordSsh.ps1' `
+  -Command 'bash -s' `
+  -InputFile '.\tmp\release_try_340894_pp.sh'
+```
+
+`kill_and_hold_340894.sh` 在写锁前断言 Job 仍 RUNNING、只有 `after_lock_340894`、动态命令仍为 oracle、旧业务目录没有 checkpoint、本地/远端四个代表文件哈希一致且 PP 文件数为 `480/181`；然后只创建 `/home/penghongen/Feedback/Matcher/allocations/340894/kill_lock_340894`。监视器于 16:49:09--16:49:19 终止旧进程组、自行删除 `kill_lock` 并建立 `try_lock_340894`，Slurm allocation 和 `after_lock_340894` 均保留。空闲探针确认 GPU 为 `2 MiB/0%` 后，第二个脚本再次核对 W&B online、PP 文件数、命令和三锁，只删除精确的 `try_lock_340894`。
+
+第五次 oracle 执行随后冻结 release `/home/penghongen/Feedback/Matcher/releases/Matcher_67c4e42bd46a/Matcher`，launch 为 `/home/penghongen/Feedback/Matcher/launches/340894/train_experiment_job340894_20260813T165002_a5`，业务目录为 `/storage/penghongen/tmp/Matcher/experiments/full_scratch_smi_ted_light_289m_oracle/train_experiment_job340894_20260813T165002_a5/`。W&B run ID 为 `aiqbj6b5`，曲线地址为 `https://wandb.ai/pencounkdual-111/AdaLigand-Matcher/runs/aiqbj6b5`。新 release 在 16:53 前完成首个真实 global batch 32 参数更新：计算 `62.2150 s`、有效身份监督数 5、裁剪前梯度范数 `39.9681`、峰值已分配/保留显存 `28140193792/39564869632 bytes`；`after_lock_340894` 继续保留，`try_lock/kill_lock` 均不存在。
+
 ## 验证命令
 
 ```powershell
