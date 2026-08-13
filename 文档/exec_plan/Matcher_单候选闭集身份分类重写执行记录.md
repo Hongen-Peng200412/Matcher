@@ -236,6 +236,24 @@ tee /storage/penghongen/tmp/Matcher/diagnostics/job340894_checkpoint_20260813/pr
 
 第一次冻结脚本运行遗漏 `PYTHONPATH`，在导入 `matcher` 时立即以 `ModuleNotFoundError` 退出，未进入 GPU 探针；上面的修正命令显式绑定远端正式源码并成功生成最终日志。
 
+## 第三次 A800 执行与首个优化器更新
+
+自动混合精度缓存修复及其契约说明由独立科学审查和严格表达审查分别判定通过；CUDA BF16 定向回归实际执行后得到 `14 passed`，mypy 检查 32 个源文件零问题，compileall 与 `git diff --check` 通过。实现提交为 `f0c39cc531abb076fd444eb2f5077e8811f2194b`。安全同步完成后，本地与远端的 `matcher/model/raunet.py`、`matcher/tests/test_model_and_loss.py` 和本执行记录 SHA-256 分别一致为 `017767d0f0b9bde417702de701d737a883918689df541b5265a6ddeac87a5a25`、`a38ed1dff51389421328fbde5cca9f43fe741d42a784b6a1bcede9ce930e10fc` 和 `6ef86090ee3f88926878e1cd4d34a6eb8ee7fc3ee1aaa413675c5a8567ab4e19`。
+
+09:25 前再次核对 A800 空闲为 `2 MiB/0%`，并确认待删除目标是 `/home/penghongen/Feedback/Matcher/allocations/try_lock_340894`，必须保留的资源锁是 `/home/penghongen/Feedback/Matcher/allocations/340894/after_lock_340894`。只删除前者后，allocation 建立第三次不可变执行快照：
+
+- release：`/home/penghongen/Feedback/Matcher/releases/Matcher_966f0535491e/Matcher`；
+- launch：`/home/penghongen/Feedback/Matcher/launches/340894/train_experiment_job340894_20260813T092542_a3`；
+- 业务产物根：`/storage/penghongen/tmp/Matcher/experiments/full_scratch_smi_ted_light_289m_oracle/train_experiment_job340894_20260813T092542_a3/`。
+
+第三次执行在 09:27:45 打印如下验收事件；该事件只会在两个物理批量完成有限损失检查、反向传播、有限梯度检查、参数更新与 CUDA 同步后产生：
+
+```json
+{"event":"first_global_step_accepted","stage":"full_scratch_smi_ted_light_289m_oracle","global_step":1,"global_batch_size":32,"identity_eligible_count":5,"preclip_gradient_norm":39.981868743896484,"peak_cuda_allocated_bytes":28140193792,"peak_cuda_reserved_bytes":40080769024,"global_step_compute_seconds":63.555907065980136}
+```
+
+因此 A800 正式宽度、BF16、物理批量 16、梯度累积 2 和 global batch 32 已在真实训练数据上完成首个优化器更新。首步后的只读采样显示 A800 为 `38847 MiB/100%`，训练进程和 16 个 DataLoader worker 均继续运行；`after_lock_340894` 未删除。此前两次失败保留在同一 allocation 的历史日志中，但第三次 launch 使用独立产物目录，不会把旧异常误作当前训练状态。
+
 ## 验证命令
 
 ```powershell
