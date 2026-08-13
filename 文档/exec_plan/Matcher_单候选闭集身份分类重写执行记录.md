@@ -647,3 +647,39 @@ git diff --check
 - Job `340893/340894/340895/340897/340898/340899` 均在正式训练。仅在新 epoch、训练阶段切换、失败或任务完成时追加执行记录，不按固定心跳重复写相同状态。Job `340896` 保持暂停，不自动补交。
 - GPU 资源实际分配后，删除 `pre_lock` 会直接启动正式命令；每个阶段的首个真实 global optimizer step 同时作为连续验收点。只有完成有限损失与梯度检查、参数更新和 CUDA 同步后，程序才打印一次 `first_global_step_accepted`，其中含 global batch、有效身份数、裁剪前梯度范数、峰值显存和首步计算耗时。这样不在验收与正式训练之间闲置 GPU；若 OOM 或非有限数值失败，程序不会打印成功事件，`after_hold` 仍会保留 allocation 供修订后重试。若 batch size 超出显存，按用户确认的顺序先将 RAUNet 通道降到原宽度的 3/4，再降低物理批量并增加梯度累积，始终保持 global batch 32。
 - 首个完整训练若超过 16 小时，只暂停后续随机种子；不中止当前训练，不设任何时间上限。
+
+## 2026-08-14：第 0 批收口与第 1–5 批接续
+
+第 0 批 Goal 已按“重建与基线实验”完成，新的活动 Goal 覆盖第 1–5 批开发、测试、发布、六张受管 GPU 的批次优先调度、W&B 分批管理、validation 头对头比较和三层实验记录。Goal 切换没有修改 Slurm 任务、GPU 进程或锁。02:40 的只读状态显示 Job `340893/340894/340895/340897/340898/340899` 均保留 `after_lock`；没有取消、释放或删除锁。
+
+新增 `文档/记录/总记录.md`、批次记录和单任务记录。第 0 批七个实际实验分别保存提交命令、Job、release、launch、W&B、首步或最终结果；第 1 批三个待运行实验先保存配置、预定受管 allocation 和直接对照。`CLAUDE/memory/handoffs/2026-08-14-matcher-batches-1-5.md` 保存跨会话状态、决定、开放问题和下一步，不替代本执行记录。
+
+第 1 批覆盖率审计使用 CPU-only Job `341588`，精确提交命令为：
+
+```bash
+sbatch /storage/penghongen/tmp/Matcher/diagnostics/identity_coverage_train_validation_20260813T181421Z/run.sbatch
+```
+
+该 Job 使用 `cpu/cpu96`、2 CPU、16 GiB 内存，20 分 44 秒后 `COMPLETED/0:0`；脚本硬编码只读 train/validation，没有 GRES，没有打开 calibration 或 Stage1 特征数组。train 五类共 1,477 个 PDB 内身份、10,681 个 occurrence，SMI-TED 与 MoLFormer 均为图+语言 100% 可用。validation 共 536 个身份、4,069 个 occurrence；MoLFormer 100%，SMI-TED 为 534/536 个身份、4,063/4,069 个 occurrence。唯一缺口是 `6rkd` 的两个小分子身份和六个 occurrence，对应六个 validation 候选。
+
+按候选监督口径，SMI-TED 在 train 覆盖 `4,192/4,192` 个前景候选，在 validation 覆盖 `1,466/1,472`。缺失候选继续参与六分类和区域监督，只令 `identity_target=-1`；不混用 MoLFormer 回退，也不排除 `6rkd`。审计未发现同一 PDB、类别、`object_key` 对应多个模型 SMILES、跨类别身份冲突或配体图安全文件名碰撞。证据根是 `/storage/penghongen/tmp/Matcher/diagnostics/identity_coverage_train_validation_20260813T181421Z/`，其中 `SHA256SUMS` 保存完整摘要。该证据支持第 1 批统一使用 SMI-TED，但不单独证明其表征质量优于 MoLFormer。
+
+当前工作树正在实现 manifest schema v3、显式划分物化、五类身份清单、`identity_scope` 兼容开关、12 维固化候选统计、目标身份类别概率特征、多层身份指标和分层 W&B 命名。第 1 批已建立三个 YAML：A800 oracle、A800 detached、A100 joint，global batch 均为 32。calibration 可以顺路准备清单或缓存，但在全部批次结束且用户再次确认前，不调用模型、不产生 calibration 指标、不把任何准备产物用于选模。
+
+2026-08-14 03:05（Asia/Shanghai），第 1 批提交前本地快照完成门禁：Matcher 全量 pytest 为 `56 passed`，mypy 检查 38 个源文件零问题，compileall 通过，七份第 0 批和三份第 1 批 YAML 均由 `load_experiment_plan` 成功解析，`git diff --check` 通过。本轮新增 W&B 回归明确覆盖 `train/{step,epoch}` 的损失、优化、性能、统计四棵子树，以及 validation 六分类、混淆矩阵、配置身份范围、小分子兼容子集、五类总体、逐类身份、区域、分母和选模子树；有真实零支持分母的 NaN 只在在线边界转为 null，非有限训练值仍立即失败。该快照接下来只交由阶段性科学正确性审查和严格技术表达审查；双审完成前不生成 release、不删除任何受管 allocation 的锁，也不启动 calibration 推理。
+
+### 第 1 批科学语义与在线曲线树修订
+
+阶段性科学审查发现，最初把 A/P/V/PP 的 12 项手动统计先经单个 `12→D` 编码器混合，再只在最终融合层追加，不能证明各模态统计与对应模态摘要逐一绑定。活动实现改为把标准化后的四组三维统计分别紧邻 A/P/V/PP 的 mean/max 摘要；候选条件注意力路径则紧邻相应模态的注意力增量。身份匹配得分继续读取相同 12 项统计，并拼接 `stopgrad(softmax(class_logits)[identity_class])`。这项修订不改变候选、监督或 global batch，只把用户指定的模态归属落实为直接张量契约。
+
+用户随后明确五类端到端指标中的六分类子类只是一项中间辅助量。由此冻结三种口径：`conditional` 仍要求六分类预测精确等于真实子类；五类总体和逐类 `end_to_end` 只要求六分类预测为任一非背景类，再由 Matcher Top-1 是否命中真实身份决定成功；第 0 批兼容的小分子端到端仍要求六分类预测为 `small_molecule`。逐类端到端预测阳性按最终 Top-1 身份类别归桶，真实前景但 `identity_target=-1` 的候选排除在身份指标外，背景误报为前景且存在身份槽时计为假阳性。独立八样本探针覆盖跨子类正确身份、背景误报、缺失目标和逐类加和不变量。
+
+W&B 指标同时从笼统的 `train/*`、`validation/*` 首层改为职责优先路径。第一层为 `loss/gradient/gate/learning_rate/performance/memory/statistics/classification_summary/classification_per_class/classification_confusion/identity_*/area/selection`，第二层再区分 train step、train epoch 或 validation。这样符合 W&B 默认工作区按第一个 `/` 前缀建立区块的实际行为；候选预训练不写身份分支、身份指标和门值的空数据。完整嵌套报告仍逐 epoch 保存在 `history.jsonl`，在线曲线不替代落盘证据。
+
+兼容性方面，calibration 在读取旧第 0 批 `resolved.json` 时，会把缺失的 `model.use_manual_features` 迁移为 `false`，并按旧任务语义把缺失的 `stage.identity_scope` 迁移为 `small_molecule` 或 `None`。历史 YAML 原文件仍不接受缺字段的静默解析；复现旧 checkpoint 时使用当前已显式补全字段的第 0 批 YAML。这一边界保持正式配置自包含，同时避免旧 BEST 因新增字段失去可核验性。
+
+本轮修订期间的定向回归为 `39 passed`，mypy 检查 38 个源文件零问题。最终全量门禁与两名阶段审查代理的冻结结论在本节后续追加；在其通过前不建立 release、不启动第 1 批任务。第 0 批六个受管 allocation 与所有 `after_lock` 保持原样，calibration 模型推理仍未执行。
+
+03:54 的最终冻结门禁为 pytest `59 passed`、mypy 38 个源文件零问题、pyflakes、compileall、10 份正式 YAML 解析、全部 shell 的 `bash -n` 和 `git diff --check` 通过。独立科学终审结论为 PASS：五类清单与缺失表示跳过语义、三种损失的类别概率梯度、global-batch 分母、四模态手动特征拼接、宽松端到端逐类归桶、PP 零增量和旧 artifact 迁移均无阻断。严格表达终审结论为 PASS：持久 manifest v3 字段、候选与批次张量、W&B 路径、三份 YAML、三层账本和测试替身均可冷读。
+
+严格表达代理代用户批准以下具名结构例外：旧配置经 `MatcherModelConfig.from_dict` 缺失 `use_manual_features` 时只迁移为 `false`；`CandidateDataset.cache_bytes_per_worker` 与 `EvaluationAccumulator.top_k` 的程序化默认仅服务独立构造，正式 YAML 仍显式配置；低复用的 `_candidate_manual_features/_identity_target_index/_extend_manifest/_annotate_seen/_publish_manifest/identity_eligible_mask/normalize_candidate_manual_features/identity_scope_class_indices/_evaluation_wandb_metrics` 各自集中单一科学或事务契约；`matcher/manifest.py` 本批保留部分 `dict[str,Any]`，由持久字段文档和回归测试冻结。`文档/记录/目标草案.md` 保留用户原始讨论文本，不改写成正式规划文体。至此第 1 批可以进入实现提交、服务器同步和清单预计算；calibration 模型推理仍被禁止。
