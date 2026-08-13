@@ -17,6 +17,8 @@ from matcher.geometry import crop_center_48, hard_scatter_receptor, keep_local_4
 from matcher.labels import OccurrenceMask, assign_candidate_target
 from matcher.ligand_graph import LigandGraphStore
 from matcher.manifest import build_manifest, load_jsonl
+from matcher.precompute import precompute_inputs
+from matcher.pp_input import _build_pp_tokens
 from matcher.schema import SourceRoots
 
 from .factories import build_synthetic_roots
@@ -162,6 +164,92 @@ def test_dataset_accepts_float32_box_origin_recomputation_but_rejects_real_shift
     )
     with pytest.raises(ValueError, match="最大绝对误差"):
         rejected[0]
+
+
+def test_pp_cache_removes_runtime_probability_map_dependency(
+    tmp_path,
+) -> None:
+    """PP 缓存命中后逐值复用首次构建结果，且不再读取完整概率图。"""
+
+    roots = build_synthetic_roots(tmp_path)
+    manifest_path = build_manifest(roots, coverage_threshold=0.30, selection_seed=3407)
+    dataset = CandidateDataset(
+        roots=roots,
+        manifest_path=manifest_path,
+        split_name="train",
+        task_name="candidate_pretrain",
+        language_family=None,
+        pp_top_k=4,
+        cache_bytes_per_worker=64 * 1024**2,
+    )
+    first = dataset[0]
+    assert first["pp_index_zyx"][0].tolist() == [24, 24, 24]
+    assert first["pp_tokens"][0, 0].item() == 1.0
+
+    cache_path = roots.pp_cache_root(4) / "train/1abc.npz"
+    assert cache_path.is_file()
+    with np.load(cache_path, allow_pickle=False) as archive:
+        assert int(archive["schema_version"].item()) == 1
+        assert int(archive["top_k"].item()) == 4
+        assert archive["tokens"].dtype == np.float32
+        assert archive["index_zyx"].dtype == np.int16
+
+    probability_path = roots.stage1_root / "train/1abc/probability/probability_map.npz"
+    probability_path.unlink()
+    reloaded = CandidateDataset(
+        roots=roots,
+        manifest_path=manifest_path,
+        split_name="train",
+        task_name="candidate_pretrain",
+        language_family=None,
+        pp_top_k=4,
+        cache_bytes_per_worker=64 * 1024**2,
+    )[0]
+    np.testing.assert_array_equal(reloaded["pp_tokens"], first["pp_tokens"])
+    np.testing.assert_array_equal(reloaded["pp_index_zyx"], first["pp_index_zyx"])
+
+
+def test_pp_top_k_matches_legacy_argpartition_selection() -> None:
+    """PP top-k 必须逐值复现首批任务使用的旧 ``argpartition`` 选择。"""
+
+    random_values = np.random.default_rng(3407).integers(
+        0,
+        4,
+        size=(80, 80, 80),
+        dtype=np.int16,
+    ).astype(np.float32)
+    tokens, index_zyx = _build_pp_tokens(
+        random_values,
+        np.zeros(3, dtype=np.int64),
+        np.ones(3, dtype=np.float32),
+        1024,
+    )
+    flat = random_values[16:64, 16:64, 16:64].reshape(-1)
+    expected = np.argpartition(flat, flat.size - 1024)[-1024:]
+    expected = expected[np.lexsort((expected, -flat[expected]))]
+    actual = np.ravel_multi_index(
+        (index_zyx[:, 0], index_zyx[:, 1], index_zyx[:, 2]),
+        (48, 48, 48),
+    )
+    np.testing.assert_array_equal(actual, expected)
+    np.testing.assert_array_equal(tokens[:, 0], flat[expected])
+
+
+def test_precompute_entry_requires_explicit_products_and_builds_pp(tmp_path) -> None:
+    """正式预计算入口拒绝含糊参数，并能按 PDB 物化显式选择的 PP 缓存。"""
+
+    roots = build_synthetic_roots(tmp_path)
+    manifest_path = build_manifest(roots, coverage_threshold=0.30, selection_seed=3407)
+    with pytest.raises(ValueError, match="非空且不重复"):
+        precompute_inputs(roots, manifest_path, ("train",), 1, (), None)
+    with pytest.raises(ValueError, match="必须提供正整数"):
+        precompute_inputs(roots, manifest_path, ("train",), 1, ("pp",), None)
+    with pytest.raises(ValueError, match="不得提供"):
+        precompute_inputs(roots, manifest_path, ("train",), 1, ("voxel",), 4)
+
+    precompute_inputs(roots, manifest_path, ("train",), 1, ("pp",), 4)
+    cache_path = roots.pp_cache_root(4) / "train/1abc.npz"
+    assert cache_path.is_file()
 
 
 def test_seen_identity_requires_train_positive_for_current_language_family(tmp_path) -> None:

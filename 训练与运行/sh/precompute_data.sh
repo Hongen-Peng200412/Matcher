@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# 构建正式清单，并用申请到的 CPU 核并行生成候选 105 通道体素缓存。
+# 构建正式清单，并按 --products 用申请到的 CPU 核并行生成体素或 PP token 缓存。
 CONDA_BASE="${CONDA_BASE:-${HOME}/anaconda3}"
 CONDA_ENV_NAME="${MATCHER_CONDA_ENV:-Pocket_Plus_centos7_cu121_allgpu}"
 

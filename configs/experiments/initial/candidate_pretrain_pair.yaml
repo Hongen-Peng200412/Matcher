@@ -25,7 +25,7 @@ data:
   pp_top_k: 1024  # 每个候选从完整概率图最多采样的 PP token 数。
   num_workers: 16  # 每个训练进程的 DataLoader 工作进程数。
   prefetch_factor: 2  # 每个工作进程预先准备的物理批次数。
-  # 每个工作进程的四类最近最少使用缓存总上限，单位 GiB；按需增长，不预分配。
+  # 每个工作进程的五类最近最少使用缓存总上限，单位 GiB；按需增长，不预分配。
   cache_gib_per_worker: 16
 
 stages:

@@ -16,9 +16,9 @@
 
 ## 字段契约
 
-`data.data_root` 指向只读 AdaLigand 冻结产物，`data.stage1_root` 指向只读 Find_0 候选产物，`data.output_root` 仅保存 Matcher 清单与体素缓存。
+`data.data_root` 指向只读 AdaLigand 冻结产物，`data.stage1_root` 指向只读 Find_0 候选产物，`data.output_root` 仅保存 Matcher 清单、体素缓存与 PP token 缓存。
 
-`coverage_threshold=0.30` 同时应用于候选覆盖率和真实配体 occurrence 覆盖率。`selection_seed=3407` 只冻结清单内同一 `object_key` 的语言表示选择；各阶段的 `training.seed` 独立冻结训练随机源。`pp_top_k=1024` 是首轮局部 `48³` PP 采样上限，必须在执行记录中作为待实验复核参数。
+`coverage_threshold=0.30` 同时应用于候选覆盖率和真实配体 occurrence 覆盖率。`selection_seed=3407` 只冻结清单内同一 `object_key` 的语言表示选择；各阶段的 `training.seed` 独立冻结训练随机源。`pp_top_k=1024` 是首轮局部 `48³` PP 采样上限，也进入 `cache/pp_input_v1/top_1024/` 路径，防止不同数量的 PP token 复用同一缓存。PP 缓存按 PDB 一次读取完整 probability map，再为该 PDB 的全部候选保存 token；缓存命中后，训练 worker 只读取该小型产物，缺失时由第一个持锁进程按 PDB 构建一次。该上限仍须在执行记录中作为待实验复核参数。
 
 `num_workers=16` 表示每个训练进程的 DataLoader 工作进程数。`cache_gib_per_worker` 是每个 worker 的独立 LRU 字节上限，A100 任务为 16 GiB，A800 任务为 32 GiB；该上限不预分配内存。
 

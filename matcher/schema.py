@@ -8,6 +8,7 @@ from pathlib import Path
 
 MANIFEST_SCHEMA_VERSION = 2
 VOXEL_CACHE_SCHEMA_VERSION = 1
+PP_CACHE_SCHEMA_VERSION = 1
 
 CLASS_NAMES = (
     "background",
@@ -74,6 +75,13 @@ class SourceRoots:
         """返回版本化 105 通道候选体素缓存目录。"""
 
         return self.output_root / f"cache/voxel_input_v{VOXEL_CACHE_SCHEMA_VERSION}"
+
+    def pp_cache_root(self, top_k: int) -> Path:
+        """返回由 schema 与 ``top_k`` 共同隔离的 PP token 缓存目录。"""
+
+        if top_k <= 0:
+            raise ValueError("PP token 缓存的 top_k 必须为正整数。")
+        return self.output_root / f"cache/pp_input_v{PP_CACHE_SCHEMA_VERSION}/top_{top_k}"
 
 
 def safe_object_filename(object_key: str) -> str:

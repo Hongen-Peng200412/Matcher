@@ -15,6 +15,7 @@ from .contracts import CandidateItem, CandidateMetadata
 from .geometry import keep_local_48, local_xyz_to_centered_world, voxel_zyx_to_centered_world
 from .ligand_graph import LigandGraphStore
 from .manifest import load_jsonl
+from .pp_input import PpCandidateInput, PpInputStore
 from .schema import (
     CLASS_NAMES,
     A_TOKEN_DIM,
@@ -25,7 +26,6 @@ from .schema import (
     LOCAL_BOX_SIZE,
     LOCAL_CONTEXT_HALF_EXTENT_VOXELS,
     P_TOKEN_DIM,
-    PP_TOKEN_DIM,
     SourceRoots,
     V_TOKEN_DIM,
 )
@@ -40,9 +40,9 @@ class CandidateDataset(Dataset[CandidateItem]):
     """按候选粒度读取六分类样本，并按需附加 PDB 内小分子身份清单。
 
     ``cache_bytes_per_worker`` 是每个 DataLoader 工作进程自己的总缓存上限，
-    默认 16 GiB，不会预先分配。预算覆盖 PDB 级 F1-centered/概率图/辅助
-    标签、尚未预计算的 105 通道源数组、身份输入和 LigandObject 图；四部分
-    分别使用 14/16、1/16、1/32 和 1/32 的上限。
+    默认 16 GiB，不会预先分配。预算覆盖 PDB 级 F1-centered/辅助标签、尚未
+    预计算的 105 通道源数组、PP 缓存、身份输入和 LigandObject 图；五部分分别
+    使用 13/16、1/16、1/16、1/32 和 1/32 的上限。
     """
 
     def __init__(
@@ -93,6 +93,7 @@ class CandidateDataset(Dataset[CandidateItem]):
         source_cache_bytes = budgets["source"]
         artifact_cache_bytes = budgets["artifact"]
         self.voxel_store = VoxelInputStore(roots, source_cache_bytes=source_cache_bytes)
+        self.pp_store = PpInputStore(roots, pp_top_k, cache_bytes=budgets["pp"])
         self.graph_store = LigandGraphStore(roots.data_root, cache_bytes=budgets["graph"])
         self._artifact_cache: ByteBudgetLru[tuple[str, str], dict[str, Any]] = ByteBudgetLru(
             artifact_cache_bytes
@@ -116,7 +117,8 @@ class CandidateDataset(Dataset[CandidateItem]):
         centered = artifacts["centered"]
         voxel_size = np.asarray(centered["voxel_size_world"][candidate_index], dtype=np.float32)
         box_start = np.asarray(centered["box_start_zyx"][candidate_index], dtype=np.int64)
-        _validate_candidate_geometry(centered, artifacts, candidate_index)
+        pp_input = self.pp_store.load(self.split_name, pdb_id, candidate_index)
+        _validate_candidate_geometry(centered, pp_input, candidate_index)
 
         a_tokens = _build_a_tokens(
             centered,
@@ -131,12 +133,6 @@ class CandidateDataset(Dataset[CandidateItem]):
         )
         p_tokens = _build_p_tokens(centered, candidate_index, voxel_size)
         v_tokens, v_index_zyx = _build_v_tokens(centered, candidate_index, voxel_size)
-        pp_tokens, pp_index_zyx = _build_pp_tokens(
-            artifacts["probability_map"],
-            box_start,
-            voxel_size,
-            self.pp_top_k,
-        )
         ligand_target = _build_ligand_target(artifacts["occurrence_masks"], box_start)
 
         metadata: CandidateMetadata = {
@@ -157,8 +153,8 @@ class CandidateDataset(Dataset[CandidateItem]):
             "p_tokens": p_tokens,
             "v_tokens": v_tokens,
             "v_index_zyx": v_index_zyx,
-            "pp_tokens": pp_tokens,
-            "pp_index_zyx": pp_index_zyx,
+            "pp_tokens": pp_input["tokens"],
+            "pp_index_zyx": pp_input["index_zyx"],
             "class_target": int(record["class_index"]),
             "ligand_area_target": ligand_target,
             "binding_area_target": binding_target,
@@ -176,7 +172,7 @@ class CandidateDataset(Dataset[CandidateItem]):
         return cast(CandidateItem, item)
 
     def _load_pdb_artifacts(self, pdb_id: str) -> dict[str, Any]:
-        """按字节预算缓存最近使用的 PDB 级候选、概率图和辅助标签。"""
+        """按字节预算缓存最近使用的 PDB 级 F1-centered、受体和监督数组。"""
 
         key = (self.split_name, pdb_id)
         cached = self._artifact_cache.get(key)
@@ -187,16 +183,6 @@ class CandidateDataset(Dataset[CandidateItem]):
         )
         with np.load(centered_path, allow_pickle=False) as archive:
             centered = {name: np.asarray(archive[name]).copy() for name in _CENTERED_FIELDS}
-        probability_path = (
-            self.roots.stage1_root
-            / self.split_name
-            / pdb_id
-            / "probability/probability_map.npz"
-        )
-        with np.load(probability_path, allow_pickle=False) as archive:
-            probability_map = np.asarray(archive["probability_map"], dtype=np.float32)
-            probability_origin = np.asarray(archive["origin_xyz"], dtype=np.float32)
-            probability_voxel_size = np.asarray(archive["voxel_size_xyz"], dtype=np.float32)
         label_path = self.roots.data_root / "labels" / pdb_id / "atom_labels.npz"
         with np.load(label_path, allow_pickle=False) as archive:
             binding_atom = np.asarray(archive["binding_atom"], dtype=bool)
@@ -219,9 +205,6 @@ class CandidateDataset(Dataset[CandidateItem]):
 
         cached = {
             "centered": centered,
-            "probability_map": probability_map,
-            "probability_origin": probability_origin,
-            "probability_voxel_size": probability_voxel_size,
             "binding_atom": binding_atom,
             "receptor_coords": receptor_coords,
             "occurrence_masks": occurrence_masks,
@@ -315,7 +298,7 @@ _CENTERED_FIELDS = (
 
 def _validate_candidate_geometry(
     centered: dict[str, np.ndarray],
-    artifacts: dict[str, Any],
+    pp_input: PpCandidateInput,
     candidate_index: int,
 ) -> None:
     """核对 F1-centered 和概率图保存的候选框空间字段。
@@ -329,9 +312,9 @@ def _validate_candidate_geometry(
     voxel_size = np.asarray(centered["voxel_size_world"][candidate_index], dtype=np.float32)
     box_origin = np.asarray(centered["box_origin_world"][candidate_index], dtype=np.float32)
     box_start = np.asarray(centered["box_start_zyx"][candidate_index], dtype=np.float32)
-    probability_origin = np.asarray(artifacts["probability_origin"], dtype=np.float32)
+    probability_origin = np.asarray(pp_input["probability_origin"], dtype=np.float32)
     probability_voxel_size = np.asarray(
-        artifacts["probability_voxel_size"],
+        pp_input["probability_voxel_size"],
         dtype=np.float32,
     )
     named_vectors = {
@@ -486,40 +469,6 @@ def _build_v_tokens(
     return _validate_tokens(tokens, V_TOKEN_DIM, "V"), cropped_index
 
 
-def _build_pp_tokens(
-    probability_map: np.ndarray,
-    box_start_zyx: np.ndarray,
-    voxel_size: np.ndarray,
-    top_k: int,
-) -> tuple[np.ndarray, np.ndarray]:
-    """构造中心 48³ 内概率最高的 4 维 PP token。
-
-    字段依次为 Stage1 概率(1)和按局部空间物理半边长归一化的相对
-    XYZ(3)；概率并列时以展平索引升序固定选择顺序。
-    """
-
-    start = np.asarray(box_start_zyx, dtype=np.int64) + LOCAL_BOX_MARGIN
-    stop = start + LOCAL_BOX_SIZE
-    if np.any(start < 0) or np.any(stop > np.asarray(probability_map.shape)):
-        raise ValueError("PP 的 48³ 概率图裁剪越界。")
-    slices = tuple(slice(int(first), int(last)) for first, last in zip(start, stop))
-    crop = np.asarray(probability_map[slices], dtype=np.float32)
-    flat = crop.reshape(-1)
-    count = min(top_k, flat.size)
-    selected = np.argpartition(flat, flat.size - count)[-count:]
-    order = np.lexsort((selected, -flat[selected]))
-    selected = selected[order]
-    local_index = np.stack(np.unravel_index(selected, crop.shape), axis=1).astype(np.int64)
-    index_in_80 = local_index + LOCAL_BOX_MARGIN
-    coordinates = voxel_zyx_to_centered_world(index_in_80, voxel_size)
-    coordinate_scale = _coordinate_scale_xyz(voxel_size, LOCAL_CONTEXT_HALF_EXTENT_VOXELS)
-    tokens = np.concatenate(
-        (flat[selected, None], coordinates / coordinate_scale[None, :]),
-        axis=1,
-    )
-    return _validate_tokens(tokens, PP_TOKEN_DIM, "PP"), local_index
-
-
 def _build_ligand_target(
     occurrence_masks: list[np.ndarray],
     box_start_zyx: np.ndarray,
@@ -572,15 +521,17 @@ def _validate_tokens(tokens: np.ndarray, expected_width: int, modality: str) -> 
 
 
 def _split_cache_budget(total_bytes: int) -> dict[str, int]:
-    """把单 worker 总预算无重叠地分配给四类可淘汰缓存。"""
+    """把单 worker 总预算无重叠地分配给五类可淘汰缓存。"""
 
     graph = total_bytes // 32
     identity = total_bytes // 32
     source = total_bytes // 16
-    artifact = total_bytes - graph - identity - source
+    pp = total_bytes // 16
+    artifact = total_bytes - graph - identity - source - pp
     return {
         "artifact": artifact,
         "source": source,
+        "pp": pp,
         "identity": identity,
         "graph": graph,
     }

@@ -20,7 +20,9 @@ bash 训练与运行/submit_task.sh \
   --coverage-threshold 0.30 \
   --selection-seed 3407 \
   --splits train validation \
-  --workers 16
+  --workers 16 \
+  --products pp \
+  --pp-top-k 1024
 ```
 
 GPU 示例：
@@ -180,12 +182,24 @@ bash 训练与运行/submit_task.sh \
 
 ## 13. 项目边界
 
-Matcher 的正式任务只从 `/home/penghongen/My_Project/Matcher` 冻结 release。A–G 与 Stage1 产物仍由 AdaLigand 生产并从其正式存储目录只读加载；Matcher 的版本化清单、105 通道缓存、checkpoint、指标和评估结果只能写入 `/storage/penghongen/tmp/Matcher/`，不写回 AdaLigand 代码目录。release、launch、Slurm 日志和四锁写入 `/home/penghongen/Feedback/Matcher/`，不属于业务产物根限制。
+Matcher 的正式任务只从 `/home/penghongen/My_Project/Matcher` 冻结 release。A–G 与 Stage1 产物仍由 AdaLigand 生产并从其正式存储目录只读加载；Matcher 的版本化清单、105 通道缓存、PP token 缓存、checkpoint、指标和评估结果只能写入 `/storage/penghongen/tmp/Matcher/`，不写回 AdaLigand 代码目录。release、launch、Slurm 日志和四锁写入 `/home/penghongen/Feedback/Matcher/`，不属于业务产物根限制。
 
 ## 14. 当前 Matcher 任务脚本
 
 - `sh/build_manifest.sh`：只构建或核验版本化监督清单，不遍历候选体素缓存。
-- `sh/precompute_data.sh`：先构建或复用清单，再按 PDB 复用完整密度图并生成 train/validation 的 105 通道体素缓存。
+- `sh/precompute_data.sh`：先构建或复用清单，再按 `--products voxel pp` 显式选择 105 通道体素缓存、PP token 缓存或两者；选择 `pp` 时必须同时给出 `--pp-top-k`。
 - `sh/train_experiment.sh`：读取 `configs/experiments/initial/*.yaml`，顺序执行一个或多个训练阶段。
 
-`build_manifest.sh` 与 `precompute_data.sh` 的清单参数必须显式提供 `data-root/stage1-root/output-root/coverage-threshold/selection-seed`。`train_experiment.sh` 只接收 `--plan`，其它科学与训练参数都由 YAML 唯一声明。
+`build_manifest.sh` 与 `precompute_data.sh` 的清单参数必须显式提供 `data-root/stage1-root/output-root/coverage-threshold/selection-seed`。`precompute_data.sh` 还必须显式提供 `--products`；仅当选择 `pp` 时提供正整数 `--pp-top-k`。`train_experiment.sh` 只接收 `--plan`，其它科学与训练参数都由 YAML 唯一声明。
+
+PP 缓存写入 `cache/pp_input_v1/top_<k>/<split>/<pdb>.npz`，并与 `F1_centered.npz` 的候选编号逐项对齐。令 `C` 为该 PDB 的候选数，`K=min(top_k,48³)`：
+
+- `schema_version` 是 int64 标量，当前必须为 1。
+- `top_k` 是 int64 标量，必须与路径中的 `<k>` 一致。
+- `candidate_indices` 是 int64 `(C,)`，必须为从 0 开始的连续候选编号。
+- `tokens` 是 float32 `(C,K,4)`；最后一轴依次为无量纲的 Stage1 原始概率和按局部空间物理半边长归一化的无量纲相对 XYZ。
+- `index_zyx` 是 int16 `(C,K,3)`；最后一轴是中心 `48³` 内取值范围为 `[0,48)` 的 ZYX 索引。
+- `probability_origin` 是 float32 `(3,)`，表示完整 Stage1 概率图的 XYZ 角点原点，单位 Å。
+- `probability_voxel_size` 是 float32 `(3,)`，表示完整 Stage1 概率图的 XYZ 体素尺寸，单位 Å/voxel。
+
+PP cache schema v1 使用 NumPy `argpartition` 决定入选子集；第 K 名概率并列时不另行改写选择语义。改变该规则必须提升 `PP_CACHE_SCHEMA_VERSION`，防止复用语义不同的缓存。缓存只消除重复解压和重复构造，不改变训练样本与 PP token。

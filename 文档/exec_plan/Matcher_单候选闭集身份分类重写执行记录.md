@@ -71,7 +71,7 @@ bash 训练与运行/submit_task.sh --sh 训练与运行/sh/train_experiment.sh 
 | `340893` | `matcher-pretrain-pair` | 1×A100 | mean/max 六分类→candidate-conditioned cross-attention 六分类 | PENDING/Priority |
 | `340894` | `matcher-smi-oracle` | 1×A800 | SMI-TED Light 289M/oracle | PENDING/Priority |
 | `340895` | `matcher-smi-detached` | 1×A800 | SMI-TED Light 289M/detached | PENDING/Priority |
-| `340896` | `matcher-smi-joint` | 1×A800 | SMI-TED Light 289M/joint | PENDING/Priority |
+| `340896` | `matcher-smi-joint` | 1×A800 | SMI-TED Light 289M/joint | CANCELLED before allocation；用户要求暂时跳过 |
 | `340897` | `matcher-molf-oracle` | 1×A100 | MoLFormer/oracle | PENDING/Priority |
 | `340898` | `matcher-molf-detached` | 1×A100 | MoLFormer/detached | PENDING/Priority |
 | `340899` | `matcher-molf-joint` | 1×A100 | MoLFormer/joint | PENDING/Priority |
@@ -388,6 +388,38 @@ Job `340895` 完成第一个训练 epoch 后进入首次完整 validation。W&B 
 探针创建 online run `tf8cphpo`，四个 `spawn` worker 的 PID 为 `71468/71471/71474/71478`，`wandb_module_inherited_count=0`；两次逐步曲线、最终摘要和退出码 0 全部同步成功。曲线地址是 `https://wandb.ai/pencounkdual-111/AdaLigand-Matcher/runs/tf8cphpo`，本地报告位于 `/storage/penghongen/tmp/Matcher/diagnostics/wandb_spawn_20260813T151807+0800/report.json`。
 
 用户随后解除“候选全局随机、16 workers、单 worker 16/32 GiB”作为吞吐冻结值的约束，允许按实测调整以提高速度。已运行 release 保持不变；尚未启动任务只采用有对照证据的 I/O 调整，不凭单次 GPU 空闲现象立即改变科学批次组成。
+
+## PP token 缓存与 15:57 队列复核
+
+首轮 A800 的训练计算可以持续占满 GPU，但第一次 validation 长时间处于 CPU/I/O 阶段。对真实清单和源文件大小的只读统计表明，train 的完整 probability map 压缩文件约占 PDB 级输入字节的 90%；在候选全局随机、16 个 worker 各自缓存的旧路径中，同一 PDB 的 probability map 会跨 worker 重复解压。按 worker/PDB 配对做的静态估算为 train 约读取 895 GB PDB 级压缩产物，而每个 PDB 只读取一次约为 76 GB；该估算用于确定优化优先级，不冒充真实训练吞吐测量。统计报告位于 `/storage/penghongen/tmp/Matcher/diagnostics/dataloader_locality_20260813/report.json`。
+
+因此新增版本化 PP 缓存 `cache/pp_input_v1/top_1024/<split>/<pdb>.npz`。它一次读取某个 PDB 的完整 probability map，按候选编号保存全部中心 `48³` PP token；训练命中缓存后只读取小型产物，缺失时由第一个取得 Linux 阻塞文件锁的进程构建，其余进程复用。该改变不修改 sampler、候选集合、物理批量、梯度累积、监督字段或 global batch。单 worker 缓存预算改为五个互不重叠的 LRU 分区，只决定可保留的已读数组，不预分配内存。
+
+科学审查发现第 K 名概率并列时，如果把旧 NumPy `argpartition` 改为“完整排序后取展平索引最小者”，会改变少量 PP 的 XYZ/索引，从而破坏已经运行任务与后续损失对照的输入可比性。本轮缓存因此逐值保留旧 Dataset 的 `argpartition` 入选子集，并只对入选项按概率降序、展平索引升序排序；更改并列规则必须使用新的缓存 schema 和新一轮实验。独立科学审查用 unique、重度并列、全零和裁剪边界概率图，组合 `top_k={1,4,1024,48³,>48³}` 共 20 个探针与旧函数逐数组比较，token 与索引全部相等；真实清单 train `480 PDB/14,312 candidates`、validation `181 PDB/6,495 candidates` 的候选编号也全部从 0 连续对齐。冻结门禁为 pytest `46 passed`、mypy 35 个源文件零问题、compileall、Git Bash `bash -n` 与 `git diff --check` 通过。
+
+正式 CPU 预计算将使用下面的完整命令，不设置 Slurm 或程序时间上限；业务产物全部位于允许的 `/storage/penghongen/tmp/Matcher/`：
+
+```bash
+bash 训练与运行/submit_task.sh \
+  --sh 训练与运行/sh/precompute_data.sh \
+  --resource cpu \
+  --cpus 16 \
+  --partition cpu \
+  --qos Cpu96 \
+  --job-name matcher-pp-precompute \
+  -- \
+  --data-root /storage/penghongen/AdaLigand/Ori_Data \
+  --stage1-root /storage/penghongen/AdaLigand_stage1_inference/Find_0-CPC1-ligand_PRAUC_0.675477/artifacts/Find_0 \
+  --output-root /storage/penghongen/tmp/Matcher \
+  --coverage-threshold 0.30 \
+  --selection-seed 3407 \
+  --splits train validation \
+  --workers 16 \
+  --products pp \
+  --pp-top-k 1024
+```
+
+2026-08-13 15:57:21（Asia/Shanghai）的轻量只读检查显示 Job `340894` 在 `gnode10` 已运行 `8:21:41`，Job `340895` 在 `gnode09` 已运行 `3:59:54`；两者 `after_lock` 均保留、`try_lock` 均不存在，且没有新 checkpoint。Job `340893`、`340897`、`340898`、`340899` 仍为 `PENDING (Priority)`。Job `340896` 已从 `squeue` 消失，随后用 `sacct -X` 核实为 `CANCELLED by 0`、elapsed `00:00:00`、未分配节点、未建立锁或业务产物；这不是训练异常。用户随后明确要求暂时跳过该 SMI-TED Light 289M/joint 任务，因此不提交替代 Job、不创建新锁，也不把它作为当前批次完成的前置条件；只有用户再次明确要求时才恢复。
 
 ## 验证命令
 
