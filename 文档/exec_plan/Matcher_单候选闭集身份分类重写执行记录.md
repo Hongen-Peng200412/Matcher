@@ -574,6 +574,27 @@ python -m pytest matcher/tests/test_calibration.py -q
 
 第一次验收在 `set -u` 状态直接激活 Conda，环境自带 `activate-binutils_linux-64.sh` 因 `ADDR2LINE` 未定义而退出；pytest 尚未开始，不是代码或数据失败。改为与正式 shell 相同的 `set +u / activate / set -u` 后通过。五个文件本地/远端 SHA-256 依次完全相同：`88a8f0a1…d308bd`、`d1fb1e99…dc80fd`、`c118935c…b18cb4`、`2d86b91d…cbae3f`、`54ad9042…4b5b1b`；服务器专项结果为 `1 passed in 6.72s`。该验收只导入入口并运行合成编排测试，没有构造真实 calibration Dataset，没有申请 GPU，也没有创建 calibration claim 或结果 JSON。
 
+## 首轮 validation 收口与一次性方案选择
+
+2026-08-14 01:47:50（Asia/Shanghai）的只读检查确认，六个已授权运行均已自然早停并写出阶段 `summary.json`；对应 Slurm allocation 继续由 `try_lock + after_lock` 保留，没有删除任何 `after_lock`。Job `340896` 仍按用户明确要求跳过，没有补交、没有分配节点，也没有计入零分。候选六分类两阶段的 BEST 如下：
+
+| 阶段 | BEST epoch | last epoch | validation macro-F1 | W&B |
+| --- | ---: | ---: | ---: | --- |
+| mean/max | 1 | 3 | 0.5304244533 | [mxornctd](https://wandb.ai/pencounkdual-111/AdaLigand-Matcher/runs/mxornctd) |
+| candidate-conditioned cross-attention | 4 | 6 | 0.5269085347 | [762wc627](https://wandb.ai/pencounkdual-111/AdaLigand-Matcher/runs/762wc627) |
+
+两者差值为 `0.0035159187`，首轮六分类结果支持以 mean/max 作为较弱但更稳的聚合起点；cross-attention 的结合区域 micro-Dice 与配体区域 micro-Dice 更高，但不改变本轮预先规定的六分类 macro-F1 选模口径。完整 Matcher 的 BEST validation 结果按选择分数降序如下；选择分数始终是六分类 macro-F1、以六分类判对为条件的身份 Top-1 和端到端身份 F1 的等权平均：
+
+| 排名 | Job / 语言表示 / 损失 | BEST / last epoch | 选择分数 | 六分类 macro-F1 | 条件身份 Top-1 | 端到端身份 F1 | 内在身份 Top-1 |
+| ---: | --- | --- | ---: | ---: | ---: | ---: | ---: |
+| 1 | 340895 / SMI-TED Light 289M / detached | 9 / 11 | 0.6696320918 | 0.5283099092 | 0.8034934498 | 0.6770929163 | 0.7743119266 |
+| 2 | 340894 / SMI-TED Light 289M / oracle | 7 / 9 | 0.6654351100 | 0.5254060463 | 0.8093023256 | 0.6615969582 | 0.7504587156 |
+| 3 | 340899 / MolFormer / joint | 7 / 9 | 0.6618542906 | 0.5129085101 | 0.8405405405 | 0.6321138211 | 0.7114337568 |
+| 4 | 340897 / MolFormer / oracle | 7 / 9 | 0.6539754941 | 0.5239893710 | 0.7850678733 | 0.6528692380 | 0.7205081670 |
+| 5 | 340898 / MolFormer / detached | 7 / 9 | 0.6398127499 | 0.5243064395 | 0.7648401826 | 0.6302916275 | 0.7059891107 |
+
+因此，本轮在读取 calibration 前唯一选定 Job `340895` 的 SMI-TED Light 289M detached BEST：`/storage/penghongen/tmp/Matcher/experiments/full_scratch_smi_ted_light_289m_detached/train_experiment_job340895_20260813T121932_a1/full_scratch_smi_ted_light_289m_detached/BEST.pt`。它比第二名高 `0.0041969818`；该差距只来自单随机种子 validation 比较，且缺少用户暂时跳过的 SMI-TED Light 289M joint，因此最终报告必须保留“首轮方案选择、非方差估计”的限制，不能把小差距解释成稳定的损失优劣结论。一次性 calibration 只用于报告这个预先选定 checkpoint，不再参与换模型、调参或选模。
+
 ## 验证命令
 
 ```powershell
