@@ -13,7 +13,7 @@ import torch
 import yaml  # type: ignore[import-untyped]
 from torch import nn
 
-from matcher import experiment
+from matcher import experiment, training as training_module
 from matcher.checkpointing import (
     CHECKPOINT_SCHEMA_VERSION,
     load_candidate_encoder_checkpoint,
@@ -36,6 +36,8 @@ from matcher.training import (
     _accumulation_backward_loss,
     _resolve_initial_checkpoint,
 )
+
+from .factories import build_synthetic_roots
 
 
 def test_identity_metrics_exclude_candidates_without_current_language_representation() -> None:
@@ -401,6 +403,59 @@ def test_initial_checkpoint_resolver_accepts_only_stage_dsl_or_posix_absolute_pa
     for unsafe_reference in ("stage:..:BEST", "stage:.hidden:BEST", "stage:-dash:LAST"):
         with pytest.raises(ValueError, match="stage:<name>"):
             _resolve_initial_checkpoint(unsafe_reference, plan_directory)
+
+
+def test_stage_runtime_uses_spawn_loaders_and_records_process_isolation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """train/validation 必须统一使用 spawn，并把该运行事实写入 resolved.json。"""
+
+    class CpuOnlyModel(nn.Module):
+        """提供不触发真实 CUDA 分配的最小可优化模型替身。"""
+
+        def __init__(self, _config: object) -> None:
+            super().__init__()
+            self.weight = nn.Parameter(torch.ones(()))
+
+        def to(self, *_args: object, **_kwargs: object) -> CpuOnlyModel:
+            """保留 CPU 参数并模拟正式模型的设备迁移接口。"""
+
+            return self
+
+    plan = load_experiment_plan(
+        Path(__file__).parents[2] / "configs/experiments/initial/candidate_pretrain_pair.yaml"
+    )
+    roots = build_synthetic_roots(tmp_path / "sources")
+    data = replace(
+        plan.data,
+        roots=roots,
+        num_workers=1,
+        prefetch_factor=1,
+        cache_gib_per_worker=0.01,
+    )
+    monkeypatch.setattr(training_module, "CandidateEncoder", CpuOnlyModel)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "get_device_name", lambda _device: "synthetic-cuda")
+    stage_directory = tmp_path / "stage"
+    stage_directory.mkdir()
+
+    runtime = training_module._build_stage_runtime(
+        plan.stages[0],
+        data,
+        plan.tracking,
+        stage_directory,
+        tmp_path,
+    )
+
+    for loader in (runtime.train_loader, runtime.validation_loader):
+        assert loader.multiprocessing_context is not None
+        assert loader.multiprocessing_context.get_start_method() == "spawn"
+        assert loader.pin_memory is True
+        assert loader.persistent_workers is True
+        assert loader.collate_fn is training_module.collate_candidates
+    resolved = json.loads((stage_directory / "resolved.json").read_text(encoding="utf-8"))
+    assert resolved["data"]["multiprocessing_context"] == "spawn"
 
 
 def test_checkpoint_schema_and_candidate_prefix_loading(tmp_path: Path) -> None:

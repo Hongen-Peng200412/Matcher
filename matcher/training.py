@@ -335,6 +335,29 @@ class _StageRuntime:
     resolved_config: dict[str, object]
 
 
+def _build_candidate_loader(
+    dataset: CandidateDataset,
+    sampler: ShuffledBatchSampler,
+    num_workers: int,
+    prefetch_factor: int,
+) -> DataLoader[CandidateBatch]:
+    """统一构造 Matcher 候选 DataLoader；spawn 隔离主进程的 W&B/TLS 状态。"""
+
+    return cast(
+        DataLoader[CandidateBatch],
+        DataLoader(
+            cast(Any, dataset),
+            batch_sampler=sampler,
+            num_workers=num_workers,
+            collate_fn=collate_candidates,
+            pin_memory=True,
+            persistent_workers=True,
+            prefetch_factor=prefetch_factor,
+            multiprocessing_context=_DATALOADER_MULTIPROCESSING_CONTEXT,
+        ),
+    )
+
+
 def _build_stage_runtime(
     stage: StageConfig,
     data: DataConfig,
@@ -388,31 +411,17 @@ def _build_stage_runtime(
         seed=stage.training.seed,
         sample_count_multiple=None,
     )
-    train_loader = cast(
-        DataLoader[CandidateBatch],
-        DataLoader(
-            cast(Any, train_dataset),
-            batch_sampler=train_sampler,
-            num_workers=data.num_workers,
-            collate_fn=collate_candidates,
-            pin_memory=True,
-            persistent_workers=True,
-            prefetch_factor=data.prefetch_factor,
-            multiprocessing_context=_DATALOADER_MULTIPROCESSING_CONTEXT,
-        ),
+    train_loader = _build_candidate_loader(
+        train_dataset,
+        train_sampler,
+        data.num_workers,
+        data.prefetch_factor,
     )
-    validation_loader = cast(
-        DataLoader[CandidateBatch],
-        DataLoader(
-            cast(Any, validation_dataset),
-            batch_sampler=validation_sampler,
-            num_workers=data.num_workers,
-            collate_fn=collate_candidates,
-            pin_memory=True,
-            persistent_workers=True,
-            prefetch_factor=data.prefetch_factor,
-            multiprocessing_context=_DATALOADER_MULTIPROCESSING_CONTEXT,
-        ),
+    validation_loader = _build_candidate_loader(
+        validation_dataset,
+        validation_sampler,
+        data.num_workers,
+        data.prefetch_factor,
     )
 
     model: nn.Module
