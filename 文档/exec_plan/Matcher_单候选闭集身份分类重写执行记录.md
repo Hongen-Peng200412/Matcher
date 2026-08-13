@@ -558,6 +558,22 @@ MoLFormer/oracle 随后完成 epoch 0：选择分数 `0.5346026`，三项分量�
 
 第二轮独立科学终审与严格表达终审均为 PASS，阻断项 0。科学审查独立核对错 selection seed、非最佳 checkpoint、epoch record 分数错配、仅 I/O 字段变化、claim 身份错配与恢复路径；表达审查逐项核对 TypedDict、CLI help、README 的结果/claim/runtime/evaluation 字段表、模块布局、中文 Docstring 与测试替身诚实性。冻结门禁为 pytest `51 passed`、mypy 38 个源文件零问题，compileall、七份 YAML、全部正式 shell 的 `bash -n`、calibration CLI help 和 `git diff --check` 全部通过。该入口截至此处仍未在服务器执行，也没有读取 calibration。
 
+实现提交为 `f56a74b feat(evaluation): add one-time calibration entrypoint`。随后从本机 Matcher 根执行 `与服务器交互/run_sync.bat`，按保留远端既有文件的安全同步规则更新 `/home/penghongen/My_Project/Matcher`；正在运行任务继续使用各自冻结 release，不会热加载项目根。服务器 CPU 验收执行的核心命令是：
+
+```bash
+cd /home/penghongen/My_Project/Matcher
+sha256sum matcher/calibration.py matcher/metrics.py matcher/training.py \
+  matcher/tests/test_calibration.py 训练与运行/sh/evaluate_calibration.sh
+set +u
+source "${HOME}/anaconda3/etc/profile.d/conda.sh"
+conda activate Pocket_Plus_centos7_cu121_allgpu
+set -u
+python -m matcher.calibration --help >/dev/null
+python -m pytest matcher/tests/test_calibration.py -q
+```
+
+第一次验收在 `set -u` 状态直接激活 Conda，环境自带 `activate-binutils_linux-64.sh` 因 `ADDR2LINE` 未定义而退出；pytest 尚未开始，不是代码或数据失败。改为与正式 shell 相同的 `set +u / activate / set -u` 后通过。五个文件本地/远端 SHA-256 依次完全相同：`88a8f0a1…d308bd`、`d1fb1e99…dc80fd`、`c118935c…b18cb4`、`2d86b91d…cbae3f`、`54ad9042…4b5b1b`；服务器专项结果为 `1 passed in 6.72s`。该验收只导入入口并运行合成编排测试，没有构造真实 calibration Dataset，没有申请 GPU，也没有创建 calibration claim 或结果 JSON。
+
 ## 验证命令
 
 ```powershell
