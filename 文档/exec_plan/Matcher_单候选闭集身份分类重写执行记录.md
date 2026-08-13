@@ -354,6 +354,41 @@ W&B online 初始化成功后，任务在 12:24 左右完成首个真实 global 
 
 该事件发生在损失与梯度有限性检查、参数更新和无条件 CUDA 同步之后，证明最新 W&B release 没有改变 A800 正式训练语义。此时 Job `340895` 仍为 RUNNING，`after_lock_340895` 保留，`try_lock_340895` 不存在。后续逐步损失、梯度、学习率、数据等待、计算吞吐、门值和显存可以由用户直接在线查看；完整 validation 指标在 epoch 结束后出现。
 
+## W&B 网络异常与 DataLoader 进程隔离
+
+Job `340895` 完成第一个训练 epoch 后进入首次完整 validation。W&B API 随后把 run `pki0o1zr` 显示为 `crashed`，但 2026-08-13 15:00--15:10 的只读交叉检查同时确认：Slurm 任务仍为 RUNNING；主 Python 进程、W&B 服务进程、16 个训练 worker 和 16 个 validation worker 均存活；`after_lock_340895` 存在而 `try_lock_340895` 不存在；worker 的累计读取字节仍增加。因此没有依据重启或释放该任务。
+
+本地 W&B `debug-internal.log` 给出了状态冲突的直接原因：gnode09 从 13:22 起反复收到 `api.wandb.ai` 的 `SSLEOFError` 或 `_ssl.c` 系统错误，在线 file stream 无法续传；日志中没有 `finish`、训练异常或服务关闭记录，15:08 仍持续产生 keepalive 和状态报告。网页的 `crashed` 是在线心跳中断后的远端状态，不代表 Matcher 进程已经退出。检查命令为：
+
+```powershell
+& '.\与服务器交互\other\Invoke-PasswordSsh.ps1' `
+  -Command 'bash -s' `
+  -InputFile '.\tmp\inspect_wandb_340895.sh'
+```
+
+同一日志还显示 W&B 初始化早于 Linux DataLoader workers，旧 release 使用默认 `fork`；同一毫秒出现成组的 keepalive/status 请求，说明子进程继承追踪客户端状态会放大不必要的进程间通信。提交 `184e030` 因而把正式 train 与 validation DataLoader 的 `multiprocessing_context` 显式冻结为 `spawn`，并写入 `resolved.json:data.multiprocessing_context`。该改变不重启 Job `340894/340895`，只进入尚未冻结的新 release；它不改变 sampler、候选集合、物理批量、梯度累积或损失分母。
+
+本地门禁为 pytest `42 passed`、mypy 34 个源文件零问题和 `git diff --check` 通过。安全同步仍使用：
+
+```powershell
+& '.\与服务器交互\sync_code.ps1'
+```
+
+服务器真实生命周期探针先把临时代码写入允许的诊断目录，再在正式 Conda 环境中执行；没有把探针混入 release 源码：
+
+```powershell
+& '.\与服务器交互\other\Invoke-PasswordSsh.ps1' `
+  -Command 'mkdir -p /storage/penghongen/tmp/Matcher/diagnostics/wandb_spawn_20260813T151807+0800 && cat > /storage/penghongen/tmp/Matcher/diagnostics/wandb_spawn_20260813T151807+0800/probe.py' `
+  -InputFile '.\tmp\probe_wandb_spawn.py'
+
+& '.\与服务器交互\other\Invoke-PasswordSsh.ps1' `
+  -Command 'source /home/penghongen/anaconda3/etc/profile.d/conda.sh && conda activate Pocket_Plus_centos7_cu121_allgpu && cd /home/penghongen/My_Project/Matcher && MATCHER_DIAGNOSTIC_ROOT=/storage/penghongen/tmp/Matcher/diagnostics/wandb_spawn_20260813T151807+0800 PYTHONPATH=. python /storage/penghongen/tmp/Matcher/diagnostics/wandb_spawn_20260813T151807+0800/probe.py'
+```
+
+探针创建 online run `tf8cphpo`，四个 `spawn` worker 的 PID 为 `71468/71471/71474/71478`，`wandb_module_inherited_count=0`；两次逐步曲线、最终摘要和退出码 0 全部同步成功。曲线地址是 `https://wandb.ai/pencounkdual-111/AdaLigand-Matcher/runs/tf8cphpo`，本地报告位于 `/storage/penghongen/tmp/Matcher/diagnostics/wandb_spawn_20260813T151807+0800/report.json`。
+
+用户随后解除“候选全局随机、16 workers、单 worker 16/32 GiB”作为吞吐冻结值的约束，允许按实测调整以提高速度。已运行 release 保持不变；尚未启动任务只采用有对照证据的 I/O 调整，不凭单次 GPU 空闲现象立即改变科学批次组成。
+
 ## 验证命令
 
 ```powershell
