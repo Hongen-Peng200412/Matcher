@@ -18,6 +18,7 @@ from matcher.model.fusion import (
     CandidateConditionedAggregator,
     gather_voxel_features,
     normalize_candidate_manual_features,
+    normalize_candidate_sampling_features,
 )
 from matcher.model.ligand_matcher import (
     GraphMessageLayer,
@@ -37,6 +38,7 @@ def _small_config(aggregation: AggregationName = "mean_max") -> MatcherModelConf
     return MatcherModelConfig(
         aggregation=aggregation,
         use_manual_features=True,
+        use_sampling_features=True,
         model_dim=16,
         attention_heads=4,
         dropout=0.0,
@@ -67,6 +69,7 @@ def _batch(tmp_path, task_name: str) -> CandidateBatch:
         language_family="molformer" if task_name == "full_matcher" else None,
         identity_scope="small_molecule" if task_name == "full_matcher" else None,
         pp_top_k=4,
+        local_crop_strategy="fixed_center",
         cache_bytes_per_worker=64 * 1024**2,
     )
     return collate_candidates([cast(CandidateItem, dataset[0])])
@@ -192,6 +195,14 @@ def test_manual_feature_normalization_changes_only_token_counts() -> None:
     assert torch.equal(normalized, expected)
 
 
+def test_sampling_features_use_fixed_geometric_normalization() -> None:
+    """边界标志与保留率不变；L2/L∞ 分别按 24√3 和 24 归一化。"""
+
+    raw = torch.tensor([[1.0, 24.0 * 3.0**0.5, 24.0, 0.75]])
+    normalized = normalize_candidate_sampling_features(raw)
+    assert torch.allclose(normalized, torch.tensor([[1.0, 1.0, 1.0, 0.75]]))
+
+
 def test_identity_variants_gate_only_numerator_and_joint_reaches_class_probability() -> None:
     """三种身份损失都除以真实有效数，且只有 joint 把身份梯度传给 p_small。"""
 
@@ -296,11 +307,16 @@ def test_five_class_identity_loss_uses_each_target_class_probability() -> None:
     assert class_gradient is None or torch.count_nonzero(class_gradient) == 0
 
 
-def test_identity_manual_features_are_learnable_but_class_probability_is_detached() -> None:
-    """身份 MLP 读取手动统计与目标类概率，但身份路径不能反向更新六分类 logits。"""
+def test_identity_manual_and_sampling_features_are_learnable_but_class_probability_is_detached() -> None:
+    """身份 MLP 可学习手动/采样统计，但身份类别概率不能反向更新六分类 logits。"""
 
     torch.manual_seed(3407)
-    scorer = IdentityScorer(model_dim=16, dropout=0.0, use_manual_features=True).train()
+    scorer = IdentityScorer(
+        model_dim=16,
+        dropout=0.0,
+        use_manual_features=True,
+        use_sampling_features=True,
+    ).train()
     candidate = torch.randn(2, 16, requires_grad=True)
     representations = cast(
         IdentityRepresentations,
@@ -314,6 +330,10 @@ def test_identity_manual_features_are_learnable_but_class_probability_is_detache
     identity_class_index = torch.tensor([[1, 4, 5], [1, 4, 5]])
     class_logits = torch.randn(2, 6, requires_grad=True)
     manual_features = torch.rand(2, 12, requires_grad=True)
+    sampling_features = torch.tensor(
+        [[1.0, 12.0, 8.0, 0.75], [0.0, 0.5, 0.5, 1.0]],
+        requires_grad=True,
+    )
     logits = scorer(
         candidate,
         representations,
@@ -321,11 +341,14 @@ def test_identity_manual_features_are_learnable_but_class_probability_is_detache
         class_logits,
         identity_class_index,
         manual_features,
+        sampling_features,
     )
     logits.sum().backward()
     assert class_logits.grad is None or torch.count_nonzero(class_logits.grad) == 0
     assert manual_features.grad is not None
     assert torch.count_nonzero(manual_features.grad) > 0
+    assert sampling_features.grad is not None
+    assert torch.count_nonzero(sampling_features.grad) > 0
     assert candidate.grad is not None
     assert torch.count_nonzero(candidate.grad) > 0
 
@@ -451,7 +474,12 @@ def test_identity_encoder_rejects_duplicate_graph_for_one_identity(tmp_path) -> 
 def test_identity_graph_and_inventory_scores_start_as_exact_zero_increments() -> None:
     """配体图和清单分支本身保持可学，但其打分出口门在初始化时严格为零。"""
 
-    scorer = IdentityScorer(model_dim=16, dropout=0.0, use_manual_features=False).train()
+    scorer = IdentityScorer(
+        model_dim=16,
+        dropout=0.0,
+        use_manual_features=False,
+        use_sampling_features=False,
+    ).train()
     candidate = torch.randn(2, 16)
     representations = cast(
         IdentityRepresentations,
@@ -462,7 +490,7 @@ def test_identity_graph_and_inventory_scores_start_as_exact_zero_increments() ->
         },
     )
     mask = torch.ones((2, 3), dtype=torch.bool)
-    native_only = scorer.native(candidate, representations["native"], None, None)
+    native_only = scorer.native(candidate, representations["native"], None, None, None)
     logits = scorer(
         candidate,
         representations,
@@ -470,6 +498,7 @@ def test_identity_graph_and_inventory_scores_start_as_exact_zero_increments() ->
         torch.zeros((2, 6)),
         torch.full((2, 3), 4, dtype=torch.long),
         torch.zeros((2, 12)),
+        torch.zeros((2, 4)),
     )
     assert torch.equal(logits, native_only)
     logits.sum().backward()
@@ -482,7 +511,12 @@ def test_identity_graph_and_inventory_scores_start_as_exact_zero_increments() ->
 def test_single_identity_inventory_score_stays_zero_after_gate_opens() -> None:
     """即使清单门已训练为非零，单身份样本仍没有可贡献的其他身份上下文。"""
 
-    scorer = IdentityScorer(model_dim=16, dropout=0.0, use_manual_features=False).eval()
+    scorer = IdentityScorer(
+        model_dim=16,
+        dropout=0.0,
+        use_manual_features=False,
+        use_sampling_features=False,
+    ).eval()
     scorer.inventory_gate.data.fill_(1.0)
     scorer.graph_gate.data.zero_()
     candidate = torch.randn(2, 16)
@@ -504,8 +538,9 @@ def test_single_identity_inventory_score_stays_zero_after_gate_opens() -> None:
             torch.zeros((2, 6)),
             torch.full((2, 1), 4, dtype=torch.long),
             torch.zeros((2, 12)),
+            torch.zeros((2, 4)),
         )
-        native_only = scorer.native(candidate, native, None, None)
+        native_only = scorer.native(candidate, native, None, None, None)
     assert torch.equal(logits, native_only)
 
 
@@ -528,6 +563,19 @@ def test_model_config_and_voxel_gather_reject_invalid_contracts() -> None:
     padded = gather_voxel_features(volume, indices, torch.tensor([[False]]))
     assert torch.count_nonzero(padded) == 0
 
+
+def test_model_config_migrates_batch0_and_batch1_feature_flags() -> None:
+    """第0批缺两个特征开关均关闭；第1批只缺采样开关并保留手动统计。"""
+
     legacy_values = _small_config().to_dict()
     del legacy_values["use_manual_features"]
-    assert MatcherModelConfig.from_dict(legacy_values).use_manual_features is False
+    del legacy_values["use_sampling_features"]
+    migrated = MatcherModelConfig.from_dict(legacy_values)
+    assert migrated.use_manual_features is False
+    assert migrated.use_sampling_features is False
+
+    batch1_values = _small_config().to_dict()
+    del batch1_values["use_sampling_features"]
+    migrated_batch1 = MatcherModelConfig.from_dict(batch1_values)
+    assert migrated_batch1.use_manual_features is True
+    assert migrated_batch1.use_sampling_features is False

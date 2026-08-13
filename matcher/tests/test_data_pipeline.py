@@ -15,13 +15,20 @@ from matcher.batching import ShuffledBatchSampler, collate_candidates
 from matcher.cache import ByteBudgetLru
 from matcher.candidate_data import CandidateDataset
 from matcher.contracts import CandidateItem
-from matcher.geometry import crop_center_48, hard_scatter_receptor, keep_local_48
+from matcher.geometry import (
+    candidate_sampling_features,
+    crop_local_48,
+    hard_scatter_receptor,
+    keep_local_48_at,
+    resolve_candidate_crop,
+)
 from matcher.labels import OccurrenceMask, assign_candidate_target
 from matcher.ligand_graph import LigandGraphStore
 from matcher.manifest import build_manifest, ensure_manifest, load_jsonl, require_manifest
 from matcher.precompute import precompute_inputs
 from matcher.pp_input import _build_pp_tokens
-from matcher.schema import SourceRoots
+from matcher.schema import LocalCropStrategy, SourceRoots
+from matcher.voxel_input import VoxelInputStore
 
 from .factories import build_synthetic_roots
 
@@ -57,11 +64,15 @@ def test_bidirectional_coverage_uses_score_then_occurrence_id() -> None:
 
 
 def test_geometry_keeps_only_center_48_and_sums_receptor_features() -> None:
-    """V 截断使用 [16,64)；同 home voxel 的受体特征执行求和。"""
+    """V 截断使用 [16,64)；向下取整到同一体素的受体特征执行求和。"""
 
     full = np.arange(80**3, dtype=np.int64).reshape(80, 80, 80)
-    assert crop_center_48(full).shape == (48, 48, 48)
-    keep, cropped = keep_local_48(np.asarray([[15, 16, 16], [16, 16, 16], [63, 63, 63], [64, 63, 63]]))
+    fixed_start = np.asarray([16, 16, 16], dtype=np.int64)
+    assert crop_local_48(full, fixed_start).shape == (48, 48, 48)
+    keep, cropped = keep_local_48_at(
+        np.asarray([[15, 16, 16], [16, 16, 16], [63, 63, 63], [64, 63, 63]]),
+        fixed_start,
+    )
     assert keep.tolist() == [False, True, True, False]
     assert cropped.tolist() == [[0, 0, 0], [47, 47, 47]]
     grid, mask = hard_scatter_receptor(
@@ -70,6 +81,161 @@ def test_geometry_keeps_only_center_48_and_sums_receptor_features() -> None:
     )
     assert mask[22, 21, 20]
     assert np.all(grid[:, 22, 21, 20] == 2.0)
+
+
+@pytest.mark.parametrize(
+    ("axis", "edge", "expected_start", "expected_offset"),
+    (
+        (0, "low", 0, 23.0),
+        (0, "high", 32, -23.0),
+        (1, "low", 0, 23.0),
+        (1, "high", 32, -23.0),
+        (2, "low", 0, 23.0),
+        (2, "high", 32, -23.0),
+    ),
+)
+def test_v_centroid_crop_resolves_interior_and_six_boundary_faces(
+    axis: int,
+    edge: str,
+    expected_start: int,
+    expected_offset: float,
+) -> None:
+    """内部 V 保持中心视野；六面请求逐轴限制到 0/32，且保留完整 V。"""
+
+    interior = np.asarray([[39, 39, 39], [40, 40, 40]], dtype=np.int64)
+    interior_geometry = resolve_candidate_crop(interior, "v_centroid")
+    np.testing.assert_array_equal(interior_geometry.start_zyx, [16, 16, 16])
+    np.testing.assert_array_equal(interior_geometry.crop_center_offset_zyx, [0.0, 0.0, 0.0])
+    np.testing.assert_array_equal(
+        candidate_sampling_features(interior_geometry),
+        [0.0, 0.0, 0.0, 1.0],
+    )
+
+    boundary = interior.copy()
+    boundary[:, axis] = [0, 1] if edge == "low" else [78, 79]
+    geometry = resolve_candidate_crop(boundary, "v_centroid")
+    expected = np.full(3, 16, dtype=np.int64)
+    expected[axis] = expected_start
+    np.testing.assert_array_equal(geometry.start_zyx, expected)
+    assert geometry.clipped_axis_mask.tolist() == [index == axis for index in range(3)]
+    assert geometry.crop_center_offset_zyx[axis] == expected_offset
+    assert geometry.retained_v_count == geometry.full_v_count == 2
+    features = candidate_sampling_features(geometry)
+    assert features[0] == 1.0
+    assert features[1] == pytest.approx(abs(expected_offset))
+    assert features[2] == pytest.approx(abs(expected_offset))
+    assert features[3] == 1.0
+
+
+def test_v_centroid_crop_uses_ties_to_even_and_reports_partial_retention() -> None:
+    """半整数请求沿用 NumPy 最近偶数取整，宽组件的保留比例按完整 V 计数。"""
+
+    low_half = resolve_candidate_crop(
+        np.asarray([[24, 39, 39]], dtype=np.int64),
+        "v_centroid",
+    )
+    high_half = resolve_candidate_crop(
+        np.asarray([[25, 39, 39]], dtype=np.int64),
+        "v_centroid",
+    )
+    assert low_half.requested_start_zyx[0] == 0
+    assert high_half.requested_start_zyx[0] == 2
+
+    wide_component = np.stack(
+        (
+            np.arange(80, dtype=np.int64),
+            np.full(80, 39, dtype=np.int64),
+            np.full(80, 40, dtype=np.int64),
+        ),
+        axis=1,
+    )
+    geometry = resolve_candidate_crop(wide_component, "v_centroid")
+    assert geometry.start_zyx.tolist() == [16, 16, 16]
+    assert geometry.full_v_count == 80
+    assert geometry.retained_v_count == 48
+    assert candidate_sampling_features(geometry)[3] == pytest.approx(0.6)
+
+
+def test_v_centroid_crop_drives_voxel_tokens_pp_and_area_targets_together(tmp_path) -> None:
+    """高 X 边界候选的体素、V、PP、配体和结合区域严格共享一个起点。"""
+
+    roots = build_synthetic_roots(tmp_path)
+    centered_path = roots.stage1_root / "train/1abc/centered/F1_centered.npz"
+    with np.load(centered_path, allow_pickle=False) as archive:
+        centered = {name: np.asarray(archive[name]).copy() for name in archive.files}
+    full_v = np.asarray([[39, 39, 78], [40, 40, 79]], dtype=np.int16)
+    marker_zyx = np.asarray([40, 40, 79], dtype=np.int64)
+    centered["voxel_index_local_zyx"] = full_v
+    centered["A_coord_local_xyz"] = (marker_zyx[[2, 1, 0]] + 0.5)[None].astype(np.float32)
+    centered["P_coord_local_xyz"] = np.stack(
+        (
+            (marker_zyx[[2, 1, 0]] + 0.5).astype(np.float32),
+            np.asarray([40.5, 40.5, 40.5], dtype=np.float32),
+        )
+    )
+    np.savez(centered_path, **centered)
+
+    receptor_path = roots.data_root / "parse/1abc/receptor_tokens.npz"
+    np.savez(
+        receptor_path,
+        coords=(marker_zyx[[2, 1, 0]] + 0.5)[None].astype(np.float32),
+        feat=np.ones((1, 49), dtype=np.float32),
+    )
+    np.savez(
+        roots.data_root / "labels/1abc/atom_labels.npz",
+        binding_atom=np.asarray([True]),
+    )
+    np.savez(
+        roots.data_root / "density/1abc/ligand_area.npz",
+        mask_0=marker_zyx[None].astype(np.int32),
+        mask_1=marker_zyx[None].astype(np.int32),
+    )
+    probability = np.zeros((80, 80, 80), dtype=np.float32)
+    probability[tuple(marker_zyx)] = 1.0
+    np.savez(
+        roots.stage1_root / "train/1abc/probability/probability_map.npz",
+        probability_map=probability,
+        origin_xyz=np.zeros(3, dtype=np.float32),
+        voxel_size_xyz=np.ones(3, dtype=np.float32),
+    )
+
+    manifest_path = build_manifest(
+        roots,
+        coverage_threshold=0.30,
+        selection_seed=3407,
+        split_names=("train", "validation"),
+    )
+    item = CandidateDataset(
+        roots=roots,
+        manifest_path=manifest_path,
+        split_name="train",
+        task_name="candidate_pretrain",
+        language_family=None,
+        identity_scope=None,
+        pp_top_k=4,
+        local_crop_strategy="v_centroid",
+        cache_bytes_per_worker=64 * 1024**2,
+    )[0]
+    marker_local = (marker_zyx - np.asarray([16, 16, 32])).tolist()
+    assert marker_local == [24, 24, 47]
+    assert marker_local in item["v_index_zyx"].tolist()
+    assert item["pp_index_zyx"][0].tolist() == marker_local
+    assert item["ligand_area_target"][tuple(marker_local)]
+    assert item["binding_area_target"][tuple(marker_local)]
+    expected_exp = np.load(
+        roots.data_root / "density/1abc/exp.npz",
+        allow_pickle=False,
+    )["grid"][0][tuple(marker_zyx)]
+    assert item["voxel_input"][0][tuple(marker_local)] == np.float16(expected_exp)
+    assert item["candidate_sampling_features"].tolist() == pytest.approx(
+        [1.0, 23.0, 23.0, 1.0]
+    )
+    assert item["a_tokens"][0, -3:].tolist() == pytest.approx(
+        [23.5 / 40.0, 0.5 / 40.0, 0.5 / 40.0]
+    )
+    assert item["p_tokens"][0, -3:].tolist() == pytest.approx(
+        [23.5 / 40.0, 0.5 / 40.0, 0.5 / 40.0]
+    )
 
 
 def test_manifest_and_dataset_keep_pdb_but_drop_missing_smi_occurrence(tmp_path) -> None:
@@ -115,6 +281,7 @@ def test_manifest_and_dataset_keep_pdb_but_drop_missing_smi_occurrence(tmp_path)
         language_family="smi_ted_289m",
         identity_scope="small_molecule",
         pp_top_k=4,
+        local_crop_strategy="fixed_center",
     )
     item = dataset[0]
     assert item["class_target"] == 4
@@ -209,6 +376,7 @@ def test_manifest_v3_scope_distinguishes_small_from_multiple_foreground_classes(
         language_family="smi_ted_289m",
         identity_scope="all_non_background",
         pp_top_k=4,
+        local_crop_strategy="fixed_center",
     )[0]
     assert all_foreground["identity_class_index"].tolist() == [1, 4]
     assert all_foreground["identity_object_keys"] == ["ION:ZN", "CCD:LIG"]
@@ -222,6 +390,7 @@ def test_manifest_v3_scope_distinguishes_small_from_multiple_foreground_classes(
         language_family="smi_ted_289m",
         identity_scope="small_molecule",
         pp_top_k=4,
+        local_crop_strategy="fixed_center",
     )[0]
     assert small_only["identity_class_index"].tolist() == [4]
     assert small_only["identity_target"] == 0
@@ -294,6 +463,12 @@ def test_dataset_accepts_float32_box_origin_recomputation_but_rejects_real_shift
     probability["origin_xyz"][0] = adjacent_origin
     np.savez(centered_path, **centered)
     np.savez(probability_path, **probability)
+    for density_name in ("exp", "sim"):
+        density_path = roots.data_root / f"density/1abc/{density_name}.npz"
+        with np.load(density_path, allow_pickle=False) as archive:
+            density = {name: np.asarray(archive[name]).copy() for name in archive.files}
+        density["origin"][0] = adjacent_origin
+        np.savez(density_path, **density)
 
     accepted = CandidateDataset(
         roots=roots,
@@ -303,6 +478,7 @@ def test_dataset_accepts_float32_box_origin_recomputation_but_rejects_real_shift
         language_family=None,
         identity_scope=None,
         pp_top_k=4,
+        local_crop_strategy="fixed_center",
     )
     assert accepted[0]["class_target"] == 4
 
@@ -316,6 +492,7 @@ def test_dataset_accepts_float32_box_origin_recomputation_but_rejects_real_shift
         language_family=None,
         identity_scope=None,
         pp_top_k=4,
+        local_crop_strategy="fixed_center",
     )
     with pytest.raises(ValueError, match="最大绝对误差"):
         rejected[0]
@@ -341,19 +518,22 @@ def test_pp_cache_removes_runtime_probability_map_dependency(
         language_family=None,
         identity_scope=None,
         pp_top_k=4,
+        local_crop_strategy="fixed_center",
         cache_bytes_per_worker=64 * 1024**2,
     )
     first = dataset[0]
     assert first["pp_index_zyx"][0].tolist() == [24, 24, 24]
     assert first["pp_tokens"][0, 0].item() == 1.0
 
-    cache_path = roots.pp_cache_root(4) / "train/1abc.npz"
+    cache_path = roots.pp_cache_root(4, "fixed_center") / "train/1abc.npz"
     assert cache_path.is_file()
     with np.load(cache_path, allow_pickle=False) as archive:
-        assert int(archive["schema_version"].item()) == 1
+        assert int(archive["schema_version"].item()) == 2
         assert int(archive["top_k"].item()) == 4
         assert archive["tokens"].dtype == np.float32
         assert archive["index_zyx"].dtype == np.int16
+        assert archive["crop_start_zyx"].dtype == np.int16
+        np.testing.assert_array_equal(archive["crop_start_zyx"], [[16, 16, 16]])
 
     probability_path = roots.stage1_root / "train/1abc/probability/probability_map.npz"
     probability_path.unlink()
@@ -365,10 +545,156 @@ def test_pp_cache_removes_runtime_probability_map_dependency(
         language_family=None,
         identity_scope=None,
         pp_top_k=4,
+        local_crop_strategy="fixed_center",
         cache_bytes_per_worker=64 * 1024**2,
     )[0]
     np.testing.assert_array_equal(reloaded["pp_tokens"], first["pp_tokens"])
     np.testing.assert_array_equal(reloaded["pp_index_zyx"], first["pp_index_zyx"])
+
+
+def test_crop_strategies_use_disjoint_voxel_and_pp_cache_paths(tmp_path) -> None:
+    """固定中心和 V 质心视野不得命中彼此的 voxel/PP 缓存。"""
+
+    roots = build_synthetic_roots(tmp_path)
+    manifest_path = build_manifest(
+        roots,
+        coverage_threshold=0.30,
+        selection_seed=3407,
+        split_names=("train", "validation"),
+    )
+    strategies: tuple[LocalCropStrategy, ...] = ("fixed_center", "v_centroid")
+    for strategy in strategies:
+        CandidateDataset(
+            roots=roots,
+            manifest_path=manifest_path,
+            split_name="train",
+            task_name="candidate_pretrain",
+            language_family=None,
+            identity_scope=None,
+            pp_top_k=4,
+            local_crop_strategy=strategy,
+            cache_bytes_per_worker=64 * 1024**2,
+        )[0]
+    fixed_voxel = (
+        roots.voxel_cache_root("fixed_center")
+        / "train/1abc/candidate_0_start_16_16_16.npy"
+    )
+    centroid_voxel = (
+        roots.voxel_cache_root("v_centroid")
+        / "train/1abc/candidate_0_start_0_0_0.npy"
+    )
+    fixed_pp = roots.pp_cache_root(4, "fixed_center") / "train/1abc.npz"
+    centroid_pp = roots.pp_cache_root(4, "v_centroid") / "train/1abc.npz"
+    assert all(path.is_file() for path in (fixed_voxel, centroid_voxel, fixed_pp, centroid_pp))
+    assert fixed_voxel != centroid_voxel
+    assert fixed_pp != centroid_pp
+    with np.load(fixed_pp, allow_pickle=False) as fixed_archive:
+        np.testing.assert_array_equal(fixed_archive["crop_start_zyx"], [[16, 16, 16]])
+    with np.load(centroid_pp, allow_pickle=False) as centroid_archive:
+        np.testing.assert_array_equal(centroid_archive["crop_start_zyx"], [[0, 0, 0]])
+
+
+def test_voxel_cache_path_binds_crop_start_and_prevents_silent_reuse(tmp_path) -> None:
+    """同一候选的两个裁剪起点必须物化到不同 NPY，且各自命中自身数组。"""
+
+    roots = build_synthetic_roots(tmp_path)
+    store = VoxelInputStore(roots, "v_centroid", source_cache_bytes=0)
+    first_start = np.asarray([0, 0, 0], dtype=np.int64)
+    second_start = np.asarray([16, 16, 16], dtype=np.int64)
+    first = store.load("train", "1abc", 0, first_start)
+    second = store.load("train", "1abc", 0, second_start)
+    first_path = (
+        roots.voxel_cache_root("v_centroid")
+        / "train/1abc/candidate_0_start_0_0_0.npy"
+    )
+    second_path = (
+        roots.voxel_cache_root("v_centroid")
+        / "train/1abc/candidate_0_start_16_16_16.npy"
+    )
+    assert first_path.is_file()
+    assert second_path.is_file()
+    assert first_path != second_path
+    assert not np.array_equal(first, second)
+    np.testing.assert_array_equal(store.load("train", "1abc", 0, first_start), first)
+    np.testing.assert_array_equal(store.load("train", "1abc", 0, second_start), second)
+
+
+def test_voxel_input_bridges_anisotropic_density_and_f1_geometry(tmp_path) -> None:
+    """非零原点、各向异性尺寸和非对称 ZYX 起点必须共同解析到同一候选框。"""
+
+    roots = build_synthetic_roots(tmp_path)
+    density_shape = (84, 84, 84)
+    box_start_zyx = np.asarray([1, 2, 3], dtype=np.int32)
+    origin_xyz = np.asarray([10.0, -20.0, 30.0], dtype=np.float32)
+    voxel_size_xyz = np.asarray([1.25, 1.5, 2.0], dtype=np.float32)
+    box_origin_xyz = origin_xyz + box_start_zyx[[2, 1, 0]] * voxel_size_xyz
+    marker_zyx = box_start_zyx + np.asarray([16, 16, 16], dtype=np.int32)
+    experimental = np.zeros((1, *density_shape), dtype=np.float32)
+    simulated = np.zeros_like(experimental)
+    experimental[(0, *marker_zyx.tolist())] = np.float32(0.75)
+    for density_name, grid in (("exp", experimental), ("sim", simulated)):
+        np.savez(
+            roots.data_root / f"density/1abc/{density_name}.npz",
+            grid=grid,
+            voxel_size=voxel_size_xyz,
+            origin=origin_xyz,
+        )
+
+    centered_path = roots.stage1_root / "train/1abc/centered/F1_centered.npz"
+    with np.load(centered_path, allow_pickle=False) as archive:
+        centered = {name: np.asarray(archive[name]).copy() for name in archive.files}
+    centered["box_start_zyx"] = box_start_zyx[None, :]
+    centered["box_origin_world"] = box_origin_xyz[None, :]
+    centered["voxel_size_world"] = voxel_size_xyz[None, :]
+    np.savez(centered_path, **centered)
+
+    receptor_local_xyz = np.asarray([[16.5, 16.5, 16.5]], dtype=np.float32)
+    np.savez(
+        roots.data_root / "parse/1abc/receptor_tokens.npz",
+        coords=box_origin_xyz[None, :] + receptor_local_xyz * voxel_size_xyz[None, :],
+        feat=np.ones((1, 49), dtype=np.float32),
+    )
+    value = VoxelInputStore(roots, "fixed_center", source_cache_bytes=0).load(
+        "train",
+        "1abc",
+        0,
+        np.asarray([16, 16, 16], dtype=np.int64),
+    )
+    assert value[0, 0, 0, 0] == np.float16(0.75)
+    assert value[56, 0, 0, 0] == np.float16(1.0)
+
+
+@pytest.mark.parametrize(
+    ("field_name", "expected_error"),
+    (("origin", "box_origin"), ("voxel_size", "voxel_size")),
+)
+def test_voxel_input_rejects_density_geometry_shift_before_cache_write(
+    tmp_path,
+    field_name: str,
+    expected_error: str,
+) -> None:
+    """完整密度图原点或尺寸漂移时必须在发布体素缓存前失败。"""
+
+    roots = build_synthetic_roots(tmp_path)
+    for density_name in ("exp", "sim"):
+        density_path = roots.data_root / f"density/1abc/{density_name}.npz"
+        with np.load(density_path, allow_pickle=False) as archive:
+            density = {name: np.asarray(archive[name]).copy() for name in archive.files}
+        density[field_name][0] += np.float32(1e-3)
+        np.savez(density_path, **density)
+
+    cache_path = (
+        roots.voxel_cache_root("fixed_center")
+        / "train/1abc/candidate_0_start_16_16_16.npy"
+    )
+    with pytest.raises(ValueError, match=expected_error):
+        VoxelInputStore(roots, "fixed_center", source_cache_bytes=0).load(
+            "train",
+            "1abc",
+            0,
+            np.asarray([16, 16, 16], dtype=np.int64),
+        )
+    assert not cache_path.exists()
 
 
 def test_pp_top_k_matches_legacy_argpartition_selection() -> None:
@@ -383,6 +709,7 @@ def test_pp_top_k_matches_legacy_argpartition_selection() -> None:
     tokens, index_zyx = _build_pp_tokens(
         random_values,
         np.zeros(3, dtype=np.int64),
+        np.full(3, 16, dtype=np.int64),
         np.ones(3, dtype=np.float32),
         1024,
     )
@@ -408,14 +735,18 @@ def test_precompute_entry_requires_explicit_products_and_builds_pp(tmp_path) -> 
         split_names=("train", "validation"),
     )
     with pytest.raises(ValueError, match="非空且不重复"):
-        precompute_inputs(roots, manifest_path, ("train",), 1, (), None)
+        precompute_inputs(roots, manifest_path, ("train",), 1, (), None, "fixed_center")
     with pytest.raises(ValueError, match="必须提供正整数"):
-        precompute_inputs(roots, manifest_path, ("train",), 1, ("pp",), None)
+        precompute_inputs(
+            roots, manifest_path, ("train",), 1, ("pp",), None, "fixed_center"
+        )
     with pytest.raises(ValueError, match="不得提供"):
-        precompute_inputs(roots, manifest_path, ("train",), 1, ("voxel",), 4)
+        precompute_inputs(
+            roots, manifest_path, ("train",), 1, ("voxel",), 4, "fixed_center"
+        )
 
-    precompute_inputs(roots, manifest_path, ("train",), 1, ("pp",), 4)
-    cache_path = roots.pp_cache_root(4) / "train/1abc.npz"
+    precompute_inputs(roots, manifest_path, ("train",), 1, ("pp",), 4, "fixed_center")
+    cache_path = roots.pp_cache_root(4, "fixed_center") / "train/1abc.npz"
     assert cache_path.is_file()
 
 
@@ -508,7 +839,7 @@ def test_shuffled_sampler_ignores_pdb_groups_and_is_epoch_deterministic() -> Non
         def __len__(self) -> int:
             return 6
 
-    dataset = cast(CandidateDataset, SixCandidates())
+    dataset = SixCandidates()
     sampler = ShuffledBatchSampler(
         dataset,
         batch_size=2,
@@ -532,7 +863,7 @@ def test_a100_and_a800_samplers_use_the_same_global_batch_candidates() -> None:
         def __len__(self) -> int:
             return 45
 
-    dataset = cast(CandidateDataset, FortyFiveCandidates())
+    dataset = FortyFiveCandidates()
     a100 = ShuffledBatchSampler(dataset, 8, True, True, 3407, 32)
     a800 = ShuffledBatchSampler(dataset, 16, True, True, 3407, 32)
     a100_indices = [index for batch in a100 for index in batch]

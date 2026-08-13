@@ -1,4 +1,5 @@
 # matcher.experiment_config.load_experiment_plan 读取本文件，matcher.experiment.run_plan 执行 stages。
+# use_manual_features=false 不拼接四模态 12 项统计；use_sampling_features=false 不拼接候选裁剪 4 项统计。
 # 单张 A800 从零训练弱聚合完整 Matcher；身份项使用可导 p_small 门控。
 # null 语义：class_weights=null 表示类别不加权；maximum_epochs=null 表示不设轮数上限；
 # initialize_candidate_from=null 表示从零训练。language_family/identity_variant 仅候选预训练时才可为 null。
@@ -23,6 +24,7 @@ data:
   coverage_threshold: 0.30  # 候选覆盖率和 occurrence 覆盖率都达到该值才命中。
   selection_seed: 3407  # 固定每个配体身份采用哪一个有效 occurrence 语言表示。
   pp_top_k: 1024  # 每个候选从完整概率图最多采样的 PP token 数。
+  local_crop_strategy: fixed_center  # 第0批固定裁取 [16,64)³。
   train_num_workers: 4  # 每次 train 迭代单独建立的 DataLoader 工作进程数。
   validation_num_workers: 4  # 每次 validation 迭代单独建立的工作进程数。
   prefetch_factor: 2  # 每个工作进程预先准备的物理批次数。
@@ -38,6 +40,7 @@ stages:
     model:
       aggregation: mean_max
       use_manual_features: false
+      use_sampling_features: false
       model_dim: 256
       attention_heads: 8
       dropout: 0.10

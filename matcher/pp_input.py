@@ -1,7 +1,8 @@
-"""预计算并读取候选中心 ``48³`` 的 PP token。
+"""预计算并读取候选级 ``48³`` 的 PP token。
 
 ``PpInputStore`` 以 PDB 为构建单位，把完整 probability map 转换成固定 ``top_k`` 的候选
-PP token，并原子写入 ``<output_root>/cache/pp_input_v1/top_<k>/<split>/<pdb>.npz``。
+PP token，并原子写入
+``<output_root>/cache/pp_input_v2/<strategy>/top_<k>/<split>/<pdb>.npz``。
 缓存命中后，训练 worker 只读取该小型产物；缓存缺失时，第一个持锁进程一次构建该
 PDB，其余进程随后复用，因此不再由每个 worker 重复解压完整 probability map。
 """
@@ -15,14 +16,15 @@ from typing import TypedDict
 import numpy as np
 
 from .cache import ByteBudgetLru
-from .geometry import voxel_zyx_to_centered_world
+from .geometry import resolve_candidate_crop, voxel_zyx_to_crop_centered_world
 from .locking import exclusive_file_lock
 from .schema import (
-    LOCAL_BOX_MARGIN,
     LOCAL_BOX_SIZE,
+    LOCAL_CROP_STRATEGIES,
     LOCAL_CONTEXT_HALF_EXTENT_VOXELS,
     PP_CACHE_SCHEMA_VERSION,
     PP_TOKEN_DIM,
+    LocalCropStrategy,
     SourceRoots,
 )
 
@@ -30,14 +32,16 @@ from .schema import (
 class PpCandidateInput(TypedDict):
     """一个候选的 PP 输入及其源几何；K 是实际保留的 PP 体素数。
 
-    ``tokens`` 是 float32 ``(K,4)``；Stage1 原始概率和归一化相对 XYZ 均无量纲。
-    ``index_zyx`` 是 int64 ``(K,3)``，范围为中心 ``48³`` 的 ``[0,48)``。
-    ``probability_origin`` 是 float32 ``(3,)`` 的完整概率图 XYZ 角点原点，单位 Å。
-    ``probability_voxel_size`` 是 float32 ``(3,)`` 的 XYZ 体素尺寸，单位 Å/voxel。
+    ``tokens`` 是有限 float32 ``(K,4)``，第 0 项是未重新缩放的 Stage1 固化概率原值，后三项是相对实际裁剪中心并按各轴 24 个体素的物理半边长归一化的 XYZ，四项均无量纲且没有缺失值。
+    ``index_zyx`` 是 int64 ``(K,3)``，第 k 项与 ``tokens[k]`` 对齐且逐轴位于 ``[0,48)``。
+    ``crop_start_zyx`` 是该候选在 F1 ``80³`` 内逐轴位于 ``[0,32]`` 的 int64 ``(3,)`` 起点。
+    ``probability_origin`` 是有限且无缺失值的 float32 ``(3,)`` 完整概率图 XYZ 角点原点，单位 Å。
+    ``probability_voxel_size`` 是有限、无缺失且逐轴为正的 float32 ``(3,)`` XYZ 体素尺寸，单位 Å/voxel。
     """
 
     tokens: np.ndarray
     index_zyx: np.ndarray
+    crop_start_zyx: np.ndarray
     probability_origin: np.ndarray
     probability_voxel_size: np.ndarray
 
@@ -46,15 +50,17 @@ class _PpPdbCache(TypedDict):
     """一个 PDB 的全部候选 PP 输入；C 是候选数，K 是每个候选的 PP 体素数。
 
     ``candidate_indices`` 是从 0 开始连续递增的 int64 ``(C,)``。
-    ``tokens`` 是有限 float32 ``(C,K,4)``，四个无量纲字段与 ``PpCandidateInput`` 相同。
-    ``index_zyx`` 是 int16 ``(C,K,3)``，读取候选时转换为 int64。
-    ``probability_origin`` 是 float32 ``(3,)`` XYZ 原点，单位 Å。
-    ``probability_voxel_size`` 是 float32 ``(3,)`` XYZ 体素尺寸，单位 Å/voxel。
+    ``tokens`` 是有限 float32 ``(C,K,4)``，第 0 项是未重新缩放的 Stage1 固化概率原值，后三项是相对各候选实际裁剪中心并按各轴 24 个体素的物理半边长归一化的 XYZ，四项均无量纲且没有缺失值。
+    ``index_zyx`` 是 int16 ``(C,K,3)``，``[c,k]`` 与 ``tokens[c,k]`` 对齐且逐轴位于 ``[0,48)``。
+    ``crop_start_zyx`` 是 int16 ``(C,3)``，第 c 项与 ``candidate_indices[c]`` 对齐且逐轴位于 ``[0,32]``。
+    ``probability_origin`` 是有限且无缺失值的 float32 ``(3,)`` XYZ 原点，单位 Å。
+    ``probability_voxel_size`` 是有限、无缺失且逐轴为正的 float32 ``(3,)`` XYZ 体素尺寸，单位 Å/voxel。
     """
 
     candidate_indices: np.ndarray
     tokens: np.ndarray
     index_zyx: np.ndarray
+    crop_start_zyx: np.ndarray
     probability_origin: np.ndarray
     probability_voxel_size: np.ndarray
 
@@ -65,6 +71,7 @@ _CACHE_FIELDS = {
     "candidate_indices",
     "tokens",
     "index_zyx",
+    "crop_start_zyx",
     "probability_origin",
     "probability_voxel_size",
 }
@@ -73,17 +80,19 @@ _CACHE_FIELDS = {
 def _build_pp_tokens(
     probability_map: np.ndarray,
     box_start_zyx: np.ndarray,
+    crop_start_zyx: np.ndarray,
     voxel_size_xyz: np.ndarray,
     top_k: int,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """按 PP cache schema v1 构造 top-k，并返回 ``(K,4)`` token 与 ``(K,3)`` ZYX 索引。
+    """按 PP cache schema v2 构造 top-k，并返回 ``(K,4)`` token 与 ``(K,3)`` ZYX 索引。
 
     第 K 名概率并列时，入选子集沿用 NumPy ``argpartition`` 的既有结果；只对已经
     入选的体素按概率降序、展平索引升序排列。改变并列入选规则时必须提升
     ``PP_CACHE_SCHEMA_VERSION``，防止复用语义不同的缓存。
     """
 
-    start = np.asarray(box_start_zyx, dtype=np.int64) + LOCAL_BOX_MARGIN
+    local_start = np.asarray(crop_start_zyx, dtype=np.int64)
+    start = np.asarray(box_start_zyx, dtype=np.int64) + local_start
     stop = start + LOCAL_BOX_SIZE
     if start.shape != (3,) or np.any(start < 0) or np.any(stop > probability_map.shape):
         raise ValueError("PP 的 48³ 概率图裁剪越界。")
@@ -95,8 +104,12 @@ def _build_pp_tokens(
     order = np.lexsort((selected, -flat[selected]))
     selected = selected[order]
     local_index = np.stack(np.unravel_index(selected, crop.shape), axis=1).astype(np.int64)
-    index_in_80 = local_index + LOCAL_BOX_MARGIN
-    coordinates = voxel_zyx_to_centered_world(index_in_80, voxel_size_xyz)
+    index_in_80 = local_index + local_start
+    coordinates = voxel_zyx_to_crop_centered_world(
+        index_in_80,
+        local_start,
+        voxel_size_xyz,
+    )
     coordinate_scale = (
         np.asarray(voxel_size_xyz, dtype=np.float32) * LOCAL_CONTEXT_HALF_EXTENT_VOXELS
     )
@@ -130,6 +143,7 @@ def _load_pdb_cache(path: Path, top_k: int) -> _PpPdbCache:
             "candidate_indices": np.asarray(archive["candidate_indices"]),
             "tokens": np.asarray(archive["tokens"]),
             "index_zyx": np.asarray(archive["index_zyx"]),
+            "crop_start_zyx": np.asarray(archive["crop_start_zyx"]),
             "probability_origin": np.asarray(archive["probability_origin"]),
             "probability_voxel_size": np.asarray(archive["probability_voxel_size"]),
         }
@@ -141,6 +155,7 @@ def _load_pdb_cache(path: Path, top_k: int) -> _PpPdbCache:
     candidate_indices = cached["candidate_indices"]
     tokens = cached["tokens"]
     indices = cached["index_zyx"]
+    crop_starts = cached["crop_start_zyx"]
     candidate_count = candidate_indices.shape[0]
     token_count = min(top_k, LOCAL_BOX_SIZE**3)
     if (
@@ -158,6 +173,13 @@ def _load_pdb_cache(path: Path, top_k: int) -> _PpPdbCache:
         raise ValueError(f"PP 缓存 {path}:index_zyx 的 dtype 或形状非法。")
     if np.any(indices < 0) or np.any(indices >= LOCAL_BOX_SIZE):
         raise ValueError(f"PP 缓存 {path}:index_zyx 超出 [0,{LOCAL_BOX_SIZE})。")
+    if (
+        crop_starts.dtype != np.int16
+        or crop_starts.shape != (candidate_count, 3)
+        or np.any(crop_starts < 0)
+        or np.any(crop_starts > 32)
+    ):
+        raise ValueError(f"PP 缓存 {path}:crop_start_zyx 必须为位于 [0,32] 的 int16 (C,3)。")
     origin = cached["probability_origin"]
     voxel_size = cached["probability_voxel_size"]
     if (
@@ -201,13 +223,22 @@ class PpInputStore:
     ``cache_bytes`` 是单个 DataLoader worker 的 PDB PP 数组 LRU 字节上限。
     """
 
-    def __init__(self, roots: SourceRoots, top_k: int, cache_bytes: int) -> None:
+    def __init__(
+        self,
+        roots: SourceRoots,
+        top_k: int,
+        crop_strategy: LocalCropStrategy,
+        cache_bytes: int,
+    ) -> None:
         if top_k <= 0:
             raise ValueError("top_k 必须为正整数。")
         if cache_bytes < 0:
             raise ValueError("cache_bytes 不能为负数。")
+        if crop_strategy not in LOCAL_CROP_STRATEGIES:
+            raise ValueError(f"不支持 local_crop_strategy={crop_strategy!r}。")
         self.roots = roots
         self.top_k = int(top_k)
+        self.crop_strategy = crop_strategy
         self.cache_bytes = int(cache_bytes)
         self._cache: ByteBudgetLru[tuple[str, str], _PpPdbCache] = ByteBudgetLru(
             self.cache_bytes
@@ -227,6 +258,7 @@ class PpInputStore:
         return {
             "tokens": cached["tokens"][position],
             "index_zyx": cached["index_zyx"][position].astype(np.int64),
+            "crop_start_zyx": cached["crop_start_zyx"][position].astype(np.int64),
             "probability_origin": cached["probability_origin"],
             "probability_voxel_size": cached["probability_voxel_size"],
         }
@@ -262,6 +294,8 @@ class PpInputStore:
         with np.load(centered_path, allow_pickle=False) as archive:
             box_starts = np.asarray(archive["box_start_zyx"], dtype=np.int64)
             voxel_sizes = np.asarray(archive["voxel_size_world"], dtype=np.float32)
+            voxel_offsets = np.asarray(archive["voxel_offsets"], dtype=np.int64)
+            voxel_indices = np.asarray(archive["voxel_index_local_zyx"], dtype=np.int64)
         probability_path = (
             self.roots.stage1_root
             / split_name
@@ -289,23 +323,33 @@ class PpInputStore:
             raise ValueError(f"{centered_path}:voxel_size_world 必须为有限正数。")
         token_items: list[np.ndarray] = []
         index_items: list[np.ndarray] = []
+        crop_start_items: list[np.ndarray] = []
         for candidate_index in range(candidate_count):
             if not np.array_equal(voxel_sizes[candidate_index], probability_voxel_size):
                 raise ValueError(
                     f"{split_name}/{pdb_id}/candidate_{candidate_index} 的概率图体素尺寸不一致。"
                 )
+            voxel_start = int(voxel_offsets[candidate_index])
+            voxel_stop = int(voxel_offsets[candidate_index + 1])
+            crop_geometry = resolve_candidate_crop(
+                voxel_indices[voxel_start:voxel_stop],
+                self.crop_strategy,
+            )
             tokens, indices = _build_pp_tokens(
                 probability_map,
                 box_starts[candidate_index],
+                crop_geometry.start_zyx,
                 voxel_sizes[candidate_index],
                 self.top_k,
             )
             token_items.append(tokens)
             index_items.append(indices.astype(np.int16))
+            crop_start_items.append(crop_geometry.start_zyx.astype(np.int16))
         return {
             "candidate_indices": np.arange(candidate_count, dtype=np.int64),
             "tokens": np.stack(token_items, axis=0),
             "index_zyx": np.stack(index_items, axis=0),
+            "crop_start_zyx": np.stack(crop_start_items, axis=0),
             "probability_origin": probability_origin,
             "probability_voxel_size": probability_voxel_size,
         }
@@ -313,7 +357,11 @@ class PpInputStore:
     def _cache_path(self, split_name: str, pdb_id: str) -> Path:
         """返回不依赖运行编号的版本化 PDB PP 缓存路径。"""
 
-        return self.roots.pp_cache_root(self.top_k) / split_name / f"{pdb_id}.npz"
+        return (
+            self.roots.pp_cache_root(self.top_k, self.crop_strategy)
+            / split_name
+            / f"{pdb_id}.npz"
+        )
 
     def __getstate__(self) -> dict[str, object]:
         """DataLoader 派生 worker 时不复制父进程已经读取的 PDB PP 数组。"""

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import math
 import random
+from collections.abc import Sized
 from typing import Any, Iterator, cast
 
 import numpy as np
@@ -19,6 +20,7 @@ from .candidate_data import CandidateDataset
 from .contracts import CandidateBatch, CandidateItem
 from .schema import (
     CANDIDATE_MANUAL_FEATURE_DIM,
+    CANDIDATE_SAMPLING_FEATURE_DIM,
     LANGUAGE_EMBEDDING_DIM,
     PP_TOKEN_DIM,
     V_TOKEN_DIM,
@@ -198,7 +200,7 @@ class ShuffledBatchSampler(Sampler[list[int]]):
 
     def __init__(
         self,
-        dataset: CandidateDataset,
+        dataset: Sized,
         batch_size: int,
         shuffle: bool,
         drop_last: bool,
@@ -305,6 +307,9 @@ def collate_candidates(items: list[CandidateItem]) -> CandidateBatch:
         "candidate_manual_features": torch.from_numpy(
             np.stack([item["candidate_manual_features"] for item in items])
         ).float(),
+        "candidate_sampling_features": torch.from_numpy(
+            np.stack([item["candidate_sampling_features"] for item in items])
+        ).float(),
     }
     if batch["candidate_manual_features"].shape != (
         len(items),
@@ -313,6 +318,14 @@ def collate_candidates(items: list[CandidateItem]) -> CandidateBatch:
         raise ValueError(
             "candidate_manual_features 必须为"
             f" (B,{CANDIDATE_MANUAL_FEATURE_DIM})。"
+        )
+    if batch["candidate_sampling_features"].shape != (
+        len(items),
+        CANDIDATE_SAMPLING_FEATURE_DIM,
+    ):
+        raise ValueError(
+            "candidate_sampling_features 必须为"
+            f" (B,{CANDIDATE_SAMPLING_FEATURE_DIM})。"
         )
     batch["a_tokens"], batch["a_mask"] = _pad_float_sequences(
         [item["a_tokens"] for item in items]

@@ -22,6 +22,7 @@ data:
   coverage_threshold: 0.30  # 候选与 occurrence 双向覆盖率均达到该值才命中。
   selection_seed: 3407  # 固定每个 PDB 内身份采用哪个有效 occurrence 语言表示。
   pp_top_k: 1024
+  local_crop_strategy: fixed_center  # 复现第1批固定 [16,64)³ 视野。
   train_num_workers: 4  # 每次 train 迭代建立的非持久 DataLoader 工作进程数。
   validation_num_workers: 4  # train 工作进程退出后再建立 validation 工作进程。
   prefetch_factor: 2
@@ -35,6 +36,7 @@ stages:
     model:
       aggregation: mean_max
       use_manual_features: true  # 候选聚合与身份 MLP 使用计数、固化概率和身份类别概率。
+      use_sampling_features: false  # 第1批不读取第2批新增的裁剪几何统计。
       model_dim: 256
       attention_heads: 8
       dropout: 0.10

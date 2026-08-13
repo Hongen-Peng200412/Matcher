@@ -20,7 +20,14 @@ import yaml  # type: ignore[import-untyped]
 
 from .losses import IdentityLossVariant, LossWeights
 from .model import MatcherModelConfig
-from .schema import IDENTITY_SCOPES, LANGUAGE_FAMILIES, IdentityScope, SourceRoots
+from .schema import (
+    IDENTITY_SCOPES,
+    LANGUAGE_FAMILIES,
+    LOCAL_CROP_STRATEGIES,
+    IdentityScope,
+    LocalCropStrategy,
+    SourceRoots,
+)
 
 
 TaskName = Literal["candidate_pretrain", "full_matcher"]
@@ -39,6 +46,7 @@ class DataConfig:
     ``coverage_threshold`` 是候选与 occurrence 双向覆盖率共同采用的命中阈值。
     ``selection_seed`` 决定每个身份固定选择哪一个有效 occurrence 语言表示。
     ``pp_top_k`` 是每个候选从完整概率图采样的 PP token 最大数。
+    ``local_crop_strategy`` 是 ``fixed_center`` 或按完整 V 质心解析的 ``v_centroid``。
     ``train_num_workers`` 是每次 train 迭代建立的 DataLoader 工作进程数。
     ``validation_num_workers`` 是每次 validation 迭代建立的 DataLoader 工作进程数。
     ``prefetch_factor`` 是每个 DataLoader 工作进程预取的物理批次数。
@@ -49,6 +57,7 @@ class DataConfig:
     coverage_threshold: float
     selection_seed: int
     pp_top_k: int
+    local_crop_strategy: LocalCropStrategy
     train_num_workers: int
     validation_num_workers: int
     prefetch_factor: int
@@ -195,7 +204,26 @@ def _parse_stage(values: dict[str, Any]) -> StageConfig:
         language_family = cast(LanguageFamily, raw_language_family)
         identity_variant = cast(IdentityLossVariant, raw_identity_variant)
         identity_scope = cast(IdentityScope, raw_identity_scope)
-    model = MatcherModelConfig.from_dict(_mapping(values["model"], "stage.model"))
+    model_values = _mapping(values["model"], "stage.model")
+    _require_keys(
+        model_values,
+        {
+            "aggregation",
+            "use_manual_features",
+            "use_sampling_features",
+            "model_dim",
+            "attention_heads",
+            "dropout",
+            "voxel_feature_channels",
+            "raunet_planes",
+            "recycle_iterations",
+            "gradient_checkpointing",
+            "bottleneck_attention_layers",
+            "graph_layers",
+        },
+        "stage.model",
+    )
+    model = MatcherModelConfig.from_dict(model_values)
     training_values = _mapping(values["training"], "stage.training")
     expected_training = {
         "seed",
@@ -426,6 +454,7 @@ def load_experiment_plan(path: Path) -> ExperimentPlan:
             "coverage_threshold",
             "selection_seed",
             "pp_top_k",
+            "local_crop_strategy",
             "train_num_workers",
             "validation_num_workers",
             "prefetch_factor",
@@ -446,6 +475,10 @@ def load_experiment_plan(path: Path) -> ExperimentPlan:
         coverage_threshold=_finite_float(data_values["coverage_threshold"], "coverage_threshold"),
         selection_seed=_integer(data_values["selection_seed"], "selection_seed"),
         pp_top_k=_integer(data_values["pp_top_k"], "pp_top_k"),
+        local_crop_strategy=cast(
+            LocalCropStrategy,
+            _string(data_values["local_crop_strategy"], "local_crop_strategy"),
+        ),
         train_num_workers=_integer(
             data_values["train_num_workers"],
             "train_num_workers",
@@ -464,6 +497,10 @@ def load_experiment_plan(path: Path) -> ExperimentPlan:
         raise ValueError("coverage_threshold 必须位于 (0,1]。")
     if data.pp_top_k <= 0:
         raise ValueError("pp_top_k 必须为正整数。")
+    if data.local_crop_strategy not in LOCAL_CROP_STRATEGIES:
+        raise ValueError(
+            f"local_crop_strategy 必须属于 {LOCAL_CROP_STRATEGIES}。"
+        )
     if (
         data.train_num_workers <= 0
         or data.validation_num_workers <= 0

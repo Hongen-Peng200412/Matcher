@@ -541,6 +541,8 @@ def test_all_initial_experiment_plans_preserve_resource_and_stopping_contracts()
             init_timeout_seconds=120,
         )
         for stage in plan.stages:
+            assert plan.data.local_crop_strategy == "fixed_center"
+            assert stage.model.use_sampling_features is False
             assert stage.training.global_batch_size == 32
             assert stage.training.maximum_epochs is None
             assert stage.training.patience_bad_epochs == 2
@@ -593,12 +595,14 @@ def test_all_batch1_plans_freeze_five_class_manual_feature_comparison() -> None:
         assert plan.tracking.group == "matcher-batch1-five-class-manual-features"
         assert plan.data.train_num_workers == 4
         assert plan.data.validation_num_workers == 4
+        assert plan.data.local_crop_strategy == "fixed_center"
         stage = plan.stages[0]
         assert stage.task_name == "full_matcher"
         assert stage.language_family == "smi_ted_289m"
         assert stage.identity_scope == "all_non_background"
         assert stage.model.aggregation == "mean_max"
         assert stage.model.use_manual_features is True
+        assert stage.model.use_sampling_features is False
         assert stage.training.global_batch_size == 32
         assert stage.training.maximum_epochs is None
         assert stage.training.patience_bad_epochs == 2
@@ -608,6 +612,86 @@ def test_all_batch1_plans_freeze_five_class_manual_feature_comparison() -> None:
         assert stage.training.physical_batch_size == expected_physical
         assert stage.training.gradient_accumulation == expected_accumulation
         assert plan.data.cache_gib_per_worker == expected_cache
+
+
+def test_all_batch2_plans_freeze_v_centroid_sampling_comparisons() -> None:
+    """第2批统一新视野与特征，并冻结两个候选聚合及三个完整 Matcher 损失对照。"""
+
+    config_root = Path(__file__).parents[2] / "configs" / "experiments" / "batch2"
+    paths = sorted(config_root.glob("*.yaml"))
+    assert len(paths) == 5
+    plans = [load_experiment_plan(path) for path in paths]
+    for plan in plans:
+        assert plan.output_root.is_relative_to(Path("/storage/penghongen/tmp/Matcher"))
+        assert plan.tracking.project == "AdaLigand-Matcher-Batch2"
+        assert plan.data.local_crop_strategy == "v_centroid"
+        assert plan.data.train_num_workers == 4
+        assert plan.data.validation_num_workers == 4
+        assert len(plan.stages) == 1
+        stage = plan.stages[0]
+        assert stage.model.use_manual_features is True
+        assert stage.model.use_sampling_features is True
+        assert stage.training.global_batch_size == 32
+        assert stage.training.maximum_epochs is None
+        assert stage.training.patience_bad_epochs == 2
+
+    full_plans = [plan for plan in plans if plan.stages[0].task_name == "full_matcher"]
+    assert len(full_plans) == 3
+    assert {plan.stages[0].identity_variant for plan in full_plans} == {
+        "oracle",
+        "detached",
+        "joint",
+    }
+    for plan in full_plans:
+        stage = plan.stages[0]
+        assert plan.tracking.group == "matcher-batch2-full-v-centroid-sampling"
+        assert plan.data.cache_gib_per_worker == 16.0
+        assert stage.language_family == "smi_ted_289m"
+        assert stage.identity_scope == "all_non_background"
+        assert stage.model.aggregation == "mean_max"
+        assert stage.training.physical_batch_size == 8
+        assert stage.training.gradient_accumulation == 4
+
+    candidate_plans = [
+        plan for plan in plans if plan.stages[0].task_name == "candidate_pretrain"
+    ]
+    assert len(candidate_plans) == 2
+    assert {plan.stages[0].model.aggregation for plan in candidate_plans} == {
+        "mean_max",
+        "candidate_cross_attention",
+    }
+    for plan in candidate_plans:
+        stage = plan.stages[0]
+        assert plan.tracking.group == "matcher-batch2-candidate-v-centroid-sampling"
+        assert plan.data.cache_gib_per_worker == 32.0
+        assert stage.language_family is None
+        assert stage.identity_variant is None
+        assert stage.identity_scope is None
+        assert stage.training.physical_batch_size == 16
+        assert stage.training.gradient_accumulation == 2
+        assert stage.training.loss_weights.identity == 0.0
+
+
+@pytest.mark.parametrize("missing_key", ("use_manual_features", "use_sampling_features"))
+def test_formal_yaml_requires_both_model_feature_switches(
+    tmp_path: Path,
+    missing_key: str,
+) -> None:
+    """正式 YAML 缺任一模型特征开关都必须失败，旧产物迁移不得进入计划解析。"""
+
+    source = (
+        Path(__file__).parents[2]
+        / "configs"
+        / "experiments"
+        / "batch2"
+        / "full_smi_ted_v_centroid_oracle_a100.yaml"
+    )
+    values = yaml.safe_load(source.read_text(encoding="utf-8"))
+    del values["stages"][0]["model"][missing_key]
+    invalid = tmp_path / f"missing_{missing_key}.yaml"
+    invalid.write_text(yaml.safe_dump(values, sort_keys=False), encoding="utf-8")
+    with pytest.raises(ValueError, match=rf"stage\.model 字段不一致.*{missing_key}"):
+        load_experiment_plan(invalid)
 
 
 def test_experiment_config_rejects_output_escape_and_relative_initialization(
@@ -730,7 +814,19 @@ def test_calibration_requires_matching_stage_checkpoint_and_safe_output(tmp_path
     with pytest.raises(ValueError, match="resolved.json.data 科学字段"):
         _validate_checkpoint_for_stage(checkpoint_path, checkpoint, plan, stage)
     resolved_values["data"]["selection_seed"] = plan.data.selection_seed
+    resolved_values["data"]["local_crop_strategy"] = "v_centroid"
     resolved_path.write_text(json.dumps(resolved_values), encoding="utf-8")
+    with pytest.raises(ValueError, match="resolved.json.data 科学字段"):
+        _validate_checkpoint_for_stage(checkpoint_path, checkpoint, plan, stage)
+    resolved_values["data"]["local_crop_strategy"] = plan.data.local_crop_strategy
+    resolved_path.write_text(json.dumps(resolved_values), encoding="utf-8")
+    restored_evidence = _validate_checkpoint_for_stage(
+        checkpoint_path,
+        checkpoint,
+        plan,
+        stage,
+    )
+    assert restored_evidence["epoch"] == 7
     stage_record["language_family"] = "smi_ted_289m"
     resolved_path.write_text(
         json.dumps(

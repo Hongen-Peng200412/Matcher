@@ -22,7 +22,8 @@ bash 训练与运行/submit_task.sh \
   --splits train validation \
   --workers 16 \
   --products pp \
-  --pp-top-k 1024
+  --pp-top-k 1024 \
+  --local-crop-strategy v_centroid
 ```
 
 GPU 示例：
@@ -38,7 +39,8 @@ bash 训练与运行/submit_task.sh \
 
 validation 选定唯一方案后，保留集只评估一次。下例中的计划、阶段和 BEST 路径必须属于
 同一个已完成训练阶段。入口把现存 manifest 的稳定科学内容、calibration 候选与身份记录的
-组合指纹绑定到该 checkpoint 和输出路径；对同一稳定数据指纹不能再次运行评估：
+组合指纹绑定到该 checkpoint 和输出路径。claim 为 ``claimed`` 时只允许同一选择在
+原路径失败重试；状态成为 ``completed`` 后，同一稳定数据指纹禁止再次运行评估：
 
 ```bash
 bash 训练与运行/submit_task.sh \
@@ -208,7 +210,7 @@ Matcher 的正式任务只从 `/home/penghongen/My_Project/Matcher` 冻结 relea
 - `sh/train_experiment.sh`：读取调用方通过 `--plan` 指定的正式 YAML，顺序执行其中一个或多个训练阶段。
 - `sh/evaluate_calibration.sh`：核对已选定阶段的 `BEST.pt`、`resolved.json`、阶段 `summary.json` 与运行 `run.json`，要求现存冻结清单且不重建，只评估 calibration。
 
-`build_manifest.sh` 与 `precompute_data.sh` 的清单参数必须显式提供 `data-root/stage1-root/output-root/coverage-threshold/selection-seed`。`precompute_data.sh` 还必须显式提供 `--products`；仅当选择 `pp` 时提供正整数 `--pp-top-k`。`train_experiment.sh` 只接收 `--plan`，其它科学与训练参数都由 YAML 唯一声明。`evaluate_calibration.sh` 必须显式提供 `--plan/--stage/--checkpoint/--output`。它核对 checkpoint 最佳轮次、阶段完成摘要、模型与训练配置，以及训练时 `data_root/stage1_root/output_root/coverage_threshold/selection_seed/pp_top_k`；数据清单缺失时直接失败，不在保留评估中重建。
+`build_manifest.sh` 与 `precompute_data.sh` 的清单参数必须显式提供 `data-root/stage1-root/output-root/coverage-threshold/selection-seed`。`precompute_data.sh` 还必须显式提供 `--products` 和 `--local-crop-strategy`；仅当选择 `pp` 时提供正整数 `--pp-top-k`。`fixed_center` 表示固定 `[16,64)³`，`v_centroid` 表示按完整权威 V 质心解析候选起点。`train_experiment.sh` 只接收 `--plan`，其它科学与训练参数都由 YAML 唯一声明。`evaluate_calibration.sh` 必须显式提供 `--plan/--stage/--checkpoint/--output`。它核对 checkpoint 最佳轮次、阶段完成摘要、模型与训练配置，以及训练时 `data_root/stage1_root/output_root/coverage_threshold/selection_seed/pp_top_k/local_crop_strategy`；数据清单缺失时直接失败，不在保留评估中重建。
 
 ### 版本化监督清单字段
 
@@ -272,7 +274,7 @@ Matcher 的正式任务只从 `/home/penghongen/My_Project/Matcher` 冻结 relea
 
 `language.<family>` 的 `available` 表示是否至少有一个有效归档；`selected_candidate_id/selected_relative_path` 在不可用时为 `null`；`valid_candidate_ids` 保存全部有效 occurrence；`failed_occurrences` 逐项保存缺文件或归档无效原因；`distinct_model_smiles` 保存有效归档中去重后的模型输入字符串。`excluded_pdb.jsonl` 至少保存 `split/pdb_id/reason`；`reason=missing_required_product` 时另含 `missing_paths`。身份范围或语言缺失只令候选身份目标不可用，不写入整 PDB 排除记录。
 
-校准入口分别记录本次 YAML 与训练 release 中原 YAML 的路径和 SHA-256，但不要求两个 YAML 字节相同：训练完成后可以显式调整 validation 工作进程数、预取量和单工作进程缓存等 I/O 资源。模型、训练超参数和上段六个科学数据字段仍必须逐项相同；因此 I/O 调整不会被误报成科学方案变化，也不能借 I/O 调整更换监督清单。
+校准入口分别记录本次 YAML 与训练 release 中原 YAML 的路径和 SHA-256，但不要求两个 YAML 字节相同：训练完成后可以显式调整 validation 工作进程数、预取量和单工作进程缓存等 I/O 资源。模型、训练超参数和上段七个科学数据字段仍必须逐项相同；因此 I/O 调整不会被误报成科学方案变化，也不能借 I/O 调整更换监督清单或候选视野。
 
 支持类 macro-F1 只平均真实候选数大于零的类别；固定六类 macro-F1 把零支持类 F1 记为 0 后仍平均 `background/ion/nucleotide_like/peptide_like/small_molecule/sugar` 六类。兼容字段 `evaluation.metrics.six_class.macro_f1` 等于 `macro_f1_supported_classes`，validation 选模继续使用该兼容口径。
 
@@ -280,7 +282,7 @@ Matcher 的正式任务只从 `/home/penghongen/My_Project/Matcher` 冻结 relea
 
 | 字段 | 类型与语义 |
 | --- | --- |
-| `schema_version` | 整数；结果与 claim 共用且联动提升的格式版本。 |
+| `schema_version` | 整数；结果与 claim 共用且联动提升的格式版本，当前为 2。 |
 | `split` | 字符串，固定为 `calibration`。 |
 | `plan_path` | 本次 calibration 读取的 YAML 绝对路径。 |
 | `plan_sha256` | 本次 calibration YAML 的 SHA-256。 |
@@ -343,6 +345,7 @@ Matcher 的正式任务只从 `/home/penghongen/My_Project/Matcher` 冻结 relea
 | `num_workers` | calibration DataLoader 工作进程数，沿用本次 YAML 的 validation 设置。 |
 | `prefetch_factor` | 每个工作进程预取的物理批次数。 |
 | `cache_gib_per_worker` | 单个工作进程五类最近最少使用缓存的 GiB 上限。 |
+| `local_crop_strategy` | checkpoint 训练时冻结的 `fixed_center` 或 `v_centroid` 候选 `48³` 裁剪策略。 |
 | `multiprocessing_context` | 固定为 `spawn`。 |
 | `persistent_workers` | 固定为 `false`。 |
 | `worker_generator_seed` | 只供 calibration 工作进程播种的独立 Torch 种子。 |
@@ -401,7 +404,7 @@ Matcher 的正式任务只从 `/home/penghongen/My_Project/Matcher` 冻结 relea
 
 | 字段 | 类型与状态语义 |
 | --- | --- |
-| `schema_version` | 与结果 JSON 共用的整数格式版本。 |
+| `schema_version` | 与结果 JSON 共用的整数格式版本，当前为 2。 |
 | `status` | `claimed` 表示选择已绑定且允许同参数失败重试；`completed` 表示结果已发布并禁止再次运行。 |
 | `data_fingerprint` | 与结果 `data.fingerprint` 相等。 |
 | `plan_sha256` | 与结果 `plan_sha256` 相等。 |
@@ -417,14 +420,19 @@ Matcher 的正式任务只从 `/home/penghongen/My_Project/Matcher` 冻结 relea
 
 组合指纹先对 manifest 中来源根、监督参数、类别顺序、语言/seen 规则、calibration 文件名、PDB 计数和 calibration 摘要组成的规范 JSON 计算 SHA-256；创建时间和 train/validation 摘要不参与。再把该摘要、calibration 候选 JSONL 摘要和身份 JSONL 摘要按 `semantic + "\n" + candidates + "\n" + identities + "\n"` 的 ASCII 字节再次计算 SHA-256。SHA-256 在此只用于文件内容留证和 claim 定位，不参与样本、监督或模型计算。
 
-PP 缓存写入 `cache/pp_input_v1/top_<k>/<split>/<pdb>.npz`，并与 `F1_centered.npz` 的候选编号逐项对齐。令 `C` 为该 PDB 的候选数，`K=min(top_k,48³)`：
+105 通道缓存写入 `cache/voxel_input_v2/<strategy>/<split>/<pdb>/candidate_<index>_start_<z>_<y>_<x>.npy`。每个文件是有限且无缺失值的 float16 `(C,Z,Y,X)=(105,48,48,48)`。通道 0–55 继承完整实验/模拟密度的数值语义，并按 `operation → normalization → postprocess` 的嵌套顺序排列：`operation` 依次为 `exp/sim/diff/posdiff`，`normalization` 依次为 `nonorm/clipnorm`，`postprocess` 依次为 `nopost/gauss1/gauss2/DoG1/DoG2/smooth1/smooth2`。通道 56–104 原样保持 `receptor_tokens.npz:feat[:,0:49]` 的第二轴顺序；受体世界坐标换算后向下取整得到所属体素，同一体素内的特征求和。这些通道继承来源特征的数值语义。两组通道均先在完整 `80³` 上构造，再裁剪候选级 `48³`。`<strategy>` 为 `fixed_center` 或 `v_centroid`；文件名还保存实际 ZYX 起点，策略或起点不同均不复用数组。
 
-- `schema_version` 是 int64 标量，当前必须为 1。
+缺失体素缓存首次构造时，入口先要求 `exp.npz:grid` 与 `sim.npz:grid` 共享 `(1,Z,Y,X)` 形状、XYZ 角点原点和 XYZ 体素尺寸，再核对全部 F1 候选的 `(C,3)` `box_start_zyx`、`box_origin_world` 和 `voxel_size_world`。F1 体素尺寸必须与完整密度图逐元素相等，候选框原点必须满足 `density_origin_xyz + box_start_zyx[:,[2,1,0]] * density_voxel_size_xyz`；float32 重算允许的最大绝对误差为 `5e-5 Å`。任一检查失败都发生在 NPY 发布前。结合 Dataset 已有的 F1 与 probability-map 几何校验，这条链防止 105 通道、V/PP 和区域目标在形状合法时仍发生静默空间错位。缓存命中后只读取已验证并原子发布的 NPY，不重新打开完整密度图。
+
+PP 缓存写入 `cache/pp_input_v2/<strategy>/top_<k>/<split>/<pdb>.npz`，并与 `F1_centered.npz` 的候选编号逐项对齐。令 `C` 为该 PDB 的候选数，`K=min(top_k,48³)`：
+
+- `schema_version` 是 int64 标量，当前必须为 2。
 - `top_k` 是 int64 标量，必须与路径中的 `<k>` 一致。
 - `candidate_indices` 是 int64 `(C,)`，必须为从 0 开始的连续候选编号。
-- `tokens` 是 float32 `(C,K,4)`；最后一轴依次为无量纲的 Stage1 原始概率和按局部空间物理半边长归一化的无量纲相对 XYZ。
-- `index_zyx` 是 int16 `(C,K,3)`；最后一轴是中心 `48³` 内取值范围为 `[0,48)` 的 ZYX 索引。
-- `probability_origin` 是 float32 `(3,)`，表示完整 Stage1 概率图的 XYZ 角点原点，单位 Å。
-- `probability_voxel_size` 是 float32 `(3,)`，表示完整 Stage1 概率图的 XYZ 体素尺寸，单位 Å/voxel。
+- `tokens` 是有限且无缺失值的 float32 `(C,K,4)`；最后一轴依次为无量纲的 `probability,x,y,z`，其中概率是 Stage1 原始值，XYZ 按局部空间物理半边长归一化。
+- `index_zyx` 是 int16 `(C,K,3)`；`index_zyx[c,k]` 与 `tokens[c,k]` 对齐，最后一轴是候选实际裁剪 `48³` 内逐轴位于 `[0,48)` 的 ZYX 索引。
+- `crop_start_zyx` 是 int16 `(C,3)`；`crop_start_zyx[c]` 与 `candidate_indices[c]` 对齐，保存该候选在 F1 `80³` 内逐轴位于 `[0,32]` 的实际裁剪起点。
+- `probability_origin` 是有限且无缺失值的 float32 `(3,)`，表示完整 Stage1 概率图的 XYZ 角点原点，单位 Å。
+- `probability_voxel_size` 是有限、无缺失且逐轴为正的 float32 `(3,)`，表示完整 Stage1 概率图的 XYZ 体素尺寸，单位 Å/voxel。
 
-PP cache schema v1 使用 NumPy `argpartition` 决定入选子集；第 K 名概率并列时不另行改写选择语义。改变该规则必须提升 `PP_CACHE_SCHEMA_VERSION`，防止复用语义不同的缓存。缓存只消除重复解压和重复构造，不改变训练样本与 PP token。
+PP cache schema v2 使用 NumPy `argpartition` 决定入选子集；第 K 名概率并列时不另行改写选择语义。改变并列规则、裁剪公式或 PP 坐标语义必须提升 `PP_CACHE_SCHEMA_VERSION`，防止复用语义不同的缓存。缓存只消除重复解压和重复构造，不改变训练样本与监督。

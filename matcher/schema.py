@@ -8,8 +8,8 @@ from typing import Literal
 
 
 MANIFEST_SCHEMA_VERSION = 3
-VOXEL_CACHE_SCHEMA_VERSION = 1
-PP_CACHE_SCHEMA_VERSION = 1
+VOXEL_CACHE_SCHEMA_VERSION = 2
+PP_CACHE_SCHEMA_VERSION = 2
 
 CLASS_NAMES = (
     "background",
@@ -25,6 +25,8 @@ FOREGROUND_CLASS_NAMES = CLASS_NAMES[1:]
 FOREGROUND_CLASS_INDICES = tuple(CLASS_TO_INDEX[name] for name in FOREGROUND_CLASS_NAMES)
 IdentityScope = Literal["small_molecule", "all_non_background"]
 IDENTITY_SCOPES = ("small_molecule", "all_non_background")
+LocalCropStrategy = Literal["fixed_center", "v_centroid"]
+LOCAL_CROP_STRATEGIES = ("fixed_center", "v_centroid")
 OCCURRENCE_TYPE_TO_CLASS = {
     "ion": "ion",
     "nucleotide_like": "nucleotide_like",
@@ -44,9 +46,10 @@ STAGE1_BOX_SIZE = 80
 LOCAL_BOX_SIZE = 48
 LOCAL_BOX_MARGIN = (STAGE1_BOX_SIZE - LOCAL_BOX_SIZE) // 2
 LANGUAGE_EMBEDDING_DIM = 768
+BOX_ORIGIN_ABSOLUTE_TOLERANCE_ANGSTROM = 5e-5
 
-# 四种候选模态的最后三维始终是候选中心相对 XYZ 坐标。A/P 保留完整
-# 80³ 上下文，V/PP 只保留中心 48³，因此使用不同的物理半边长归一化。
+# 四种候选模态的最后三维始终是候选裁剪中心相对 XYZ 坐标。A/P 保留完整
+# 80³ 上下文，V/PP 只保留候选级 48³，因此使用不同的物理半边长归一化。
 A_TOKEN_DIM = 229
 P_TOKEN_DIM = 116
 V_TOKEN_DIM = 52
@@ -57,6 +60,13 @@ CANDIDATE_MANUAL_FEATURE_NAMES = tuple(
     for statistic in ("count", "probability_mean", "probability_max")
 )
 CANDIDATE_MANUAL_FEATURE_DIM = len(CANDIDATE_MANUAL_FEATURE_NAMES)
+CANDIDATE_SAMPLING_FEATURE_NAMES = (
+    "crop_boundary_limited",
+    "crop_center_to_v_centroid_l2_voxels",
+    "crop_center_to_v_centroid_linf_voxels",
+    "v_retained_fraction",
+)
+CANDIDATE_SAMPLING_FEATURE_DIM = len(CANDIDATE_SAMPLING_FEATURE_NAMES)
 FULL_CONTEXT_HALF_EXTENT_VOXELS = STAGE1_BOX_SIZE / 2.0
 LOCAL_CONTEXT_HALF_EXTENT_VOXELS = LOCAL_BOX_SIZE / 2.0
 
@@ -91,18 +101,27 @@ class SourceRoots:
 
         return self.output_root / f"manifests/closed_set_v{MANIFEST_SCHEMA_VERSION}"
 
-    @property
-    def voxel_cache_root(self) -> Path:
-        """返回版本化 105 通道候选体素缓存目录。"""
+    def voxel_cache_root(self, crop_strategy: LocalCropStrategy) -> Path:
+        """返回由 schema 与局部裁剪策略共同隔离的 105 通道体素缓存目录。"""
 
-        return self.output_root / f"cache/voxel_input_v{VOXEL_CACHE_SCHEMA_VERSION}"
+        if crop_strategy not in LOCAL_CROP_STRATEGIES:
+            raise ValueError(f"不支持 local_crop_strategy={crop_strategy!r}。")
+        return (
+            self.output_root
+            / f"cache/voxel_input_v{VOXEL_CACHE_SCHEMA_VERSION}/{crop_strategy}"
+        )
 
-    def pp_cache_root(self, top_k: int) -> Path:
-        """返回由 schema 与 ``top_k`` 共同隔离的 PP token 缓存目录。"""
+    def pp_cache_root(self, top_k: int, crop_strategy: LocalCropStrategy) -> Path:
+        """返回由 schema、裁剪策略与 ``top_k`` 共同隔离的 PP token 缓存目录。"""
 
         if top_k <= 0:
             raise ValueError("PP token 缓存的 top_k 必须为正整数。")
-        return self.output_root / f"cache/pp_input_v{PP_CACHE_SCHEMA_VERSION}/top_{top_k}"
+        if crop_strategy not in LOCAL_CROP_STRATEGIES:
+            raise ValueError(f"不支持 local_crop_strategy={crop_strategy!r}。")
+        return (
+            self.output_root
+            / f"cache/pp_input_v{PP_CACHE_SCHEMA_VERSION}/{crop_strategy}/top_{top_k}"
+        )
 
 
 def safe_object_filename(object_key: str) -> str:

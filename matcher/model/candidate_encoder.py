@@ -17,6 +17,7 @@ from .fusion import (
     TokenProjector,
     gather_voxel_features,
     normalize_candidate_manual_features,
+    normalize_candidate_sampling_features,
 )
 from .raunet import RaUnetBackbone
 
@@ -89,6 +90,7 @@ class CandidateEncoder(nn.Module):
                 config.model_dim,
                 config.dropout,
                 config.use_manual_features,
+                config.use_sampling_features,
             )
         else:
             self.aggregator = CandidateConditionedAggregator(
@@ -96,6 +98,7 @@ class CandidateEncoder(nn.Module):
                 config.attention_heads,
                 config.dropout,
                 config.use_manual_features,
+                config.use_sampling_features,
             )
         self.class_head = nn.Sequential(
             nn.Linear(config.model_dim, config.model_dim),
@@ -107,7 +110,13 @@ class CandidateEncoder(nn.Module):
         self.binding_area_head = VoxelBinaryHead(config.voxel_feature_channels)
 
     def forward(self, batch: CandidateBatch) -> CandidateEncoderOutput:
-        """读取 ``voxel_input``、A/P/V/PP token/掩码及 V/PP ZYX 索引，返回 ``CandidateEncoderOutput`` 中的候选表示、六分类、两个区域分数和体素特征。"""
+        """把候选体素与四模态字段编码为 ``CandidateEncoderOutput``。
+
+        输入读取 ``voxel_input``、A/P/V/PP token 与掩码，以及 V/PP ZYX 索引；
+        ``use_manual_features`` 启用时读取 ``candidate_manual_features``，
+        ``use_sampling_features`` 启用时读取 ``candidate_sampling_features``。
+        返回候选表示、六分类分数、两个区域分数和 U-Net 体素特征。
+        """
 
         # 磁盘缓存是 float16；显式对齐主干参数 dtype 以兼容 CPU 测试，GPU autocast 仍可在算子内选择 BF16/FP16。
         voxel_input = batch["voxel_input"].to(
@@ -142,10 +151,16 @@ class CandidateEncoder(nn.Module):
             normalized_manual = normalize_candidate_manual_features(
                 batch["candidate_manual_features"]
             )
+        normalized_sampling = None
+        if self.config.use_sampling_features:
+            normalized_sampling = normalize_candidate_sampling_features(
+                batch["candidate_sampling_features"]
+            )
         candidate_embedding = self.aggregator(
             candidate_summary,
             modalities,
             normalized_manual,
+            normalized_sampling,
         )
         return {
             "candidate_embedding": candidate_embedding,

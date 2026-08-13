@@ -1,6 +1,6 @@
 # Matcher 第 1 批实验配置
 
-本目录定义三个五类非背景身份 Matcher。三者均从零开始、使用 SMI-TED Light 289M、固定中心 `48³`、mean/max 聚合及相同 12 维候选手动特征，只改变 `identity_variant`。开发和选模只读取 train/validation；配置不会构造或读取 calibration。
+本目录定义三个五类非背景身份 Matcher。三者均从零开始、使用 SMI-TED Light 289M、固定 `[16,64)³`、mean/max 聚合及相同 12 维候选手动特征，只改变 `identity_variant`。`local_crop_strategy=fixed_center` 与 `use_sampling_features=false` 使其保持第 2 批以前的几何语义；开发和选模只读取 train/validation，配置不会构造或读取 calibration。
 
 | 配置 | GPU | 物理批量 × 累积 | 身份变体 |
 |---|---|---:|---|

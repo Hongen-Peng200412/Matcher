@@ -15,6 +15,8 @@ from torch import nn
 from ..schema import (
     A_TOKEN_DIM,
     CANDIDATE_MANUAL_FEATURE_DIM,
+    CANDIDATE_SAMPLING_FEATURE_DIM,
+    LOCAL_CONTEXT_HALF_EXTENT_VOXELS,
     P_TOKEN_DIM,
     PP_TOKEN_DIM,
     V_TOKEN_DIM,
@@ -105,6 +107,34 @@ def normalize_candidate_manual_features(features: torch.Tensor) -> torch.Tensor:
         dim=-1,
     )
     return normalized.reshape_as(features)
+
+
+def normalize_candidate_sampling_features(features: torch.Tensor) -> torch.Tensor:
+    """把 ``(B,4)`` 采样特征归一化为稳定的无量纲输入。"""
+
+    if features.ndim != 2 or features.shape[1] != CANDIDATE_SAMPLING_FEATURE_DIM:
+        raise ValueError(
+            "candidate_sampling_features 必须为"
+            f" (B,{CANDIDATE_SAMPLING_FEATURE_DIM})。"
+        )
+    if not torch.isfinite(features).all():
+        raise ValueError("候选采样特征必须全部有限。")
+    if torch.any((features[:, 0] != 0.0) & (features[:, 0] != 1.0)):
+        raise ValueError("crop_boundary_limited 必须为 0 或 1。")
+    if torch.any(features[:, 1:3] < 0.0):
+        raise ValueError("候选中心偏移距离不能为负。")
+    if torch.any((features[:, 3] < 0.0) | (features[:, 3] > 1.0)):
+        raise ValueError("v_retained_fraction 必须位于 [0,1]。")
+    return torch.cat(
+        (
+            features[:, 0:1],
+            features[:, 1:2]
+            / (LOCAL_CONTEXT_HALF_EXTENT_VOXELS * math.sqrt(3.0)),
+            features[:, 2:3] / LOCAL_CONTEXT_HALF_EXTENT_VOXELS,
+            features[:, 3:4],
+        ),
+        dim=1,
+    )
 
 
 # ================================================================================================
@@ -202,13 +232,29 @@ class CandidateCrossAttention(nn.Module):
 
 
 class MeanMaxAggregator(nn.Module):
-    """对四模态取掩码均值/最大值。构造参数为模型宽度、dropout 和手动特征开关；每个模态的三项统计紧邻该模态摘要进入融合层，前向输出 ``(B,D_m)``。"""
+    """对四模态取掩码均值/最大值，并按配置拼接模态统计与采样统计。
 
-    def __init__(self, model_dim: int, dropout: float, include_manual: bool) -> None:
+    构造参数冻结 ``D_m``、dropout 和两个特征开关。前向接收候选 ``(B,D_m)``、
+    四模态 ``(B,N,D_m)`` 与 bool ``(B,N)``、可选手动统计 ``(B,12)`` 和采样统计
+    ``(B,4)``，返回 ``(B,D_m)``。
+    """
+
+    def __init__(
+        self,
+        model_dim: int,
+        dropout: float,
+        include_manual: bool,
+        include_sampling: bool,
+    ) -> None:
         super().__init__()
         self.include_manual = include_manual
-        # 一个候选摘要、四种模态的 mean/max，以及可选的四组三维统计。
-        fusion_width = model_dim * 9 + (CANDIDATE_MANUAL_FEATURE_DIM if include_manual else 0)
+        self.include_sampling = include_sampling
+        # 一个候选摘要、可选四维采样统计、四种模态 mean/max 和可选四组三维统计。
+        fusion_width = (
+            model_dim * 9
+            + (CANDIDATE_MANUAL_FEATURE_DIM if include_manual else 0)
+            + (CANDIDATE_SAMPLING_FEATURE_DIM if include_sampling else 0)
+        )
         self.fusion = nn.Sequential(
             nn.LayerNorm(fusion_width),
             nn.Linear(fusion_width, model_dim * 2),
@@ -223,10 +269,20 @@ class MeanMaxAggregator(nn.Module):
         candidate_summary: torch.Tensor,
         modalities: Mapping[str, tuple[torch.Tensor, torch.Tensor]],
         manual_features: torch.Tensor | None,
+        sampling_features: torch.Tensor | None,
     ) -> torch.Tensor:
-        """按候选、各模态 mean/max/三项统计的固定顺序返回融合表示。"""
+        """按候选、采样统计及各模态 mean/max/三项统计的固定顺序融合。"""
 
         summaries = [candidate_summary]
+        if self.include_sampling:
+            if sampling_features is None or sampling_features.shape != (
+                candidate_summary.shape[0],
+                CANDIDATE_SAMPLING_FEATURE_DIM,
+            ):
+                raise ValueError("启用采样特征时必须提供与候选轴对齐的 (B,4) 统计。")
+            summaries.append(sampling_features)
+        elif sampling_features is not None:
+            raise ValueError("未启用采样特征时 sampling_features 必须为 None。")
         grouped_manual = None
         if self.include_manual:
             if manual_features is None or manual_features.shape != (
@@ -247,7 +303,12 @@ class MeanMaxAggregator(nn.Module):
 
 
 class CandidateConditionedAggregator(nn.Module):
-    """用候选摘要分别查询四模态。构造参数为模型宽度、头数、dropout 和手动特征开关；每个模态的三项统计紧邻该模态增量进入融合层，前向输出 ``(B,D_m)``。"""
+    """用候选摘要分别查询四模态，并按配置拼接模态统计与采样统计。
+
+    构造参数冻结 ``D_m``、注意力头数、dropout 和两个特征开关。前向接收候选
+    ``(B,D_m)``、四模态 ``(B,N,D_m)`` 与 bool ``(B,N)``、可选手动统计
+    ``(B,12)`` 和采样统计 ``(B,4)``，返回 ``(B,D_m)``。
+    """
 
     def __init__(
         self,
@@ -255,9 +316,11 @@ class CandidateConditionedAggregator(nn.Module):
         head_count: int,
         dropout: float,
         include_manual: bool,
+        include_sampling: bool,
     ) -> None:
         super().__init__()
         self.include_manual = include_manual
+        self.include_sampling = include_sampling
         self.branches = nn.ModuleDict(
             {
                 name: CandidateCrossAttention(
@@ -269,7 +332,11 @@ class CandidateConditionedAggregator(nn.Module):
                 for name in ("a", "p", "v", "pp")
             }
         )
-        fusion_width = model_dim * 5 + (CANDIDATE_MANUAL_FEATURE_DIM if include_manual else 0)
+        fusion_width = (
+            model_dim * 5
+            + (CANDIDATE_MANUAL_FEATURE_DIM if include_manual else 0)
+            + (CANDIDATE_SAMPLING_FEATURE_DIM if include_sampling else 0)
+        )
         self.fusion = nn.Sequential(
             nn.LayerNorm(fusion_width),
             nn.Linear(fusion_width, model_dim * 2),
@@ -284,8 +351,9 @@ class CandidateConditionedAggregator(nn.Module):
         candidate_summary: torch.Tensor,
         modalities: Mapping[str, tuple[torch.Tensor, torch.Tensor]],
         manual_features: torch.Tensor | None,
+        sampling_features: torch.Tensor | None,
     ) -> torch.Tensor:
-        """返回候选以及各模态注意力增量/三项统计的有序融合。"""
+        """按候选摘要、可选采样统计及各模态注意力增量/三项统计的顺序融合。"""
 
         grouped_manual = None
         if self.include_manual:
@@ -298,6 +366,15 @@ class CandidateConditionedAggregator(nn.Module):
         elif manual_features is not None:
             raise ValueError("未启用手动特征时 manual_features 必须为 None。")
         summaries = [candidate_summary]
+        if self.include_sampling:
+            if sampling_features is None or sampling_features.shape != (
+                candidate_summary.shape[0],
+                CANDIDATE_SAMPLING_FEATURE_DIM,
+            ):
+                raise ValueError("启用采样特征时必须提供与候选轴对齐的 (B,4) 统计。")
+            summaries.append(sampling_features)
+        elif sampling_features is not None:
+            raise ValueError("未启用采样特征时 sampling_features 必须为 None。")
         for modality_index, name in enumerate(("a", "p", "v", "pp")):
             tokens, mask = modalities[name]
             summaries.append(self.branches[name](candidate_summary, tokens, mask))

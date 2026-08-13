@@ -1,4 +1,8 @@
-"""把冻结清单中的单个 F1 候选转换为新 Matcher 的体素、四模态和身份输入。"""
+"""把冻结清单中的单个 F1 候选转换为新 Matcher 的体素、四模态和身份输入。
+
+``CandidateDataset`` 按候选返回结构化 ``CandidateItem``；105 通道和 PP 缓存的
+原子落盘分别由 ``VoxelInputStore`` 与 ``PpInputStore`` 负责。
+"""
 
 from __future__ import annotations
 
@@ -12,36 +16,48 @@ from torch.utils.data import Dataset
 
 from .cache import ByteBudgetLru
 from .contracts import CandidateItem, CandidateMetadata
-from .geometry import keep_local_48, local_xyz_to_centered_world, voxel_zyx_to_centered_world
+from .geometry import (
+    candidate_sampling_features,
+    keep_local_48_at,
+    local_xyz_to_crop_centered_world,
+    resolve_candidate_crop,
+    voxel_zyx_to_crop_centered_world,
+)
 from .ligand_graph import LigandGraphStore
 from .manifest import load_jsonl
 from .pp_input import PpCandidateInput, PpInputStore
 from .schema import (
     CLASS_NAMES,
     A_TOKEN_DIM,
+    BOX_ORIGIN_ABSOLUTE_TOLERANCE_ANGSTROM,
     CANDIDATE_MANUAL_FEATURE_DIM,
     FULL_CONTEXT_HALF_EXTENT_VOXELS,
     LANGUAGE_EMBEDDING_DIM,
     LANGUAGE_FAMILIES,
-    LOCAL_BOX_MARGIN,
+    LOCAL_CROP_STRATEGIES,
     LOCAL_BOX_SIZE,
     LOCAL_CONTEXT_HALF_EXTENT_VOXELS,
     P_TOKEN_DIM,
     SourceRoots,
     V_TOKEN_DIM,
     IdentityScope,
+    LocalCropStrategy,
     identity_scope_class_indices,
 )
 from .voxel_input import VoxelInputStore
 
 
 TASK_NAMES = ("candidate_pretrain", "full_matcher")
-_BOX_ORIGIN_ABSOLUTE_TOLERANCE_ANGSTROM = 5e-5
 
 
 class CandidateDataset(Dataset[CandidateItem]):
     """按候选粒度读取六分类样本，并按需附加 PDB 内指定范围的身份清单。
 
+    ``roots`` 给出冻结数据、Stage1 产物与 Matcher 缓存根；``manifest_path`` 指向
+    版本化清单；``split_name`` 选择其物化划分。``task_name`` 决定只构造候选任务或
+    完整 Matcher；后者由 ``language_family`` 和 ``identity_scope`` 选择语言表示与身份范围。
+    ``pp_top_k`` 限制每候选 PP token 数；``local_crop_strategy`` 决定 105 通道、V、PP
+    和两个区域目标共享的 ``48³`` 起点，并同时移动 A/P 相对坐标原点。
     ``cache_bytes_per_worker`` 是每个 DataLoader 工作进程自己的总缓存上限，
     默认 16 GiB，不会预先分配。预算覆盖 PDB 级 F1-centered/辅助标签、尚未
     预计算的 105 通道源数组、PP 缓存、身份输入和 LigandObject 图；五部分分别
@@ -57,6 +73,7 @@ class CandidateDataset(Dataset[CandidateItem]):
         language_family: str | None,
         identity_scope: IdentityScope | None,
         pp_top_k: int,
+        local_crop_strategy: LocalCropStrategy,
         cache_bytes_per_worker: int = 16 * 1024**3,
     ) -> None:
         if task_name not in TASK_NAMES:
@@ -74,6 +91,10 @@ class CandidateDataset(Dataset[CandidateItem]):
             )
         if pp_top_k <= 0:
             raise ValueError("pp_top_k 必须为正整数。")
+        if local_crop_strategy not in LOCAL_CROP_STRATEGIES:
+            raise ValueError(
+                f"local_crop_strategy 必须属于 {LOCAL_CROP_STRATEGIES}。"
+            )
         if cache_bytes_per_worker < 0:
             raise ValueError("cache_bytes_per_worker 不能为负数。")
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -89,6 +110,7 @@ class CandidateDataset(Dataset[CandidateItem]):
         self.language_family = language_family
         self.identity_scope = identity_scope
         self.pp_top_k = pp_top_k
+        self.local_crop_strategy = local_crop_strategy
         self.cache_bytes_per_worker = int(cache_bytes_per_worker)
         self.records = load_jsonl(manifest_path.parent / split_files["candidates"])
         identity_records = load_jsonl(manifest_path.parent / split_files["identities"])
@@ -103,8 +125,17 @@ class CandidateDataset(Dataset[CandidateItem]):
         budgets = _split_cache_budget(self.cache_bytes_per_worker)
         source_cache_bytes = budgets["source"]
         artifact_cache_bytes = budgets["artifact"]
-        self.voxel_store = VoxelInputStore(roots, source_cache_bytes=source_cache_bytes)
-        self.pp_store = PpInputStore(roots, pp_top_k, cache_bytes=budgets["pp"])
+        self.voxel_store = VoxelInputStore(
+            roots,
+            local_crop_strategy,
+            source_cache_bytes=source_cache_bytes,
+        )
+        self.pp_store = PpInputStore(
+            roots,
+            pp_top_k,
+            local_crop_strategy,
+            cache_bytes=budgets["pp"],
+        )
         self.graph_store = LigandGraphStore(roots.data_root, cache_bytes=budgets["graph"])
         self._artifact_cache: ByteBudgetLru[tuple[str, str], dict[str, Any]] = ByteBudgetLru(
             artifact_cache_bytes
@@ -128,23 +159,57 @@ class CandidateDataset(Dataset[CandidateItem]):
         centered = artifacts["centered"]
         voxel_size = np.asarray(centered["voxel_size_world"][candidate_index], dtype=np.float32)
         box_start = np.asarray(centered["box_start_zyx"][candidate_index], dtype=np.int64)
+        v_start, v_stop = _offset_range(centered["voxel_offsets"], candidate_index)
+        full_v_index = np.asarray(
+            centered["voxel_index_local_zyx"][v_start:v_stop],
+            dtype=np.int64,
+        )
+        crop_geometry = resolve_candidate_crop(full_v_index, self.local_crop_strategy)
+        if crop_geometry.full_v_count != int(record["full_candidate_voxel_count"]):
+            raise ValueError(
+                f"{self.split_name}/{pdb_id}/candidate_{candidate_index} 的权威 V 数量"
+                "与冻结清单不一致。"
+            )
         pp_input = self.pp_store.load(self.split_name, pdb_id, candidate_index)
-        _validate_candidate_geometry(centered, pp_input, candidate_index)
+        _validate_candidate_geometry(
+            centered,
+            pp_input,
+            candidate_index,
+            crop_geometry.start_zyx,
+        )
 
         a_tokens = _build_a_tokens(
             centered,
             candidate_index,
             voxel_size,
+            crop_geometry.start_zyx,
         )
         binding_target = _build_binding_target(
             artifacts["receptor_coords"],
             artifacts["binding_atom"],
             np.asarray(centered["box_origin_world"][candidate_index], dtype=np.float32),
             voxel_size,
+            crop_geometry.start_zyx,
         )
-        p_tokens = _build_p_tokens(centered, candidate_index, voxel_size)
-        v_tokens, v_index_zyx = _build_v_tokens(centered, candidate_index, voxel_size)
-        ligand_target = _build_ligand_target(artifacts["occurrence_masks"], box_start)
+        p_tokens = _build_p_tokens(
+            centered,
+            candidate_index,
+            voxel_size,
+            crop_geometry.start_zyx,
+        )
+        v_tokens, v_index_zyx = _build_v_tokens(
+            centered,
+            v_start,
+            v_stop,
+            full_v_index,
+            voxel_size,
+            crop_geometry.start_zyx,
+        )
+        ligand_target = _build_ligand_target(
+            artifacts["occurrence_masks"],
+            box_start,
+            crop_geometry.start_zyx,
+        )
 
         metadata: CandidateMetadata = {
             "split": self.split_name,
@@ -159,7 +224,12 @@ class CandidateDataset(Dataset[CandidateItem]):
         }
         item: dict[str, Any] = {
             "metadata": metadata,
-            "voxel_input": self.voxel_store.load(self.split_name, pdb_id, candidate_index),
+            "voxel_input": self.voxel_store.load(
+                self.split_name,
+                pdb_id,
+                candidate_index,
+                crop_geometry.start_zyx,
+            ),
             "a_tokens": a_tokens,
             "p_tokens": p_tokens,
             "v_tokens": v_tokens,
@@ -176,6 +246,7 @@ class CandidateDataset(Dataset[CandidateItem]):
                 v_tokens,
                 pp_input["tokens"],
             ),
+            "candidate_sampling_features": candidate_sampling_features(crop_geometry),
         }
         if self.task_name == "full_matcher":
             item.update(
@@ -309,6 +380,9 @@ class CandidateDataset(Dataset[CandidateItem]):
         return state
 
 
+# ================================================================================================
+
+
 def _candidate_manual_features(
     a_tokens: np.ndarray,
     p_tokens: np.ndarray,
@@ -376,7 +450,6 @@ _CENTERED_FIELDS = (
     "A_offsets",
     "A_global_index",
     "A_coord_local_xyz",
-    "A_coord_centered_world",
     "A_probability",
     "A_feat_L0",
     "A_feat_L1",
@@ -389,6 +462,7 @@ def _validate_candidate_geometry(
     centered: dict[str, np.ndarray],
     pp_input: PpCandidateInput,
     candidate_index: int,
+    crop_start_zyx: np.ndarray,
 ) -> None:
     """核对 F1-centered 和概率图保存的候选框空间字段。
 
@@ -406,12 +480,14 @@ def _validate_candidate_geometry(
         pp_input["probability_voxel_size"],
         dtype=np.float32,
     )
-    named_vectors = {
+    cached_crop_start = np.asarray(pp_input["crop_start_zyx"], dtype=np.int64)
+    named_vectors: dict[str, np.ndarray] = {
         "F1-centered voxel_size_world": voxel_size,
         "F1-centered box_origin_world": box_origin,
         "F1-centered box_start_zyx": box_start,
         "probability_map origin_xyz": probability_origin,
         "probability_map voxel_size_xyz": probability_voxel_size,
+        "PP cache crop_start_zyx": cached_crop_start,
     }
     for field_name, vector in named_vectors.items():
         if vector.shape != (3,) or not np.isfinite(vector).all():
@@ -419,18 +495,20 @@ def _validate_candidate_geometry(
     expected_origin = probability_origin + box_start[[2, 1, 0]] * voxel_size
     if not np.array_equal(voxel_size, probability_voxel_size):
         raise ValueError("F1-centered 与 probability_map 的 voxel_size 不一致。")
+    if not np.array_equal(cached_crop_start, np.asarray(crop_start_zyx, dtype=np.int64)):
+        raise ValueError("PP 缓存与 CandidateDataset 解析的候选裁剪起点不一致。")
     maximum_absolute_error = float(np.max(np.abs(box_origin - expected_origin)))
     if not np.allclose(
         box_origin,
         expected_origin,
         rtol=0.0,
-        atol=_BOX_ORIGIN_ABSOLUTE_TOLERANCE_ANGSTROM,
+        atol=BOX_ORIGIN_ABSOLUTE_TOLERANCE_ANGSTROM,
     ):
         raise ValueError(
             f"F1-centered box_origin={box_origin.tolist()} 与离散起点推导值"
             f" {expected_origin.tolist()} 不一致；最大绝对误差为"
             f" {maximum_absolute_error:.9g} Å，允许上限为"
-            f" {_BOX_ORIGIN_ABSOLUTE_TOLERANCE_ANGSTROM:.9g} Å。"
+            f" {BOX_ORIGIN_ABSOLUTE_TOLERANCE_ANGSTROM:.9g} Å。"
         )
 
 
@@ -438,6 +516,7 @@ def _build_a_tokens(
     centered: dict[str, np.ndarray],
     candidate_index: int,
     voxel_size: np.ndarray,
+    crop_start_zyx: np.ndarray,
 ) -> np.ndarray:
     """保留完整 A token，不用经过筛选的 A 子集构造区域监督。
 
@@ -446,9 +525,10 @@ def _build_a_tokens(
     """
 
     start, stop = _offset_range(centered["A_offsets"], candidate_index)
-    centered_coordinates = np.asarray(
-        centered["A_coord_centered_world"][start:stop],
-        dtype=np.float32,
+    centered_coordinates = local_xyz_to_crop_centered_world(
+        centered["A_coord_local_xyz"][start:stop],
+        crop_start_zyx,
+        voxel_size,
     )
     coordinate_scale = _coordinate_scale_xyz(voxel_size, FULL_CONTEXT_HALF_EXTENT_VOXELS)
     features = np.concatenate(
@@ -470,12 +550,13 @@ def _build_binding_target(
     binding_atom: np.ndarray,
     box_origin_xyz: np.ndarray,
     voxel_size_xyz: np.ndarray,
+    crop_start_zyx: np.ndarray,
 ) -> np.ndarray:
-    """把完整受体表中的结合原子独立散射到候选中心 ``48³``。
+    """把完整受体表中的结合原子独立散射到候选实际裁剪的 ``48³``。
 
-    A token 是来源组件周围的筛选子集，不能作为辅助监督的原子全集。这里沿用
-    Find_0 hard scatter 的 home-voxel 语义：世界 XYZ 先按候选 80³ 原点换算为
-    连续局部坐标，向下取整后再减去中心裁剪边距 16。
+    A token 是来源组件周围的筛选子集，不能作为辅助监督的原子全集。世界 XYZ
+    先按候选 80³ 原点换算为连续局部坐标，向下取整得到所属体素，再减去该候选
+    的 ``48³`` XYZ 起点。
     """
 
     coordinates = np.asarray(receptor_coords, dtype=np.float32)
@@ -491,7 +572,10 @@ def _build_binding_target(
     if not np.isfinite(coordinates).all() or not np.isfinite(origin).all() or not np.isfinite(voxel_size).all():
         raise ValueError("binding-area 空间字段含 NaN 或 Inf。")
     local_xyz = (coordinates - origin[None, :]) / voxel_size[None, :]
-    local_index_xyz = np.floor(local_xyz).astype(np.int64) - LOCAL_BOX_MARGIN
+    local_index_xyz = (
+        np.floor(local_xyz).astype(np.int64)
+        - np.asarray(crop_start_zyx, dtype=np.int64)[[2, 1, 0]]
+    )
     valid = labels & np.all(
         (local_index_xyz >= 0) & (local_index_xyz < LOCAL_BOX_SIZE),
         axis=1,
@@ -506,6 +590,7 @@ def _build_p_tokens(
     centered: dict[str, np.ndarray],
     candidate_index: int,
     voxel_size: np.ndarray,
+    crop_start_zyx: np.ndarray,
 ) -> np.ndarray:
     """构造完整 80³ 的 116 维 P token。
 
@@ -514,8 +599,9 @@ def _build_p_tokens(
     """
 
     start, stop = _offset_range(centered["P_offsets"], candidate_index)
-    coordinates = local_xyz_to_centered_world(
+    coordinates = local_xyz_to_crop_centered_world(
         centered["P_coord_local_xyz"][start:stop],
+        crop_start_zyx,
         voxel_size,
     )
     coordinate_scale = _coordinate_scale_xyz(voxel_size, FULL_CONTEXT_HALF_EXTENT_VOXELS)
@@ -533,19 +619,24 @@ def _build_p_tokens(
 
 def _build_v_tokens(
     centered: dict[str, np.ndarray],
-    candidate_index: int,
+    start: int,
+    stop: int,
+    full_index: np.ndarray,
     voxel_size: np.ndarray,
+    crop_start_zyx: np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """构造中心 48³ 内的 52 维 V token。
+    """构造候选级 48³ 内的 52 维 V token。
 
     字段依次为 Stage1 voxel_final(48)、候选概率(1)和按局部空间物理
     半边长归一化的相对 XYZ(3)。监督覆盖率仍使用清单中的完整组件。
     """
 
-    start, stop = _offset_range(centered["voxel_offsets"], candidate_index)
-    full_index = np.asarray(centered["voxel_index_local_zyx"][start:stop], dtype=np.int64)
-    keep, cropped_index = keep_local_48(full_index)
-    coordinates = voxel_zyx_to_centered_world(full_index[keep], voxel_size)
+    keep, cropped_index = keep_local_48_at(full_index, crop_start_zyx)
+    coordinates = voxel_zyx_to_crop_centered_world(
+        full_index[keep],
+        crop_start_zyx,
+        voxel_size,
+    )
     coordinate_scale = _coordinate_scale_xyz(voxel_size, LOCAL_CONTEXT_HALF_EXTENT_VOXELS)
     tokens = np.concatenate(
         (
@@ -561,10 +652,14 @@ def _build_v_tokens(
 def _build_ligand_target(
     occurrence_masks: list[np.ndarray],
     box_start_zyx: np.ndarray,
+    local_crop_start_zyx: np.ndarray,
 ) -> np.ndarray:
-    """由全部 occurrence 稀疏掩码构造中心 48³ 配体区域并集。"""
+    """由全部 occurrence 稀疏掩码构造候选 ``48³`` 配体区域并集。"""
 
-    crop_start = np.asarray(box_start_zyx, dtype=np.int64) + LOCAL_BOX_MARGIN
+    crop_start = np.asarray(box_start_zyx, dtype=np.int64) + np.asarray(
+        local_crop_start_zyx,
+        dtype=np.int64,
+    )
     target = np.zeros((LOCAL_BOX_SIZE, LOCAL_BOX_SIZE, LOCAL_BOX_SIZE), dtype=bool)
     for mask in occurrence_masks:
         local = np.asarray(mask, dtype=np.int64) - crop_start[None, :]

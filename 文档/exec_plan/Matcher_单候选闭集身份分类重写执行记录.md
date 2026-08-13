@@ -10,7 +10,7 @@
 
 - 候选六分类顺序是 `background/ion/nucleotide_like/peptide_like/small_molecule/sugar`，所有 Find_0 F1 候选都参与，不使用配体语言表示或配体图。
 - 候选全局组件与 occurrence 的双向覆盖率都至少为 `0.30` 才命中；多个命中按两侧覆盖率几何平均最大者选择，并使用稳定并列规则。监督使用完整全局候选，不使用裁剪后 V。
-- U-Net 输入是候选中心 `48³` 的 105 通道：56 个 Find_0 密度通道加 49 个完整受体原子 hard-floor/sum 通道。A/P 保留 `80³` 完整上下文且不受 U-Net 调制；V/PP 截断到中心 `48³` 并只有这两个模态读取 U-Net 特征增量。
+- U-Net 输入是候选中心 `48³` 的 105 通道：56 个 Find_0 密度通道，加 49 个把完整受体原子世界坐标换算后向下取整到所属体素、并对同体素特征求和得到的通道。A/P 保留 `80³` 完整上下文且不受 U-Net 调制；V/PP 截断到中心 `48³` 并只有这两个模态读取 U-Net 特征增量。
 - 候选聚合有两种：弱聚合对 A/P/V/PP 分别做 mean/max；强聚合用候选摘要分别查询四种未压缩 token。强聚合 PP 分支的输出层权重与偏置初始为严格零，但输出层自身在首次反向可获得梯度。
 - 完整 Matcher 以 native 冻结语言表示为基线；native 分别查询自身未池化配体原子 token 和同一 PDB 内排除自身的其他 native 身份。native/graph/inventory 三条候选—身份打分保持独立，graph/inventory 出口门初始为严格零；单身份 inventory 上下文严格为零。
 - `object_key` 在每个 PDB 内作为身份键。同一键的多个 occurrence 可由不同 SMILES 产生不同语言表示；首轮分别对 MoLFormer 和 SMI-TED Light 289M 从有效 occurrence 中按清单种子固定选择一个并记录证据。
@@ -42,7 +42,7 @@
 
 ## 阶段审查与修复证据
 
-数据科学审查在真实 train/validation/calibration 产物中发现，旧的 binding-area 目标从筛选后 A token 散射，会漏掉局部结合原子的约 60%--75%。修复后目标独立使用完整 `receptor_tokens.coords` 和 `atom_labels.binding_atom`，世界 XYZ 按几何换算后使用 home-voxel floor 散射到中心 `48³`。实际纳入 PDB 的坐标/标签长度全部对齐：train 493、validation 183、calibration 86 个 PDB 都为零异常。
+数据科学审查在真实 train/validation/calibration 产物中发现，旧的 binding-area 目标从筛选后 A token 散射，会漏掉局部结合原子的约 60%--75%。修复后目标独立使用完整 `receptor_tokens.coords` 和 `atom_labels.binding_atom`，把世界 XYZ 按候选几何换算后向下取整到所属体素，再散射到中心 `48³`。实际纳入 PDB 的坐标/标签长度全部对齐：train 493、validation 183、calibration 86 个 PDB 都为零异常。
 
 数据审查还确认空模态是数据几何而非加载错误：A 为空的候选约为 train `6529/14312`、validation `3334/6495`、calibration `1815/3363`；V 裁剪后为空也很常见。calibration `7z2c/candidate_1` 是已知少量正例中的一个：完整 G2P 候选在中心 `48³` 之外。这是已确认的 V 硬截断边界，暂不改变数据或监督。
 
@@ -676,7 +676,7 @@ sbatch /storage/penghongen/tmp/Matcher/diagnostics/identity_coverage_train_valid
 
 W&B 指标同时从笼统的 `train/*`、`validation/*` 首层改为职责优先路径。第一层为 `loss/gradient/gate/learning_rate/performance/memory/statistics/classification_summary/classification_per_class/classification_confusion/identity_*/area/selection`，第二层再区分 train step、train epoch 或 validation。这样符合 W&B 默认工作区按第一个 `/` 前缀建立区块的实际行为；候选预训练不写身份分支、身份指标和门值的空数据。完整嵌套报告仍逐 epoch 保存在 `history.jsonl`，在线曲线不替代落盘证据。
 
-兼容性方面，calibration 在读取旧第 0 批 `resolved.json` 时，会把缺失的 `model.use_manual_features` 迁移为 `false`，并按旧任务语义把缺失的 `stage.identity_scope` 迁移为 `small_molecule` 或 `None`。历史 YAML 原文件仍不接受缺字段的静默解析；复现旧 checkpoint 时使用当前已显式补全字段的第 0 批 YAML。这一边界保持正式配置自包含，同时避免旧 BEST 因新增字段失去可核验性。
+兼容性方面，calibration 在读取旧第 0 批 `resolved.json` 时，会把缺失的 `model.use_manual_features/use_sampling_features` 迁移为 `false/false`，并按旧任务语义把缺失的 `stage.identity_scope` 迁移为 `small_molecule` 或 `None`。第 1 批 checkpoint 已有 `use_manual_features=true` 而只缺采样开关时，保留手动统计并仅迁移 `use_sampling_features=false`。历史 YAML 原文件仍不接受缺字段的静默解析；复现旧 checkpoint 时使用当前已显式补全字段的第 0 批 YAML。这一边界保持正式配置自包含，同时避免旧 BEST 因新增字段失去可核验性。
 
 本轮修订期间的定向回归为 `39 passed`，mypy 检查 38 个源文件零问题。最终全量门禁与两名阶段审查代理的冻结结论在本节后续追加；在其通过前不建立 release、不启动第 1 批任务。第 0 批六个受管 allocation 与所有 `after_lock` 保持原样，calibration 模型推理仍未执行。
 
@@ -720,3 +720,38 @@ Job `341600` 于 04:17:54 以 `COMPLETED/0:0` 收口，耗时 24 分 09 秒。�
 三项 tracking 产物都确认 `mode=online`、project `AdaLigand-Matcher-Batch1`、group `matcher-batch1-five-class-manual-features`。节点时钟并未完全同步，所以 detached 的 launch 名时间早于控制端触发时间；attempt 序号、release、命令哈希、业务目录和 W&B 身份一致，不把名称时间当作执行排序依据。
 
 三项都完成首个真实 global batch 32 更新。oracle 的首步为 `61.7351 s`、有效身份 7、裁剪前梯度范数 `49.9738`、峰值已分配/保留显存 `28,143,265,792 / 39,747,321,856 bytes`；detached 为 `62.6836 s`、7、`32.3384`、`28,143,814,144 / 39,522,926,592 bytes`；joint 为 `24.2634 s`、7、`30.3424`、`14,195,499,008 / 19,511,902,208 bytes`。成功事件均发生在有限性检查、优化器更新与 CUDA 同步之后；日志只有既有 PyTorch 弃用警告，没有 OOM、NaN、非有限梯度或 Traceback。三个任务继续运行，所有 `after_lock` 保留；后续改为按明确事件低频记录。
+
+### 第 2 批 V 质心视野实现与发布前门禁
+
+第 2 批只改变局部视野并新增四项采样统计，不改变候选集合、全局双向覆盖率、六分类/身份监督、global batch 或候选全局随机排列；第 1 批已有的 12 项模态手动统计保持原定义。活动实现新增 `CandidateCropGeometry`，以完整权威 V 的 float64 下标均值计算 `np.rint(mean(V_zyx)+0.5-24)`，再逐轴限制到 `[0,32]`。Dataset 为每个候选解析一次实际起点，并把它用于 105 通道、V、A/P 相对坐标以及配体/结合区域；PP 预计算按 PDB 独立调用同一几何函数，Dataset 读取后再逐项核对其缓存起点。105 通道仍先在完整 `80³` 上完成 Find_0 密度构造和完整受体散射，再裁取候选 `48³`，避免改变归一化与 Gaussian 边界语义。
+
+voxel 与 PP 缓存均提升为 schema v2，路径分别是 `cache/voxel_input_v2/<strategy>/` 和 `cache/pp_input_v2/<strategy>/top_<k>/`。voxel 文件名同时绑定 `candidate_index` 与实际 `crop_start_zyx`；PP v2 在 NPZ 内保存每个候选的 `crop_start_zyx`，Dataset 命中后逐项核对。`fixed_center` 与 `v_centroid` 不复用缓存。旧第 0/1 批任务继续从各自内容寻址 release 读取原 schema，不受活动工作区影响。
+
+新增 `candidate_sampling_features` 四项原始 float32 统计：起点边界限制标志、实际裁剪中心到完整 V 体素中心质心的 L2/L∞ 距离和 V 保留比例。候选融合以 `24√3/24` 归一化距离后紧邻 U-Net 摘要拼接；完整 Matcher 的 native、graph、inventory 三个最终打分 MLP 读取同一统计。12 项 A/P/V/PP 计数与固化概率仍保持第 1 批顺序和模态归属。
+
+合成测试覆盖内部候选、六个边界面、NumPy 最近偶数取整、宽 V 部分保留和高 X 边界端到端同源性；后者在一个样本中同时核对 105 通道、V/PP 索引、配体/结合目标以及 A/P 新相对原点。阶段门禁为 pytest `68 passed`、mypy 38 个源码文件零问题、pyflakes、compileall 与 `git diff --check` 通过。该结果早于五份 Batch2 YAML、README 和三层账本的最终落盘，发布前必须重新执行完整门禁和独立双审。
+
+独立科学审查随后复现两项会绕过张量形状检查的缓存风险。第一，早期 v2 NPY 仅按候选编号寻址，同一候选换起点会静默复用旧数组；现已把起点编码进文件名，并用双起点逐值回归锁定。第二，105 通道使用 exp 的原点/尺寸和 F1 的 `box_start_zyx`，但原实现没有 exp/sim↔F1 桥接；现于缓存写入前核对全部候选的 `(C,3)` 起点、原点和尺寸，要求 F1 spacing 与密度图逐元素相等，并以 `5e-5 Å` 绝对容差核对 `F1 box_origin = density origin + ZYX起点转XYZ × spacing`。各向异性 spacing、非零原点与非对称起点正例，以及 exp origin/spacing 漂移反例均通过；数据专项为 `31 passed`，相关 mypy 四文件零问题。结合既有 F1↔probability 校验，exp/sim↔F1↔probability/PP 的空间链已闭合。
+
+05:19 的只读 Slurm 核验显示六个受管 allocation 均为 `RUNNING`；Job `340897/340898/340899` 的第 0 批 MoLFormer 已分别在 epoch 9 自然早停，当前只有共享 allocation 根中的 `try_lock` 和各 Job 目录中的 `after_lock`。没有修改这些锁或动态命令。第 2 批前三个完整 Matcher 预定依次复用这三张 A100，物理批量 8、累积 4；两个候选预训练预定在受管 A800 自然空闲后以 16×2 接续。五项均为 global batch 32，并写入独立 W&B project `AdaLigand-Matcher-Batch2`。
+
+真实 `7z2c/candidate_1` 回归只作为 calibration 准备性几何核验。诊断产物根为 `/storage/penghongen/tmp/Matcher/diagnostics/batch2_7z2c_geometry_20260814T0524/`。第一次 CPU-only Job `341614` 因 `sbatch --wrap` 嵌套引号丢失，在 1 秒内以 Python `SyntaxError` 退出，未成功解释脚本、未打开 NPZ；该失败是命令封装问题，不是几何失败。修订为通过 Slurm 环境变量传递 base64 脚本后，成功提交时执行的控制端 PowerShell 命令如下；临时脚本 `tmp/batch2_7z2c_geometry_probe.py` 的 SHA-256 为 `E14DB0852B18088533FA82EB60968FE1F3F9FE219FB224B3B2FC2C729614EDD3`：
+
+```powershell
+$encoded = [Convert]::ToBase64String(
+  [IO.File]::ReadAllBytes('C:\Users\15919\Desktop\Matcher\tmp\batch2_7z2c_geometry_probe.py')
+)
+$envName = 'chr(80)+chr(82)+chr(79)+chr(66)+chr(69)+chr(95)+chr(66)+chr(54)+chr(52)'
+$remote = "sbatch --parsable --job-name=matcher-batch2-7z2c-geometry " +
+  "--partition=cpu --qos=cpu96 --nodes=1 --ntasks=1 --cpus-per-task=1 --mem=8G " +
+  "--export=ALL,PROBE_B64=$encoded " +
+  "--output=/storage/penghongen/tmp/Matcher/diagnostics/batch2_7z2c_geometry_20260814T0524/slurm-%j.out " +
+  "--error=/storage/penghongen/tmp/Matcher/diagnostics/batch2_7z2c_geometry_20260814T0524/slurm-%j.err " +
+  "--wrap='exec /home/penghongen/anaconda3/envs/Pocket_Plus_centos7_cu121_allgpu/bin/python " +
+  "-c `"import base64,os;exec(base64.b64decode(os.environ[$envName]))`"'"
+& "$env:USERPROFILE\.codex\tools\Invoke-ProjectSsh.ps1" -Command $remote
+```
+
+Job `341618` 为 `COMPLETED/0:0`，运行 11 秒，stderr 为空。输出证实完整 V `170`，质心 ZYX `[39.6117647059,39.8352941176,70.5882352941]`，请求起点 `[16,16,47]`，限制后 `[16,16,32]`；旧 `[16,64)³` 保留 0，新视野保留 170。脚本只读取一个 `F1_centered.npz` 的 V offsets/indices，没有导入 Matcher 模型、加载 checkpoint、创建 DataLoader、运行 W&B、计算指标或创建 calibration claim。
+
+06:28 的第 2 批冻结门禁为 pytest `77 passed`、mypy 38 个源码文件零问题、pyflakes、compileall、15 份正式 YAML 解析、8 个 shell 的 `bash -n` 与 `git diff --check` 全部通过。独立科学终审确认候选集合、监督、global batch、统一裁剪几何、缓存起点绑定、exp/sim↔F1↔probability 空间链、采样统计及旧产物迁移均无阻断；严格表达终审确认跨模块函数与结构化字段、五份 YAML、持久缓存契约、三层账本和 calibration 状态说明均可冷读。两项终审结论均为 PASS，阻断项为零；下一步只做实现提交、安全同步、内容寻址 release 与 train/validation v2 缓存预计算，不执行 calibration 模型推理。

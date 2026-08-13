@@ -156,7 +156,7 @@ def _clip_normalize(value: np.ndarray) -> np.ndarray:
 
 
 def _smooth_strength(mask: np.ndarray, sigma: float, radius: float) -> np.ndarray:
-    """生成受体 home voxel 周围的截断高斯扣除强度。"""
+    """生成受体原子所属体素周围的截断高斯扣除强度。"""
 
     distance = ndimage.distance_transform_edt(~mask)
     strength = np.exp(-(distance**2) / (2.0 * sigma**2))

@@ -18,7 +18,7 @@
 
 `data.data_root` 指向只读 AdaLigand 冻结产物，`data.stage1_root` 指向只读 Find_0 候选产物，`data.output_root` 仅保存 Matcher 清单、体素缓存与 PP token 缓存。
 
-`coverage_threshold=0.30` 同时应用于候选覆盖率和真实配体 occurrence 覆盖率。`selection_seed=3407` 只冻结清单内同一 `object_key` 的语言表示选择；各阶段的 `training.seed` 独立冻结训练随机源。`pp_top_k=1024` 是首轮局部 `48³` PP 采样上限，也进入 `cache/pp_input_v1/top_1024/` 路径，防止不同数量的 PP token 复用同一缓存。PP 缓存按 PDB 一次读取完整 probability map，再为该 PDB 的全部候选保存 token；缓存命中后，训练 worker 只读取该小型产物，缺失时由第一个持锁进程按 PDB 构建一次。该上限仍须在执行记录中作为待实验复核参数。
+`coverage_threshold=0.30` 同时应用于候选覆盖率和真实配体 occurrence 覆盖率。`selection_seed=3407` 只冻结清单内同一 `object_key` 的语言表示选择；各阶段的 `training.seed` 独立冻结训练随机源。`local_crop_strategy=fixed_center` 明确复现第 0 批 `[16,64)³` 视野；当前兼容入口把它写入 `cache/voxel_input_v2/fixed_center/` 和 `cache/pp_input_v2/fixed_center/top_1024/`，不会误读第 2 批 V 质心缓存。`pp_top_k=1024` 是每个局部 `48³` 的 PP 采样上限。PP 缓存按 PDB 一次读取完整 probability map，再为该 PDB 的全部候选保存 token；缓存命中后，训练工作进程只读取该小型产物，缺失时由第一个持锁进程按 PDB 构建一次。
 
 `train_num_workers=4` 与 `validation_num_workers=4` 分别冻结 train 和 validation 单次完整迭代使用的 DataLoader 工作进程数。两套工作进程不会同时常驻：每次迭代开始时建立对应进程池，完整耗尽该 DataLoader 后销毁，再进入下一次 train 或 validation 迭代。train 和 validation 分别持有独立的 Torch 随机生成器，初始种子依次为 `2 × training.seed` 和 `2 × training.seed + 1`；配置解析器把 `training.seed` 限制在 NumPy 接受的 `[0,2³²-1]`，所以这两个公式无需折返。重建 worker 池不会推进模型与 dropout 使用的全局 Torch 随机流。4 是当前首轮配置的低内存启动值，后续 YAML 可以显式调整。`cache_gib_per_worker` 是每个当前存活 worker 的独立 LRU 字节上限，A100 任务为 16 GiB，A800 任务为 32 GiB；该上限按需增长而不预分配内存。
 
@@ -41,7 +41,7 @@
 
 `model.aggregation` 只允许 `mean_max` 或 `candidate_cross_attention`。`raunet_planes` 依次是 `(enc0, enc1, enc2, enc3, bottleneck, dec3, dec2, dec1, dec0)`。`gradient_checkpointing=true` 仅表示训练时激活重计算，不改变前向科学语义。
 
-`identity_scope=null` 表示候选预训练没有身份损失；`identity_scope=small_molecule` 表示完整 Matcher 只在真实小分子且身份目标有效的候选上计算身份损失。`model.use_manual_features=false` 固定第 0 批结构，不向候选摘要或身份打分 MLP 拼接第 1 批新增的手动统计。旧 checkpoint 若没有该模型字段，加载时只迁移为 `false`，不会静默启用新分支。
+`identity_scope=null` 表示候选预训练没有身份损失；`identity_scope=small_molecule` 表示完整 Matcher 只在真实小分子且身份目标有效的候选上计算身份损失。`model.use_manual_features=false` 与 `model.use_sampling_features=false` 固定第 0 批结构，不向候选摘要或身份打分 MLP 拼接第 1 批的手动统计或第 2 批的采样统计。第 0 批 checkpoint 缺少两个开关时二者都迁移为 `false`；第 1 批 checkpoint 已含 `use_manual_features=true` 而只缺采样开关时，保留手动统计并仅把 `use_sampling_features` 迁移为 `false`。
 
 `physical_batch_size × gradient_accumulation` 必须严格等于 `global_batch_size=32`。`maximum_epochs=null` 表示不设 epoch 上限；任务也不设 Slurm 或程序墙钟上限。`patience_bad_epochs=2` 表示连续两个完整 validation epoch 没有改善后结束训练。
 

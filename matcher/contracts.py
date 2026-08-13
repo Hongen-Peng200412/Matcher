@@ -24,10 +24,15 @@ class CandidateItem(TypedDict):
     """描述 ``CandidateDataset`` 返回的一个候选。
 
     A/P/V/PP 分别为 ``(N,229)/(N,116)/(N,52)/(N,4)`` float32；V/PP 的
-    ``index_zyx`` 为对应 token 在中心 ``48³`` 中的整数索引。体素输入是
+    ``index_zyx`` 为对应 token 在候选实际裁剪 ``48³`` 中的整数索引。体素输入是
     ``(105,48,48,48)`` float16；两个区域目标是同空间形状的 bool 数组。
     ``candidate_manual_features`` 是 float32 ``(12,)``，顺序为 A/P/V/PP 各自的 ``(token_count,probability_mean,probability_max)``。
     ``candidate_manual_features`` 的计数单位为 token 个数，概率是无量纲 Stage1 固化原值，空模态三项均为 0。
+    ``candidate_sampling_features`` 是 float32 ``(4,)``。
+    第 0 项是取值 0/1 的 ``crop_boundary_limited``。
+    第 1 项是 ``crop_center_to_v_centroid_l2_voxels``，单位 voxel。
+    第 2 项是 ``crop_center_to_v_centroid_linf_voxels``，单位 voxel。
+    第 3 项是位于 ``[0,1]`` 的无量纲 ``v_retained_fraction``。
     ``identity_class_index`` 是 int64 ``(I,)``，与语言表示、配体图和 object_key 逐身份对齐，有效值属于六分类下标 ``[1,5]``。
     身份语言表示为 ``(I,768)``，配体图和 object_key 均与身份轴一一对应；
     ``identity_target=-1`` 表示当前语言模型下没有可监督的真实身份。
@@ -46,6 +51,7 @@ class CandidateItem(TypedDict):
     binding_area_target: np.ndarray
     full_candidate_voxel_count: int
     candidate_manual_features: np.ndarray
+    candidate_sampling_features: np.ndarray
     identity_object_keys: list[str]
     identity_class_index: np.ndarray
     language_embeddings: np.ndarray
@@ -63,6 +69,7 @@ class CandidateBatch(TypedDict):
     int64 ``(B,)``。``full_candidate_voxel_count`` 是 int64 ``(B,)``。
     ``candidate_manual_features`` 是 float32 ``(B,12)``，顺序为 A/P/V/PP 各自的 ``(token_count,probability_mean,probability_max)``。
     ``candidate_manual_features`` 的计数单位为 token 个数，概率是无量纲 Stage1 固化原值，空模态三项均为 0。
+    ``candidate_sampling_features`` 是 float32 ``(B,4)``，第二轴顺序和单位与 ``CandidateItem`` 相同。
     ``ligand_area_target`` 和 ``binding_area_target`` 都是 bool
     ``(B,48,48,48)``。
 
@@ -93,6 +100,7 @@ class CandidateBatch(TypedDict):
     binding_area_target: torch.Tensor
     full_candidate_voxel_count: torch.Tensor
     candidate_manual_features: torch.Tensor
+    candidate_sampling_features: torch.Tensor
     a_tokens: torch.Tensor
     a_mask: torch.Tensor
     p_tokens: torch.Tensor

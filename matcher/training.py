@@ -80,6 +80,7 @@ _TENSOR_BATCH_KEYS = (
     "binding_area_target",
     "full_candidate_voxel_count",
     "candidate_manual_features",
+    "candidate_sampling_features",
     "a_tokens",
     "a_mask",
     "p_tokens",
@@ -378,6 +379,7 @@ def _build_stage_runtime(
         language_family=stage.language_family,
         identity_scope=stage.identity_scope,
         pp_top_k=data.pp_top_k,
+        local_crop_strategy=data.local_crop_strategy,
         cache_bytes_per_worker=cache_bytes_per_worker,
     )
     validation_dataset = CandidateDataset(
@@ -388,6 +390,7 @@ def _build_stage_runtime(
         language_family=stage.language_family,
         identity_scope=stage.identity_scope,
         pp_top_k=data.pp_top_k,
+        local_crop_strategy=data.local_crop_strategy,
         cache_bytes_per_worker=cache_bytes_per_worker,
     )
     train_sampler = ShuffledBatchSampler(
@@ -485,6 +488,7 @@ def _build_stage_runtime(
         "coverage_threshold": data.coverage_threshold,
         "selection_seed": data.selection_seed,
         "pp_top_k": data.pp_top_k,
+        "local_crop_strategy": data.local_crop_strategy,
         "train_num_workers": data.train_num_workers,
         "validation_num_workers": data.validation_num_workers,
         "prefetch_factor": data.prefetch_factor,
@@ -621,6 +625,12 @@ def _train_epoch(
             cpu_group,
             stage.training.class_weights,
         )
+        group_sampling_features = torch.cat(
+            [batch["candidate_sampling_features"] for batch in cpu_group],
+            dim=0,
+        )
+        if group_sampling_features.shape != (group_sample_count, 4):
+            raise ValueError("global batch 的 candidate_sampling_features 必须为 (N,4)。")
         group_statistics = _LossStatistics()
         compute_started_at = time.perf_counter()
         for cpu_batch in cpu_group:
@@ -708,6 +718,21 @@ def _train_epoch(
             "loss/train_step/binding_area": group_loss["binding_area"],
             "loss/train_step/identity": group_loss["identity"],
             "statistics/train_step/identity_eligible_count": group_eligible_count,
+            "statistics/train_step/crop_boundary_fraction": float(
+                group_sampling_features[:, 0].mean()
+            ),
+            "statistics/train_step/crop_offset_l2_mean_voxels": float(
+                group_sampling_features[:, 1].mean()
+            ),
+            "statistics/train_step/crop_offset_linf_mean_voxels": float(
+                group_sampling_features[:, 2].mean()
+            ),
+            "statistics/train_step/v_retained_fraction_mean": float(
+                group_sampling_features[:, 3].mean()
+            ),
+            "statistics/train_step/v_retained_fraction_minimum": float(
+                group_sampling_features[:, 3].amin()
+            ),
             "gradient/train_step/preclip_norm": gradient_norm,
             "learning_rate/train_step/current": float(optimizer.param_groups[0]["lr"]),
             "performance/train_step/data_wait_seconds": group_data_wait_seconds,

@@ -43,10 +43,11 @@ from .locking import exclusive_file_lock
 from .manifest import require_manifest
 from .model import CandidateEncoder, ClosedSetMatcher, MatcherModelConfig
 from .numeric import NumericBackendRecord, configure_random_seeds_and_numeric_backend
+from .schema import LocalCropStrategy
 from .training import EvaluationResult, evaluate_model
 
 
-CALIBRATION_SCHEMA_VERSION = 1
+CALIBRATION_SCHEMA_VERSION = 2
 
 
 class CalibrationCheckpointEvidence(TypedDict):
@@ -119,6 +120,7 @@ class CalibrationRuntimeEvidence(TypedDict):
     ``num_workers`` 沿用 YAML 的 validation 工作进程数。
     ``prefetch_factor`` 是每个工作进程预取的物理批次数。
     ``cache_gib_per_worker`` 是单个工作进程五类 LRU 缓存的 GiB 上限。
+    ``local_crop_strategy`` 是 checkpoint 训练时冻结的候选 ``48³`` 裁剪策略。
     ``multiprocessing_context`` 固定为 spawn。
     ``persistent_workers`` 固定为 False，完整迭代结束后退出工作进程池。
     ``worker_generator_seed`` 是只供 calibration 工作进程播种的独立 Torch 种子。
@@ -132,6 +134,7 @@ class CalibrationRuntimeEvidence(TypedDict):
     num_workers: int
     prefetch_factor: int
     cache_gib_per_worker: float
+    local_crop_strategy: LocalCropStrategy
     multiprocessing_context: str
     persistent_workers: bool
     worker_generator_seed: int
@@ -397,9 +400,12 @@ def _validate_checkpoint_for_stage(
             resolved_stage["identity_scope"] = None
     if resolved_stage != expected_stage_json:
         raise ValueError("resolved.json.stage 与所选 YAML 阶段不一致。")
-    resolved_data = resolved.get("data")
-    if not isinstance(resolved_data, Mapping):
+    resolved_data_value = resolved.get("data")
+    if not isinstance(resolved_data_value, Mapping):
         raise ValueError("resolved.json.data 必须是映射。")
+    resolved_data = {str(key): value for key, value in resolved_data_value.items()}
+    if "local_crop_strategy" not in resolved_data:
+        resolved_data["local_crop_strategy"] = "fixed_center"
     expected_scientific_data = {
         "data_root": str(plan.data.roots.data_root),
         "stage1_root": str(plan.data.roots.stage1_root),
@@ -407,6 +413,7 @@ def _validate_checkpoint_for_stage(
         "coverage_threshold": plan.data.coverage_threshold,
         "selection_seed": plan.data.selection_seed,
         "pp_top_k": plan.data.pp_top_k,
+        "local_crop_strategy": plan.data.local_crop_strategy,
     }
     data_mismatches = {
         name: {"actual": resolved_data.get(name), "expected": expected}
@@ -703,6 +710,7 @@ def run_calibration(
             language_family=stage.language_family,
             identity_scope=stage.identity_scope,
             pp_top_k=plan.data.pp_top_k,
+            local_crop_strategy=plan.data.local_crop_strategy,
             cache_bytes_per_worker=int(plan.data.cache_gib_per_worker * 1024**3),
         )
         calibration_sampler = ShuffledBatchSampler(
@@ -751,6 +759,7 @@ def run_calibration(
                 "num_workers": plan.data.validation_num_workers,
                 "prefetch_factor": plan.data.prefetch_factor,
                 "cache_gib_per_worker": plan.data.cache_gib_per_worker,
+                "local_crop_strategy": plan.data.local_crop_strategy,
                 "multiprocessing_context": DATALOADER_MULTIPROCESSING_CONTEXT,
                 "persistent_workers": False,
                 "worker_generator_seed": worker_generator_seed,

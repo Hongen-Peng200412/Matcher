@@ -14,10 +14,15 @@ from torch import nn
 from torch.nn import functional as F
 
 from ..contracts import CandidateBatch
-from ..schema import CANDIDATE_MANUAL_FEATURE_DIM, CLASS_NAMES, LANGUAGE_EMBEDDING_DIM
+from ..schema import (
+    CANDIDATE_MANUAL_FEATURE_DIM,
+    CANDIDATE_SAMPLING_FEATURE_DIM,
+    CLASS_NAMES,
+    LANGUAGE_EMBEDDING_DIM,
+)
 from .candidate_encoder import CandidateEncoder, CandidateEncoderOutput
 from .config import MatcherModelConfig
-from .fusion import normalize_candidate_manual_features
+from .fusion import normalize_candidate_manual_features, normalize_candidate_sampling_features
 
 
 class IdentityRepresentations(TypedDict):
@@ -306,18 +311,30 @@ class IdentityEncoder(nn.Module):
 
 
 class PairScorer(nn.Module):
-    """对候选和一类身份表示打分。启用手动特征时，兼容性 MLP 额外读取 ``(B,12)`` 候选统计和 ``(B,I)`` 目标类别概率；输出 ``(B,I)``。"""
+    """对候选和一类身份表示打分，并按配置读取模态统计与采样统计。
 
-    def __init__(self, model_dim: int, dropout: float, use_manual_features: bool) -> None:
+    构造参数冻结 ``D_m``、dropout 和两个特征开关。前向接收候选 ``(B,D_m)``、
+    身份 ``(B,I,D_m)``、可选手动统计 ``(B,12)``、身份类别概率 ``(B,I)`` 和
+    采样统计 ``(B,4)``，返回 ``(B,I)``。
+    """
+
+    def __init__(
+        self,
+        model_dim: int,
+        dropout: float,
+        use_manual_features: bool,
+        use_sampling_features: bool,
+    ) -> None:
         super().__init__()
         self.use_manual_features = use_manual_features
+        self.use_sampling_features = use_sampling_features
         self.candidate = nn.Linear(model_dim, model_dim, bias=False)
         self.identity = nn.Linear(model_dim, model_dim, bias=False)
         self.log_scale = nn.Parameter(torch.tensor(math.log(10.0)))
         compatibility_dim = (
-            model_dim * 4 + CANDIDATE_MANUAL_FEATURE_DIM + 1
-            if use_manual_features
-            else model_dim * 4
+            model_dim * 4
+            + (CANDIDATE_MANUAL_FEATURE_DIM + 1 if use_manual_features else 0)
+            + (CANDIDATE_SAMPLING_FEATURE_DIM if use_sampling_features else 0)
         )
         self.compatibility = nn.Sequential(
             nn.LayerNorm(compatibility_dim),
@@ -333,8 +350,9 @@ class PairScorer(nn.Module):
         identities: torch.Tensor,
         normalized_manual_features: torch.Tensor | None,
         identity_class_probability: torch.Tensor | None,
+        normalized_sampling_features: torch.Tensor | None,
     ) -> torch.Tensor:
-        """余弦点积沿 ``D_m`` 求和，再用候选—身份及可选手动特征计算残差。"""
+        """余弦点积沿 ``D_m`` 求和，再拼接可选 12 维手动统计、4 维采样统计和身份类别概率计算残差。"""
 
         candidate_projected = F.normalize(self.candidate(candidate), dim=-1)
         identity_projected = F.normalize(self.identity(identities), dim=-1)
@@ -368,19 +386,53 @@ class PairScorer(nn.Module):
             )
         elif normalized_manual_features is not None or identity_class_probability is not None:
             raise ValueError("未启用手动特征的身份打分不得接收额外特征。")
+        if self.use_sampling_features:
+            if normalized_sampling_features is None or normalized_sampling_features.shape != (
+                candidate.shape[0],
+                CANDIDATE_SAMPLING_FEATURE_DIM,
+            ):
+                raise ValueError("启用采样特征的身份打分必须提供与候选轴对齐的 (B,4)。")
+            compatibility_parts.append(
+                normalized_sampling_features[:, None, :].expand(
+                    -1,
+                    identities.shape[1],
+                    -1,
+                )
+            )
+        elif normalized_sampling_features is not None:
+            raise ValueError("未启用采样特征的身份打分不得接收采样统计。")
         residual = self.compatibility(torch.cat(compatibility_parts, dim=-1))[..., 0]
         return cosine * self.log_scale.exp().clamp_max(100.0) + residual
 
 
 class IdentityScorer(nn.Module):
-    """合并三条候选—身份分支。构造参数是模型宽度 ``D_m`` 和 dropout；native 始终参与，graph/inventory 出口标量门从严格零开始；前向输出 ``(B,I)``。"""
+    """合并三条候选—身份分支。
 
-    def __init__(self, model_dim: int, dropout: float, use_manual_features: bool) -> None:
+    构造参数包括模型宽度 ``D_m``、dropout、12 维手动统计开关和 4 维采样统计开关。
+    前向接收候选 ``(B,D_m)``、三组身份 ``(B,I,D_m)``、bool 掩码 ``(B,I)``、
+    六分类 ``(B,6)``、身份类别 ``(B,I)``、候选手动统计 ``(B,12)`` 和采样统计
+    ``(B,4)``，返回 ``(B,I)``。native 始终参与，graph/inventory 出口门从零开始。
+    """
+
+    def __init__(
+        self,
+        model_dim: int,
+        dropout: float,
+        use_manual_features: bool,
+        use_sampling_features: bool,
+    ) -> None:
         super().__init__()
         self.use_manual_features = use_manual_features
-        self.native = PairScorer(model_dim, dropout, use_manual_features)
-        self.graph = PairScorer(model_dim, dropout, use_manual_features)
-        self.inventory = PairScorer(model_dim, dropout, use_manual_features)
+        self.use_sampling_features = use_sampling_features
+        self.native = PairScorer(
+            model_dim, dropout, use_manual_features, use_sampling_features
+        )
+        self.graph = PairScorer(
+            model_dim, dropout, use_manual_features, use_sampling_features
+        )
+        self.inventory = PairScorer(
+            model_dim, dropout, use_manual_features, use_sampling_features
+        )
         self.graph_gate = nn.Parameter(torch.zeros(()))
         self.inventory_gate = nn.Parameter(torch.zeros(()))
 
@@ -392,8 +444,9 @@ class IdentityScorer(nn.Module):
         class_logits: torch.Tensor,
         identity_class_index: torch.Tensor,
         candidate_manual_features: torch.Tensor,
+        candidate_sampling_features: torch.Tensor,
     ) -> torch.Tensor:
-        """合并三条分支；启用时拼接候选统计和切断梯度的目标类别概率。"""
+        """合并三条分支；按开关拼接 12 维手动统计、4 维采样统计和切断梯度的身份类别概率。"""
 
         if candidate.shape[0] != identity_mask.shape[0]:
             raise ValueError("候选和身份掩码的批次轴不一致。")
@@ -407,6 +460,7 @@ class IdentityScorer(nn.Module):
         if identity_mask.shape[1] == 0:
             return candidate.new_empty((candidate.shape[0], 0))
         normalized_manual: torch.Tensor | None = None
+        normalized_sampling: torch.Tensor | None = None
         identity_class_probability: torch.Tensor | None = None
         if self.use_manual_features:
             if class_logits.shape != (candidate.shape[0], len(CLASS_NAMES)):
@@ -429,23 +483,30 @@ class IdentityScorer(nn.Module):
             identity_class_probability = identity_class_probability * identity_mask.to(
                 dtype=identity_class_probability.dtype
             )
+        if self.use_sampling_features:
+            normalized_sampling = normalize_candidate_sampling_features(
+                candidate_sampling_features
+            )
         logits = self.native(
             candidate,
             identities["native"],
             normalized_manual,
             identity_class_probability,
+            normalized_sampling,
         )
         logits = logits + self.graph_gate * self.graph(
             candidate,
             identities["graph"],
             normalized_manual,
             identity_class_probability,
+            normalized_sampling,
         )
         inventory_increment = self.inventory(
             candidate,
             identities["inventory"],
             normalized_manual,
             identity_class_probability,
+            normalized_sampling,
         )
         has_other_identity = identity_mask.sum(dim=1, keepdim=True) > 1
         inventory_increment = inventory_increment * has_other_identity.to(
@@ -470,10 +531,16 @@ class ClosedSetMatcher(nn.Module):
             config.model_dim,
             config.dropout,
             config.use_manual_features,
+            config.use_sampling_features,
         )
 
     def forward(self, batch: CandidateBatch) -> FullMatcherOutput:
-        """候选分支只读体素和 A/P/V/PP；身份分支另读语言、图与清单，最后仅通过 ``(B,I)`` 配对分数与候选表示交互。"""
+        """编码候选与 PDB 内身份，并返回 ``FullMatcherOutput``。
+
+        候选分支读取体素、A/P/V/PP 及配置启用的 12 维模态统计和 4 维采样统计；
+        身份分支另读语言、图与清单。身份打分按相同开关读取两组候选统计，最终仅
+        通过 ``(B,I)`` 配对分数与候选表示交互。
+        """
 
         candidate_output = self.candidate_encoder(batch)
         identities = self.identity_encoder(batch)
@@ -484,6 +551,7 @@ class ClosedSetMatcher(nn.Module):
             candidate_output["class_logits"],
             batch["identity_class_index"],
             batch["candidate_manual_features"],
+            batch["candidate_sampling_features"],
         )
         output = dict(candidate_output)
         output["identity_logits"] = identity_logits
