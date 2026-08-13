@@ -185,6 +185,27 @@ python -m matcher.experiment --help
 
 安全同步器继续采用非删除式 rsync；本轮只增加两项收口行为：排除 `.mypy_cache/`，并在上传与行尾修复后使用 `rmdir` 尝试移除 `configs/mode1` 与 `训练与运行/sh/mode1`。`rmdir` 只会删除空目录，目录内若重新出现任何文件就会拒绝，因此不会把同步器扩大为隐式删除工具。
 
+## 首个 A800 allocation 与 BF16 图消息阻断
+
+Job `340894` 于 2026-08-13 07:35 左右取得 `gnode10` 的一张 80 GiB A800；08:28 的一小时检查首次观察到该状态。放卡前核对结果为：Slurm 仍记录 `nvlink/cpu96`、16 核 CPU、单张 A800、`pre_hold=1`、`after_hold=1`；`pre_lock_340894`、`after_lock_340894` 和动态命令均存在；动态命令只运行 `full_scratch_smi_ted_light_289m_oracle.yaml`；该 YAML 的本地与远端 SHA-256 均为 `8fa9f11da5195137bdd4d4da7247fbb588520986b6d0b2c1454a659e42478bd0`；节点 GPU 使用量为 2 MiB、利用率 0%。
+
+第一次控制端保护命令因 PowerShell 在本地错误解释 shell 的 `$()` 表达式而在远端删除步骤前失败；随即确认 `pre_lock` 仍存在，改用不插值的字面量脚本重试。登录节点在 08:30:08 报告 `pre_lock_340894` 已删除且 `after_lock_340894` 保留。计算节点建立：
+
+- release：`/home/penghongen/Feedback/Matcher/releases/Matcher_f40d937354b4/Matcher`；
+- launch：`/home/penghongen/Feedback/Matcher/launches/340894/train_experiment_job340894_20260813T082926_a1`。
+
+第一次正式前向在任何 loss、反向传播或优化器更新之前失败；因此没有打印 `first_global_step_accepted`，也没有产生可能被误认成成功首步的 checkpoint。确定异常是：
+
+```text
+RuntimeError: index_add_(): self (Float) and source (BFloat16) must have the same scalar type
+```
+
+调用位置是 `GraphMessageLayer.forward`。配体元素、电荷和残基嵌入使节点残差与 `aggregated` 累加器保持 FP32；BF16 自动混合精度使两个线性消息投影返回 BF16，而 `index_add_` 不自动提升源张量类型。临时且可逆的修复决定是不改变模型结构、损失或批量：把边消息显式转换为节点累加器 dtype 后再按目标原子求和，使图消息以 FP32 累加并保留转换算子的反向梯度。
+
+新增 CPU BF16 自动混合精度回归，在四节点双向消息层上覆盖前向 dtype、有限输出和有限节点梯度；旧实现可由该测试稳定复现同一异常。进一步运行完整 `ClosedSetMatcher` 的本地 CUDA BF16 前后向时，又在 `GraphIdentityAttention` 发现第二处同类问题：归一化权重经过归约后是 FP32，与 BF16 `value` 相乘得到 FP32 `weighted_value`，旧代码却按 `value` 创建 BF16 `context` 累加器。最终把该累加器改为继承实际乘积 dtype，并新增完整 Matcher 的 CPU BF16 前后向回归。
+
+最新本地设备探针使用 NVIDIA GeForce RTX 4060 Laptop GPU：候选、六分类、两个区域、三种身份表示和身份分数全部有限，loss 有限，422 个实际得到梯度的参数张量全部具有有限梯度。修复后的阶段证据为模型专项 `13 passed`、全套 `36 passed`、mypy 32 个源文件零问题、compileall 与 `git diff --check` 通过。08:32 后 `try_lock_340894` 与 `after_lock_340894` 同时存在，A800 回到 2 MiB、0% 使用；在独立科学和严格表达审查对最终两处修复通过并同步新源码后，计划复用同一 allocation 进行第二次正式执行，不删除 `after_lock`，也不先缩减 RAUNet 或物理批量。
+
 ## 验证命令
 
 ```powershell

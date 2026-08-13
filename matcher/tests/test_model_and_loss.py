@@ -16,6 +16,7 @@ from matcher.model import CandidateEncoder, ClosedSetMatcher, MatcherModelConfig
 from matcher.model.config import AggregationName
 from matcher.model.fusion import CandidateConditionedAggregator, gather_voxel_features
 from matcher.model.ligand_matcher import (
+    GraphMessageLayer,
     IdentityEncoder,
     IdentityRepresentations,
     IdentityScorer,
@@ -107,6 +108,40 @@ def test_closed_set_matcher_forward_and_loss_are_finite(tmp_path) -> None:
     assert loss["identity_eligible_count"].item() == 1
     loss["total"].backward()
     assert any(parameter.grad is not None for parameter in model.parameters())
+
+
+def test_graph_message_layer_accumulates_safely_under_bfloat16_autocast() -> None:
+    """BF16 线性层输出必须先对齐 FP32 节点累加器，前向与反向均保持有限。"""
+
+    layer = GraphMessageLayer(model_dim=16, edge_dim=10, dropout=0.0).train()
+    nodes = torch.randn(4, 16, requires_grad=True)
+    edge_index = torch.tensor([[0, 1, 2, 3], [1, 2, 3, 0]], dtype=torch.long)
+    edge_features = torch.randn(4, 10)
+    with torch.autocast("cpu", dtype=torch.bfloat16):
+        output = layer(nodes, edge_index, edge_features)
+        loss = output.square().mean()
+    assert output.dtype == torch.float32
+    assert torch.isfinite(output).all()
+    loss.backward()
+    assert nodes.grad is not None
+    assert torch.isfinite(nodes.grad).all()
+
+
+def test_closed_set_matcher_bfloat16_autocast_forward_and_backward(tmp_path) -> None:
+    """整条完整 Matcher 在 BF16 自动混合精度下不得出现原地归约 dtype 冲突。"""
+
+    batch = _batch(tmp_path, "full_matcher")
+    model = ClosedSetMatcher(_small_config()).train()
+    with torch.autocast("cpu", dtype=torch.bfloat16):
+        output = model(batch)
+        loss = output["class_logits"].float().square().mean()
+        loss = loss + output["identity_logits"].float().square().mean()
+        loss = loss + output["identity_graph"].float().square().mean()
+    assert torch.isfinite(loss)
+    loss.backward()
+    gradients = [parameter.grad for parameter in model.parameters() if parameter.grad is not None]
+    assert gradients
+    assert all(torch.isfinite(gradient).all() for gradient in gradients)
 
 
 def test_both_aggregators_accept_empty_modalities_without_nan(tmp_path) -> None:

@@ -69,7 +69,9 @@ class GraphMessageLayer(nn.Module):
         if edge_index.shape[1] > 0:
             source, target = edge_index
             message = self.node_message(nodes[source]) + self.edge_message(edge_features)
-            aggregated.index_add_(0, target, message)
+            # 自动混合精度可使 (E,D_m) 化学键消息变为 BF16/FP16，而累加器继承节点 token 的 dtype。
+            # index_add_ 不自动提升 dtype；先对齐累加器 dtype，再按目标原子编号沿边轴 E 累加消息。
+            aggregated.index_add_(0, target, message.to(dtype=aggregated.dtype))
             degree = torch.zeros(nodes.shape[0], device=nodes.device, dtype=nodes.dtype)
             degree.index_add_(0, target, torch.ones_like(target, dtype=nodes.dtype))
             aggregated = aggregated / degree.clamp_min(1.0)[:, None]
@@ -181,7 +183,8 @@ class GraphIdentityAttention(nn.Module):
             raise ValueError("每张 LigandObject 图必须至少含一个原子 token。")
         weight = self.dropout(unnormalized / denominator[node_graph_index])
         weighted_value = weight[..., None] * value
-        context = value.new_zeros((graph_count, self.head_count, self.head_dim))
+        # (N,K,D_m/K) 加权原子值可能因求和等归约运算升为 FP32；(G,K,D_m/K) 图累加器必须继承其 dtype。
+        context = weighted_value.new_zeros((graph_count, self.head_count, self.head_dim))
         context.index_add_(0, node_graph_index, weighted_value)
         graph_vector = self.norm(self.output(context.reshape(graph_count, self.model_dim)))
         result = torch.zeros_like(native)
