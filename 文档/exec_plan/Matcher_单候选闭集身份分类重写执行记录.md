@@ -706,3 +706,17 @@ bash 训练与运行/submit_task.sh \
 ```
 
 该 Job 使用 `cpu/cpu96`、2 CPU、16 GiB，不申请 GPU，也不设置时间上限；release 为 `/home/penghongen/Feedback/Matcher/releases/Matcher_bb899c6e37ed/Matcher`，launch 为 `/home/penghongen/Feedback/Matcher/launches/341600/build_manifest_job341600_20260814T035348_a1`。04:03 前该 Job 仍在构建，清单目录只有原子构建锁 `.build.lock`，尚未发布不完整 JSONL。六个受管 GPU allocation 同时核验为 RUNNING 且空闲；共享 allocation 根中的六个 `try_lock_<job>` 与各 Job 目录中的六个 `after_lock_<job>` 均存在，没有 `pre_lock` 或 `kill_lock`。在清单候选数、身份数、类别计数、SMI-TED 目标可用数和 calibration deferred 状态全部通过前，不替换动态命令、不删除任何 `try_lock`。
+
+Job `341600` 于 04:17:54 以 `COMPLETED/0:0` 收口，耗时 24 分 09 秒。放行脚本在任何锁修改前验证本地与远端五个关键源码、三份配置的完整 SHA-256，并逐行读取新清单确认：schema 3；仅有 train/validation；calibration deferred 且不存在对应候选或身份 JSONL；train 为 14,312 个候选、1,477 个身份、4,192 个 SMI-TED 可监督前景候选；validation 为 6,495 个候选、536 个身份、1,466 个 SMI-TED 可监督前景候选；六类计数与覆盖率审计一致；背景目标均不可用。
+
+04:18:48（控制端时钟）依次为 Job `340894/340895/340893` 原子安装 oracle/detached/joint 动态命令，命令 SHA-256 分别为 `91b8825f927a177dcc4416782a2ec28f58384e01f856d137bfd8f06ca1096588`、`87fd62a9318b765f8fd291ad5e6e297dbe858d303791c9dc7bbe972cd039edc6`、`483412ff7af602feb3f8d47e480a36afaeea978d4c2f7ecf68ef1fd33a7b32db`。三次触发只删除共享 allocation 根下各自的 `try_lock`；三个 `after_lock` 在删除前后均存在。Job `340895` 的旧动态命令是已经终止的 calibration 准备入口，本次覆盖后未恢复、未继续或执行 calibration。
+
+三个 attempt 均复用内容寻址 release `/home/penghongen/Feedback/Matcher/releases/Matcher_4cf3ef45e8a8/Matcher`：
+
+- oracle：Job `340894`，launch `/home/penghongen/Feedback/Matcher/launches/340894/train_experiment_job340894_20260814T041802_a6`，W&B run `h41na5ea`，地址 `https://wandb.ai/pencounkdual-111/AdaLigand-Matcher-Batch1/runs/h41na5ea`；
+- detached：Job `340895`，launch `/home/penghongen/Feedback/Matcher/launches/340895/train_experiment_job340895_20260814T041633_a3`，W&B run `vry3gxt2`，地址 `https://wandb.ai/pencounkdual-111/AdaLigand-Matcher-Batch1/runs/vry3gxt2`；
+- joint：Job `340893`，launch `/home/penghongen/Feedback/Matcher/launches/340893/train_experiment_job340893_20260814T041902_a2`，W&B run `amdxqwjc`，地址 `https://wandb.ai/pencounkdual-111/AdaLigand-Matcher-Batch1/runs/amdxqwjc`。
+
+三项 tracking 产物都确认 `mode=online`、project `AdaLigand-Matcher-Batch1`、group `matcher-batch1-five-class-manual-features`。节点时钟并未完全同步，所以 detached 的 launch 名时间早于控制端触发时间；attempt 序号、release、命令哈希、业务目录和 W&B 身份一致，不把名称时间当作执行排序依据。
+
+三项都完成首个真实 global batch 32 更新。oracle 的首步为 `61.7351 s`、有效身份 7、裁剪前梯度范数 `49.9738`、峰值已分配/保留显存 `28,143,265,792 / 39,747,321,856 bytes`；detached 为 `62.6836 s`、7、`32.3384`、`28,143,814,144 / 39,522,926,592 bytes`；joint 为 `24.2634 s`、7、`30.3424`、`14,195,499,008 / 19,511,902,208 bytes`。成功事件均发生在有限性检查、优化器更新与 CUDA 同步之后；日志只有既有 PyTorch 弃用警告，没有 OOM、NaN、非有限梯度或 Traceback。三个任务继续运行，所有 `after_lock` 保留；后续改为按明确事件低频记录。
