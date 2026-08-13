@@ -276,6 +276,31 @@ tee /storage/penghongen/tmp/Matcher/diagnostics/job340894_box_origin_20260813/au
 
 第四次执行在 10:22:47 完成自己的首个 global batch 32 优化器更新：计算耗时 `62.4596 s`，有效身份监督数 5，裁剪前梯度范数 `39.9936`，峰值已分配/保留显存仍为 `28140193792/40080769024` bytes。10:32 的复核已经超过第三次执行首步后约 6 分钟的确定性失败窗口；此时训练进程及 workers 已运行约 11 分钟，A800 为 `38849 MiB/100%`，日志没有新异常，`try_lock` 未重建，`after_lock` 保留。因此把第四次执行判定为稳定训练，而不是只通过首步验收；后续按 30 分钟低消耗间隔检查明确状态变化，不为无变化状态追加日志。
 
+## 后续任务的 W&B online 追踪
+
+用户追加要求：已经运行的任务可以继续，新的任务优先使用 W&B online，以便直接查看曲线。由此作出以下不追溯决定：Job `340894` 继续运行其不可变 release `Matcher_7e0270aab6a1`，不为追踪功能重启；尚未启动的 Job `340893`、`340895`—`340899` 以及 Job `340894` 未来可能发生的新 launch 才使用在线追踪。2026-08-13 的只读队列复核仍显示 Job `340894` 在 `gnode10` 运行，其余六个任务全部为 `PENDING (Priority)`；所有 `after_lock` 继续保留。
+
+首轮在线位置固定为 W&B entity `pencounkdual-111`、project `AdaLigand-Matcher`、group `matcher-initial-round1`。每个 stage 建立独立 run；每个含 32 个候选的 global batch 完成一次参数更新后记录总损失和四个分项、裁剪前全模型梯度范数、图与清单分支梯度范数、两个零初始化门值、实际学习率、数据等待、GPU 计算、吞吐与峰值显存。每个完整 validation epoch 记录六分类、固有身份、以六分类判对为条件的身份、seen/unseen、端到端身份、两个区域 Dice、选模分数及其支持数或分母。逐步损失、梯度、门值中的 NaN/Inf 直接失败；只有同次记录明确提供零分母的评估 NaN 才转换为 W&B 空值。
+
+在线运行不会在 YAML、`resolved.json`、`tracking.json` 或日志中保存 API key。认证读取服务器进程环境或现有 `~/.netrc`；服务器探针确认正式环境包含 W&B `0.17.3`、当前凭据可解析、`wandb.Api().default_entity` 为 `pencounkdual-111`。SDK 的 `wandb.init` 签名确认存在 `force` 参数；正式适配器显式使用 `mode="online"`、`force=True`、`resume="never"`，在线初始化或 run ID、HTTPS URL、横轴定义、元数据写入失败时不降级为 offline。`init_timeout_seconds=120` 只限制 W&B 在线握手等待，不限制训练、epoch 或 Slurm allocation 的运行时间。
+
+服务器环境和身份探针使用以下命令；两个脚本只输出布尔状态、SDK 版本和 entity，不输出认证值：
+
+```powershell
+& '.\与服务器交互\other\Invoke-PasswordSsh.ps1' `
+  -Command 'bash -s' `
+  -InputFile '.\tmp\probe_wandb_environment.sh'
+
+& '.\与服务器交互\other\Invoke-PasswordSsh.ps1' `
+  -Command 'bash -s' `
+  -InputFile '.\tmp\probe_wandb_identity.sh'
+
+& '.\与服务器交互\other\Invoke-PasswordSsh.ps1' `
+  -Command 'source /home/penghongen/anaconda3/etc/profile.d/conda.sh && conda activate Pocket_Plus_centos7_cu121_allgpu && python -c "import inspect,wandb; print(wandb.__version__); print(inspect.signature(wandb.init))"'
+```
+
+本地追踪增量的冻结门禁结果为 mypy 34 个源文件零问题、pytest `42 passed`、compileall、7 个 shell 的 `bash -n`、七个 YAML 正式解析与 `git diff --check` 通过。服务器 W&B `0.17.3` 的实际 `wandb.init` 签名同样接受上述显式参数。独立科学审查与严格表达审查正在对最终冻结快照作收口复核；通过并安全同步前，不删除任何待启动任务的 `pre_lock`。
+
 ## 验证命令
 
 ```powershell

@@ -134,10 +134,14 @@ class AreaMetrics(TypedDict):
 
     ``ligand_micro_dice`` 汇总全部候选的配体区域交集与预测/真实体素数。
     ``binding_micro_dice`` 汇总全部候选的受体结合区域交集与预测/真实体素数。
+    ``ligand_dice_denominator`` 是配体区域预测体素数与真实体素数之和。
+    ``binding_dice_denominator`` 是受体结合区域预测体素数与真实体素数之和。
     """
 
     ligand_micro_dice: float
     binding_micro_dice: float
+    ligand_dice_denominator: int
+    binding_dice_denominator: int
 
 
 class EvaluationReport(TypedDict):
@@ -472,6 +476,8 @@ class EvaluationAccumulator:
                     2 * self.binding_intersection,
                     self.binding_predicted + self.binding_actual,
                 ),
+                "ligand_dice_denominator": self.ligand_predicted + self.ligand_actual,
+                "binding_dice_denominator": self.binding_predicted + self.binding_actual,
             },
         }
 

@@ -20,7 +20,12 @@ from matcher.checkpointing import (
     load_checkpoint,
     save_checkpoint,
 )
-from matcher.experiment_config import DataConfig, StageConfig, load_experiment_plan
+from matcher.experiment_config import (
+    DataConfig,
+    StageConfig,
+    TrackingConfig,
+    load_experiment_plan,
+)
 from matcher.json_artifacts import append_jsonl, write_json
 from matcher.losses import LossOutput, LossWeights, MatcherLossBatch, compute_matcher_loss
 from matcher.metrics import EvaluationAccumulator, EvaluationBatch, selection_score
@@ -307,6 +312,15 @@ def test_all_initial_experiment_plans_preserve_resource_and_stopping_contracts()
     for plan in plans:
         assert plan.output_root.is_relative_to(Path("/storage/penghongen/tmp/Matcher"))
         assert plan.data.num_workers == 16
+        assert plan.tracking == TrackingConfig(
+            provider="wandb",
+            mode="online",
+            entity="pencounkdual-111",
+            project="AdaLigand-Matcher",
+            group="matcher-initial-round1",
+            log_every_global_steps=1,
+            init_timeout_seconds=120,
+        )
         for stage in plan.stages:
             assert stage.training.global_batch_size == 32
             assert stage.training.maximum_epochs is None
@@ -471,12 +485,13 @@ def test_json_artifacts_are_strict_and_run_plan_preserves_stage_order(
     def fake_run_training_stage(
         stage: StageConfig,
         data: DataConfig,
+        tracking: TrackingConfig,
         stage_directory: Path,
         plan_directory: Path,
     ) -> StageSummary:
         """记录调用顺序并返回满足正式结构的最小阶段摘要。"""
 
-        del data
+        del data, tracking
         visited.append(stage.name)
         return {
             "stage": stage.name,
@@ -487,6 +502,8 @@ def test_json_artifacts_are_strict_and_run_plan_preserves_stage_order(
             "stopped_by_patience": False,
             "best_checkpoint": str(stage_directory / "BEST.pt"),
             "last_checkpoint": str(plan_directory / stage.name / "LAST.pt"),
+            "tracking_run_id": f"run-{stage.name}",
+            "tracking_url": f"https://wandb.ai/test/{stage.name}",
         }
 
     monkeypatch.setattr(experiment, "load_experiment_plan", lambda _: plan)

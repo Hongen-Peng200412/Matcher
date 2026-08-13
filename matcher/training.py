@@ -3,10 +3,11 @@
 ``evaluate_model`` 汇总一个完整数据划分；``run_training_stage`` 从头执行一个正式阶段。
 下列产物全部写入调用方传入的 ``stage_directory``，不会使用隐式输出位置。
 ``resolved.json`` 保存阶段、数据、模型、训练、初始化、数值后端和运行环境的解析后配置。
+``tracking.json`` 保存 W&B online run 标识、曲线地址和本地同步目录，不保存 API key。
 ``history.jsonl`` 逐 epoch 保存训练统计、完整 validation、选模分数和学习率时序。
 ``BEST.pt`` 保存严格改善 epoch 的模型、优化器、调度器、缩放器和早停状态。
 ``LAST.pt`` 每个 epoch 覆盖保存同一组状态，用于保留最后一次完整训练状态。
-``summary.json`` 保存阶段名、最佳与最后 epoch、最佳分数、累计更新数、早停状态及 BEST/LAST 路径。
+``summary.json`` 保存阶段名、最佳与最后 epoch、最佳分数、累计更新数、早停状态、BEST/LAST 路径以及 W&B run ID 和在线曲线地址。
 零支持指标在内存中为 NaN，严格 JSON 边界统一写为 ``null``。
 """
 
@@ -17,6 +18,7 @@ import json
 import math
 import random
 import re
+import sys
 import time
 from contextlib import AbstractContextManager
 from dataclasses import asdict, dataclass
@@ -38,13 +40,14 @@ from .checkpointing import (
     save_checkpoint,
 )
 from .contracts import CandidateBatch
-from .experiment_config import DataConfig, Precision, StageConfig
+from .experiment_config import DataConfig, Precision, StageConfig, TrackingConfig
 from .json_artifacts import append_jsonl, write_json
 from .losses import LossOutput, LossWeights, compute_matcher_loss
 from .manifest import ensure_manifest
 from .metrics import EvaluationAccumulator, EvaluationReport, selection_score
 from .model import CandidateEncoder, ClosedSetMatcher
 from .schema import SMALL_MOLECULE_INDEX
+from .tracking import MetricValue, WandbTracker, start_wandb_tracking
 
 
 ADAM_BETAS = (0.9, 0.999)
@@ -186,6 +189,8 @@ class StageSummary(TypedDict):
     ``stopped_by_patience`` 表示是否因连续两轮 validation 无改善停止。
     ``best_checkpoint`` 是严格改善时原子更新的 BEST.pt 路径。
     ``last_checkpoint`` 是每轮原子更新的 LAST.pt 路径。
+    ``tracking_run_id`` 是本阶段 W&B online run 的不可变标识。
+    ``tracking_url`` 是本阶段在线曲线地址。
     """
 
     stage: str
@@ -196,6 +201,8 @@ class StageSummary(TypedDict):
     stopped_by_patience: bool
     best_checkpoint: str
     last_checkpoint: str
+    tracking_run_id: str
+    tracking_url: str
 
 
 class EpochRecord(TypedDict):
@@ -311,6 +318,7 @@ class _StageRuntime:
     ``class_weights`` 是 CUDA float32 六分类权重；未配置时为 None。
     ``device`` 是正式运行使用的 CUDA 设备。
     ``training_config`` 是写入 checkpoint 的 JSON 可序列化训练配置字典。
+    ``resolved_config`` 是已写入 resolved.json 并发送给 W&B 的完整解析配置。
     """
 
     model: nn.Module
@@ -323,11 +331,13 @@ class _StageRuntime:
     class_weights: torch.Tensor | None
     device: torch.device
     training_config: dict[str, Any]
+    resolved_config: dict[str, object]
 
 
 def _build_stage_runtime(
     stage: StageConfig,
     data: DataConfig,
+    tracking: TrackingConfig,
     stage_directory: Path,
     plan_directory: Path,
 ) -> _StageRuntime:
@@ -471,9 +481,10 @@ def _build_stage_runtime(
     training_record = stage_record["training"]
     if not isinstance(training_record, dict):
         raise RuntimeError("阶段训练配置序列化后必须是字典。")
-    resolved = {
+    resolved: dict[str, object] = {
         "stage": stage_record,
         "data": data_record,
+        "tracking": asdict(tracking),
         "device": torch.cuda.get_device_name(device),
         "torch_version": torch.__version__,
         "frozen_optimizer_semantics": {
@@ -524,6 +535,7 @@ def _build_stage_runtime(
         class_weights=class_weights,
         device=device,
         training_config=training_record,
+        resolved_config=resolved,
     )
 
 
@@ -536,8 +548,9 @@ def _train_epoch(
     class_weights: torch.Tensor | None,
     device: torch.device,
     initial_global_step: int,
+    tracker: WandbTracker,
 ) -> TrainingEpochResult:
-    """执行只含完整 global batch 的训练 epoch，并记录 I/O、梯度和显存诊断。"""
+    """执行完整 global batch，并把每次参数更新后的有限指标发送到阶段 W&B run。"""
 
     started_at = time.perf_counter()
     model.train()
@@ -567,7 +580,8 @@ def _train_epoch(
     for _ in range(complete_group_count):
         wait_started_at = time.perf_counter()
         cpu_group = list(itertools.islice(loader_iterator, accumulation))
-        data_wait_seconds += time.perf_counter() - wait_started_at
+        group_data_wait_seconds = time.perf_counter() - wait_started_at
+        data_wait_seconds += group_data_wait_seconds
         if len(cpu_group) != accumulation:
             raise RuntimeError("DataLoader 在完整 global batch 中途提前结束。")
         group_sample_count = sum(int(batch["class_target"].shape[0]) for batch in cpu_group)
@@ -589,6 +603,7 @@ def _train_epoch(
             cpu_group,
             stage.training.class_weights,
         )
+        group_statistics = _LossStatistics()
         compute_started_at = time.perf_counter()
         for cpu_batch in cpu_group:
             batch = _move_batch(cpu_batch, device)
@@ -613,6 +628,7 @@ def _train_epoch(
                     raise FloatingPointError("global batch 反向损失含 NaN 或 Inf。")
             scaler.scale(scaled_loss).backward()
             statistics.update(losses, batch_size)
+            group_statistics.update(losses, batch_size)
         scaler.unscale_(optimizer)
         gradient_norm = float(
             torch.nn.utils.clip_grad_norm_(
@@ -636,8 +652,8 @@ def _train_epoch(
         optimizer.zero_grad(set_to_none=True)
         global_step += 1
         is_first_stage_step = global_step == 1
-        if is_first_stage_step:
-            torch.cuda.synchronize(device)
+        # CUDA 前向、反向与 AdamW 更新均可能异步；每步同步后才能得到可跨硬件比较的完整耗时。
+        torch.cuda.synchronize(device)
         global_step_compute_seconds = time.perf_counter() - compute_started_at
         compute_seconds += global_step_compute_seconds
         if is_first_stage_step:
@@ -659,6 +675,34 @@ def _train_epoch(
                 ),
                 flush=True,
             )
+        group_loss = group_statistics.compute(stage.training.loss_weights)
+        if isinstance(model, ClosedSetMatcher):
+            graph_gate: float | None = float(model.identity_scorer.graph_gate.detach())
+            inventory_gate: float | None = float(model.identity_scorer.inventory_gate.detach())
+        else:
+            graph_gate = None
+            inventory_gate = None
+        step_metrics: dict[str, MetricValue] = {
+            "train/step/loss_total": group_loss["total"],
+            "train/step/loss_classification": group_loss["classification"],
+            "train/step/loss_ligand_area": group_loss["ligand_area"],
+            "train/step/loss_binding_area": group_loss["binding_area"],
+            "train/step/loss_identity": group_loss["identity"],
+            "train/step/identity_eligible_count": group_eligible_count,
+            "train/step/preclip_gradient_norm": gradient_norm,
+            "train/step/graph_branch_gradient_norm": graph_gradient_norm,
+            "train/step/inventory_branch_gradient_norm": inventory_gradient_norm,
+            "train/step/graph_gate": graph_gate,
+            "train/step/inventory_gate": inventory_gate,
+            "train/step/learning_rate": float(optimizer.param_groups[0]["lr"]),
+            "train/step/data_wait_seconds": group_data_wait_seconds,
+            "train/step/compute_seconds": global_step_compute_seconds,
+            "train/step/samples_per_second": group_sample_count
+            / max(group_data_wait_seconds + global_step_compute_seconds, 1e-12),
+            "train/step/peak_cuda_allocated_bytes": torch.cuda.max_memory_allocated(device),
+            "train/step/peak_cuda_reserved_bytes": torch.cuda.max_memory_reserved(device),
+        }
+        tracker.log_global_step(global_step, step_metrics)
     elapsed_seconds = time.perf_counter() - started_at
     identity_diagnostics: IdentityDiagnostics | None
     if isinstance(model, ClosedSetMatcher):
@@ -851,125 +895,249 @@ def evaluate_model(
 def run_training_stage(
     stage: StageConfig,
     data: DataConfig,
+    tracking: TrackingConfig,
     stage_directory: Path,
     plan_directory: Path,
 ) -> StageSummary:
     """从头执行一个正式阶段，并返回已写入 ``stage_directory/summary.json`` 的 StageSummary。
 
     本入口只构造 train 与 validation，不读取 calibration。它先创建不可复用的阶段目录，
-    再冻结运行环境，并把 resolved、history、BEST、LAST 和 summary 五类产物全部写入该目录；
-    随后顺序执行训练与完整 validation，任何构造、数值或写盘错误都会立即向调用方传播。
+    再冻结运行环境，并写出 resolved、tracking、history、BEST、LAST 和 summary 六类产物。
+    W&B online 初始化发生在任何 DataLoader worker 启动前；初始化或同步失败不降级为离线。
     """
 
     stage_directory.mkdir(parents=True, exist_ok=False)
-    runtime = _build_stage_runtime(stage, data, stage_directory, plan_directory)
-    best_score = -math.inf
-    best_epoch = -1
-    bad_validation_epochs = 0
-    global_step = 0
-    history_path = stage_directory / "history.jsonl"
-    epoch = 0
-    last_epoch = -1
-    while stage.training.maximum_epochs is None or epoch < stage.training.maximum_epochs:
-        last_epoch = epoch
-        runtime.train_sampler.set_epoch(epoch)
-        learning_rate_used = float(runtime.optimizer.param_groups[0]["lr"])
-        training = _train_epoch(
-            runtime.model,
-            runtime.train_loader,
-            runtime.optimizer,
-            runtime.scaler,
-            stage,
-            runtime.class_weights,
-            runtime.device,
-            global_step,
-        )
-        global_step = int(training["global_step"])
-        validation = evaluate_model(
-            runtime.model,
-            runtime.validation_loader,
-            stage,
-            runtime.class_weights,
-            runtime.device,
-        )
-        validation_metrics = validation["metrics"]
-        score = selection_score(
-            stage.task_name,
-            validation_metrics["six_class"]["macro_f1"],
-            validation_metrics["conditional_identity"]["top1"],
-            validation_metrics["end_to_end_identity"]["f1"],
-        )
-        if not math.isfinite(score):
-            raise FloatingPointError("validation 选择分数不是有限值。")
-        runtime.scheduler.step(score)
-        next_learning_rate = float(runtime.optimizer.param_groups[0]["lr"])
-        improved = score > best_score
-        if improved:
-            best_score = score
-            best_epoch = epoch
-            bad_validation_epochs = 0
-        else:
-            bad_validation_epochs += 1
-        epoch_record: EpochRecord = {
-            "epoch": epoch,
-            "global_step": global_step,
-            "learning_rate_used": learning_rate_used,
-            "next_learning_rate": next_learning_rate,
-            "selection_score": score,
-            "improved": improved,
-            "bad_validation_epochs": bad_validation_epochs,
-            "training": training,
-            "validation": validation,
-            "timestamp_unix": time.time(),
-        }
-        append_jsonl(history_path, epoch_record)
-        checkpoint_state: dict[str, object] = {
-            "schema_version": CHECKPOINT_SCHEMA_VERSION,
-            "stage_name": stage.name,
-            "task_name": stage.task_name,
-            "epoch": epoch,
-            "global_step": global_step,
+    runtime = _build_stage_runtime(
+        stage,
+        data,
+        tracking,
+        stage_directory,
+        plan_directory,
+    )
+    tracker = start_wandb_tracking(
+        tracking,
+        stage,
+        stage_directory,
+        plan_directory,
+        runtime.resolved_config,
+    )
+    try:
+        best_score = -math.inf
+        best_epoch = -1
+        bad_validation_epochs = 0
+        global_step = 0
+        history_path = stage_directory / "history.jsonl"
+        epoch = 0
+        last_epoch = -1
+        while stage.training.maximum_epochs is None or epoch < stage.training.maximum_epochs:
+            last_epoch = epoch
+            runtime.train_sampler.set_epoch(epoch)
+            learning_rate_used = float(runtime.optimizer.param_groups[0]["lr"])
+            training = _train_epoch(
+                runtime.model,
+                runtime.train_loader,
+                runtime.optimizer,
+                runtime.scaler,
+                stage,
+                runtime.class_weights,
+                runtime.device,
+                global_step,
+                tracker,
+            )
+            global_step = int(training["global_step"])
+            validation = evaluate_model(
+                runtime.model,
+                runtime.validation_loader,
+                stage,
+                runtime.class_weights,
+                runtime.device,
+            )
+            validation_metrics = validation["metrics"]
+            score = selection_score(
+                stage.task_name,
+                validation_metrics["six_class"]["macro_f1"],
+                validation_metrics["conditional_identity"]["top1"],
+                validation_metrics["end_to_end_identity"]["f1"],
+            )
+            if not math.isfinite(score):
+                raise FloatingPointError("validation 选择分数不是有限值。")
+            runtime.scheduler.step(score)
+            next_learning_rate = float(runtime.optimizer.param_groups[0]["lr"])
+            improved = score > best_score
+            if improved:
+                best_score = score
+                best_epoch = epoch
+                bad_validation_epochs = 0
+            else:
+                bad_validation_epochs += 1
+            epoch_record: EpochRecord = {
+                "epoch": epoch,
+                "global_step": global_step,
+                "learning_rate_used": learning_rate_used,
+                "next_learning_rate": next_learning_rate,
+                "selection_score": score,
+                "improved": improved,
+                "bad_validation_epochs": bad_validation_epochs,
+                "training": training,
+                "validation": validation,
+                "timestamp_unix": time.time(),
+            }
+            append_jsonl(history_path, epoch_record)
+            checkpoint_state: dict[str, object] = {
+                "schema_version": CHECKPOINT_SCHEMA_VERSION,
+                "stage_name": stage.name,
+                "task_name": stage.task_name,
+                "epoch": epoch,
+                "global_step": global_step,
+                "best_epoch": best_epoch,
+                "best_score": best_score,
+                "bad_validation_epochs": bad_validation_epochs,
+                "model_config": stage.model.to_dict(),
+                "training_config": runtime.training_config,
+                "model_state": runtime.model.state_dict(),
+                "optimizer_state": runtime.optimizer.state_dict(),
+                "scheduler_state": runtime.scheduler.state_dict(),
+                "scaler_state": runtime.scaler.state_dict(),
+                "epoch_record": epoch_record,
+            }
+            save_checkpoint(stage_directory / "LAST.pt", checkpoint_state)
+            if improved:
+                save_checkpoint(stage_directory / "BEST.pt", checkpoint_state)
+            validation_report = validation["metrics"]
+            six_class = validation_report["six_class"]
+            intrinsic_identity = validation_report["intrinsic_identity"]
+            conditional_identity = validation_report["conditional_identity"]
+            end_to_end_identity = validation_report["end_to_end_identity"]
+            area = validation_report["area"]
+            epoch_metrics: dict[str, MetricValue] = {
+                "train/epoch/loss_total": training["loss"]["total"],
+                "train/epoch/loss_classification": training["loss"]["classification"],
+                "train/epoch/loss_ligand_area": training["loss"]["ligand_area"],
+                "train/epoch/loss_binding_area": training["loss"]["binding_area"],
+                "train/epoch/loss_identity": training["loss"]["identity"],
+                "train/epoch/samples_per_second": training["samples_per_second"],
+                "train/epoch/data_wait_seconds": training["data_wait_seconds"],
+                "train/epoch/compute_seconds": training["compute_seconds"],
+                "train/epoch/mean_preclip_gradient_norm": training[
+                    "mean_preclip_gradient_norm"
+                ],
+                "train/epoch/maximum_preclip_gradient_norm": training[
+                    "maximum_preclip_gradient_norm"
+                ],
+                "train/epoch/learning_rate_used": learning_rate_used,
+                "validation/loss_total": validation["loss"]["total"],
+                "validation/loss_classification": validation["loss"]["classification"],
+                "validation/loss_ligand_area": validation["loss"]["ligand_area"],
+                "validation/loss_binding_area": validation["loss"]["binding_area"],
+                "validation/loss_identity": validation["loss"]["identity"],
+                "validation/samples_per_second": validation["samples_per_second"],
+                "validation/six_class_accuracy": six_class["accuracy"],
+                "validation/six_class_macro_f1": six_class["macro_f1"],
+                "validation/intrinsic_identity_top1": intrinsic_identity["top1"],
+                "validation/intrinsic_identity_topk": intrinsic_identity["topk"],
+                "validation/intrinsic_identity_eligible_count": intrinsic_identity[
+                    "eligible_count"
+                ],
+                "validation/conditional_identity_top1": conditional_identity["top1"],
+                "validation/conditional_identity_topk": conditional_identity["topk"],
+                "validation/conditional_identity_eligible_count": conditional_identity[
+                    "eligible_count"
+                ],
+                "validation/conditional_seen_top1": conditional_identity["seen_top1"],
+                "validation/conditional_seen_topk": conditional_identity["seen_topk"],
+                "validation/conditional_seen_count": conditional_identity["seen_count"],
+                "validation/conditional_unseen_top1": conditional_identity["unseen_top1"],
+                "validation/conditional_unseen_topk": conditional_identity["unseen_topk"],
+                "validation/conditional_unseen_count": conditional_identity["unseen_count"],
+                "validation/end_to_end_identity_precision": end_to_end_identity["precision"],
+                "validation/end_to_end_identity_recall": end_to_end_identity["recall"],
+                "validation/end_to_end_identity_f1": end_to_end_identity["f1"],
+                "validation/end_to_end_true_positive_count": end_to_end_identity[
+                    "true_positive"
+                ],
+                "validation/end_to_end_predicted_small_molecule_count": end_to_end_identity[
+                    "predicted_small_molecule"
+                ],
+                "validation/end_to_end_actual_small_molecule_count": end_to_end_identity[
+                    "actual_small_molecule"
+                ],
+                "validation/ligand_micro_dice": area["ligand_micro_dice"],
+                "validation/binding_micro_dice": area["binding_micro_dice"],
+                "validation/ligand_dice_denominator": area["ligand_dice_denominator"],
+                "validation/binding_dice_denominator": area["binding_dice_denominator"],
+                "selection/score": score,
+                "selection/best_score": best_score,
+                "selection/improved": improved,
+                "selection/bad_validation_epochs": bad_validation_epochs,
+                "selection/next_learning_rate": next_learning_rate,
+            }
+            for class_name, class_metrics in six_class["per_class"].items():
+                epoch_metrics[f"validation/six_class_f1/{class_name}"] = class_metrics["f1"]
+                epoch_metrics[f"validation/six_class_support/{class_name}"] = class_metrics[
+                    "support"
+                ]
+            tracker.log_epoch(epoch, global_step, epoch_metrics)
+            print(
+                json.dumps(
+                    {
+                        "stage": stage.name,
+                        "epoch": epoch,
+                        "score": score,
+                        "best_score": best_score,
+                        "bad_validation_epochs": bad_validation_epochs,
+                    },
+                    ensure_ascii=False,
+                ),
+                flush=True,
+            )
+            if bad_validation_epochs >= stage.training.patience_bad_epochs:
+                break
+            epoch += 1
+        if best_epoch < 0:
+            raise RuntimeError(f"阶段 {stage.name} 没有产生有限 validation 选择分数。")
+        summary: StageSummary = {
+            "stage": stage.name,
             "best_epoch": best_epoch,
             "best_score": best_score,
-            "bad_validation_epochs": bad_validation_epochs,
-            "model_config": stage.model.to_dict(),
-            "training_config": runtime.training_config,
-            "model_state": runtime.model.state_dict(),
-            "optimizer_state": runtime.optimizer.state_dict(),
-            "scheduler_state": runtime.scheduler.state_dict(),
-            "scaler_state": runtime.scaler.state_dict(),
-            "epoch_record": epoch_record,
-        }
-        save_checkpoint(stage_directory / "LAST.pt", checkpoint_state)
-        if improved:
-            save_checkpoint(stage_directory / "BEST.pt", checkpoint_state)
-        print(
-            json.dumps(
-                {
-                    "stage": stage.name,
-                    "epoch": epoch,
-                    "score": score,
-                    "best_score": best_score,
-                    "bad_validation_epochs": bad_validation_epochs,
-                },
-                ensure_ascii=False,
+            "last_epoch": last_epoch,
+            "global_step": global_step,
+            "stopped_by_patience": (
+                bad_validation_epochs >= stage.training.patience_bad_epochs
             ),
-            flush=True,
+            "best_checkpoint": str(stage_directory / "BEST.pt"),
+            "last_checkpoint": str(stage_directory / "LAST.pt"),
+            "tracking_run_id": tracker.run_id,
+            "tracking_url": tracker.run_url,
+        }
+        tracker.update_summary(
+            {
+                "best_epoch": best_epoch,
+                "best_score": best_score,
+                "last_epoch": last_epoch,
+                "global_step": global_step,
+                "stopped_by_patience": summary["stopped_by_patience"],
+            }
         )
-        if bad_validation_epochs >= stage.training.patience_bad_epochs:
-            break
-        epoch += 1
-    if best_epoch < 0:
-        raise RuntimeError(f"阶段 {stage.name} 没有产生有限 validation 选择分数。")
-    summary: StageSummary = {
-        "stage": stage.name,
-        "best_epoch": best_epoch,
-        "best_score": best_score,
-        "last_epoch": last_epoch,
-        "global_step": global_step,
-        "stopped_by_patience": bad_validation_epochs >= stage.training.patience_bad_epochs,
-        "best_checkpoint": str(stage_directory / "BEST.pt"),
-        "last_checkpoint": str(stage_directory / "LAST.pt"),
-    }
-    write_json(stage_directory / "summary.json", summary)
+        write_json(stage_directory / "summary.json", summary)
+    except BaseException as training_error:
+        try:
+            tracker.finish(exit_code=1)
+        except BaseException as finish_error:
+            print(
+                json.dumps(
+                    {
+                        "event": "wandb_finish_failed_after_training_error",
+                        "stage": stage.name,
+                        "training_error_type": type(training_error).__name__,
+                        "finish_error_type": type(finish_error).__name__,
+                        "finish_error": str(finish_error),
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
+                file=sys.stderr,
+                flush=True,
+            )
+        raise
+    tracker.finish(exit_code=0)
     return summary

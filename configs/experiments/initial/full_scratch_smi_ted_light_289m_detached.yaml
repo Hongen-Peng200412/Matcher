@@ -4,6 +4,15 @@
 # initialize_candidate_from=null 表示从零训练。language_family/identity_variant 仅候选预训练时才可为 null。
 plan_name: full_scratch_smi_ted_light_289m_detached
 output_root: /storage/penghongen/tmp/Matcher/experiments  # 顶层：run、阶段、checkpoint 和指标的根目录。
+tracking:
+  # 每个 stage 建立独立 W&B online run；认证读取服务器环境或现有 ~/.netrc，不保存 API key。
+  provider: wandb  # 在线曲线服务的实现名称；当前入口只接受 wandb。
+  mode: online  # 初始化失败即终止，不静默降级为离线记录。
+  entity: pencounkdual-111  # 拥有在线项目的 W&B 账户或团队。
+  project: AdaLigand-Matcher  # 收纳本轮训练曲线的 W&B 项目。
+  group: matcher-initial-round1  # 七个首轮任务共享的在线比较组。
+  log_every_global_steps: 1  # 每个含 32 个候选的 global batch 完成一次参数更新后写入曲线。
+  init_timeout_seconds: 120  # W&B 在线握手等待秒数；不是训练或 Slurm 时限。
 data:
   # data 声明冻结输入、命中阈值、固定表示选择种子和每个工作进程的 I/O 预算。
   # data_root 是只读 A–G、密度图、受体字段、配体图和两套冻结语言表示的共同来源。

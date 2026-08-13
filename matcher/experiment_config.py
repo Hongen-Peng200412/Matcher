@@ -1,8 +1,9 @@
 """读取、验证并展开正式实验 YAML。
 
 ``load_experiment_plan`` 是主要入口，返回冻结数据来源、顺序阶段、模型和训练配置组成的
-``ExperimentPlan``；``validate_run_stamp`` 验证外部分配的运行目录名。解析器拒绝未知字段、
-静默默认、批量不一致、相对 checkpoint 和越过 `/storage/penghongen/tmp/Matcher/` 的产物路径。
+``ExperimentPlan``；``validate_run_stamp`` 验证外部分配的运行目录名。计划显式冻结 W&B
+online 项目、比较组和写入间隔；解析器拒绝未知字段、静默默认、批量不一致、相对 checkpoint
+和越过 `/storage/penghongen/tmp/Matcher/` 的产物路径。
 """
 
 from __future__ import annotations
@@ -24,6 +25,8 @@ from .schema import LANGUAGE_FAMILIES, SourceRoots
 TaskName = Literal["candidate_pretrain", "full_matcher"]
 LanguageFamily = Literal["molformer", "smi_ted_289m"]
 Precision = Literal["bf16", "fp16", "fp32"]
+TrackingProvider = Literal["wandb"]
+TrackingMode = Literal["online"]
 
 
 @dataclass(frozen=True)
@@ -46,6 +49,28 @@ class DataConfig:
     num_workers: int
     prefetch_factor: int
     cache_gib_per_worker: float
+
+
+@dataclass(frozen=True)
+class TrackingConfig:
+    """保存每个正式训练阶段的在线指标追踪契约。
+
+    ``provider`` 当前只允许 Weights & Biases（W&B）。
+    ``mode`` 固定为 online；初始化失败时不得静默降级为离线运行。
+    ``entity`` 是已有登录凭据可写入的 W&B 账户或团队。
+    ``project`` 是七个首轮实验共享的 W&B 项目。
+    ``group`` 把同一轮 Matcher 实验的多个阶段放入一个比较组。
+    ``log_every_global_steps`` 是训练曲线写入间隔，单位为参数更新次数。
+    ``init_timeout_seconds`` 是 W&B 在线初始化的墙钟超时秒数。
+    """
+
+    provider: TrackingProvider
+    mode: TrackingMode
+    entity: str
+    project: str
+    group: str
+    log_every_global_steps: int
+    init_timeout_seconds: int
 
 
 @dataclass(frozen=True)
@@ -109,12 +134,14 @@ class ExperimentPlan:
     ``plan_name`` 是实验结果目录的安全单级名称。
     ``output_root`` 是运行、阶段和 checkpoint 的根目录，必须位于 Matcher 临时产物根。
     ``data`` 是全部阶段共享的 DataConfig；其中 data.output_root 用于清单与体素缓存。
+    ``tracking`` 是每个阶段分别建立 W&B online run 的共享配置。
     ``stages`` 是非空有序 StageConfig 元组，stage:name 引用只能指向此前阶段。
     """
 
     plan_name: str
     output_root: Path
     data: DataConfig
+    tracking: TrackingConfig
     stages: tuple[StageConfig, ...]
 
 
@@ -371,7 +398,7 @@ def load_experiment_plan(path: Path) -> ExperimentPlan:
     values = yaml.safe_load(path.read_text(encoding="utf-8"))
     if not isinstance(values, dict):
         raise ValueError(f"{path} 顶层必须是 YAML 映射。")
-    _require_keys(values, {"plan_name", "output_root", "data", "stages"}, "plan")
+    _require_keys(values, {"plan_name", "output_root", "data", "tracking", "stages"}, "plan")
     data_values = _mapping(values["data"], "data")
     _require_keys(
         data_values,
@@ -415,6 +442,44 @@ def load_experiment_plan(path: Path) -> ExperimentPlan:
     if data.num_workers <= 0 or data.prefetch_factor <= 0 or data.cache_gib_per_worker <= 0:
         raise ValueError("num_workers/prefetch_factor/cache_gib_per_worker 必须为正数。")
 
+    tracking_values = _mapping(values["tracking"], "tracking")
+    _require_keys(
+        tracking_values,
+        {
+            "provider",
+            "mode",
+            "entity",
+            "project",
+            "group",
+            "log_every_global_steps",
+            "init_timeout_seconds",
+        },
+        "tracking",
+    )
+    provider = _string(tracking_values["provider"], "tracking.provider")
+    mode = _string(tracking_values["mode"], "tracking.mode")
+    if provider != "wandb":
+        raise ValueError("tracking.provider 当前必须为 wandb。")
+    if mode != "online":
+        raise ValueError("tracking.mode 当前必须为 online，不能静默降级为离线模式。")
+    tracking = TrackingConfig(
+        provider=cast(TrackingProvider, provider),
+        mode=cast(TrackingMode, mode),
+        entity=_string(tracking_values["entity"], "tracking.entity"),
+        project=_string(tracking_values["project"], "tracking.project"),
+        group=_string(tracking_values["group"], "tracking.group"),
+        log_every_global_steps=_integer(
+            tracking_values["log_every_global_steps"],
+            "tracking.log_every_global_steps",
+        ),
+        init_timeout_seconds=_integer(
+            tracking_values["init_timeout_seconds"],
+            "tracking.init_timeout_seconds",
+        ),
+    )
+    if tracking.log_every_global_steps <= 0 or tracking.init_timeout_seconds <= 0:
+        raise ValueError("tracking 的步间隔和初始化超时必须为正整数。")
+
     raw_stages = values["stages"]
     if not isinstance(raw_stages, list) or not raw_stages:
         raise ValueError("stages 必须为非空 YAML 列表。")
@@ -430,5 +495,6 @@ def load_experiment_plan(path: Path) -> ExperimentPlan:
             "output_root",
         ),
         data=data,
+        tracking=tracking,
         stages=stages,
     )
