@@ -36,6 +36,23 @@ bash 训练与运行/submit_task.sh \
   -- --plan configs/experiments/initial/full_scratch_smi_ted_light_289m_oracle.yaml
 ```
 
+validation 选定唯一方案后，保留集只评估一次。下例中的计划、阶段和 BEST 路径必须属于
+同一个已完成训练阶段。入口把现存 manifest 的稳定科学内容、calibration 候选与身份记录的
+组合指纹绑定到该 checkpoint 和输出路径；对同一稳定数据指纹不能再次运行评估：
+
+```bash
+bash 训练与运行/submit_task.sh \
+  --sh 训练与运行/sh/evaluate_calibration.sh \
+  --resource a100 \
+  --gpus 1 \
+  --cpus 16 \
+  -- \
+  --plan configs/experiments/initial/full_scratch_molformer_joint.yaml \
+  --stage full_scratch_molformer_joint \
+  --checkpoint /storage/penghongen/tmp/Matcher/experiments/<plan>/<run>/<stage>/BEST.pt \
+  --output /storage/penghongen/tmp/Matcher/calibration/<selected-run>.json
+```
+
 `--sh` 接受三种等价写法：只有文件名、相对于任务根目录的路径、任务根目录内的绝对路径。三种写法都会记录为同一个项目内相对路径，并从同一份 release 执行。
 
 默认行为是获得资源后立即执行一次任务，随后自动退出并释放资源。`--pre_hold` 会在第一次
@@ -189,8 +206,151 @@ Matcher 的正式任务只从 `/home/penghongen/My_Project/Matcher` 冻结 relea
 - `sh/build_manifest.sh`：只构建或核验版本化监督清单，不遍历候选体素缓存。
 - `sh/precompute_data.sh`：先构建或复用清单，再按 `--products voxel pp` 显式选择 105 通道体素缓存、PP token 缓存或两者；选择 `pp` 时必须同时给出 `--pp-top-k`。
 - `sh/train_experiment.sh`：读取 `configs/experiments/initial/*.yaml`，顺序执行一个或多个训练阶段。
+- `sh/evaluate_calibration.sh`：核对已选定阶段的 `BEST.pt`、`resolved.json`、阶段 `summary.json` 与运行 `run.json`，要求现存冻结清单且不重建，只评估 calibration。
 
-`build_manifest.sh` 与 `precompute_data.sh` 的清单参数必须显式提供 `data-root/stage1-root/output-root/coverage-threshold/selection-seed`。`precompute_data.sh` 还必须显式提供 `--products`；仅当选择 `pp` 时提供正整数 `--pp-top-k`。`train_experiment.sh` 只接收 `--plan`，其它科学与训练参数都由 YAML 唯一声明。
+`build_manifest.sh` 与 `precompute_data.sh` 的清单参数必须显式提供 `data-root/stage1-root/output-root/coverage-threshold/selection-seed`。`precompute_data.sh` 还必须显式提供 `--products`；仅当选择 `pp` 时提供正整数 `--pp-top-k`。`train_experiment.sh` 只接收 `--plan`，其它科学与训练参数都由 YAML 唯一声明。`evaluate_calibration.sh` 必须显式提供 `--plan/--stage/--checkpoint/--output`。它核对 checkpoint 最佳轮次、阶段完成摘要、模型与训练配置，以及训练时 `data_root/stage1_root/output_root/coverage_threshold/selection_seed/pp_top_k`；数据清单缺失时直接失败，不在保留评估中重建。
+
+校准入口分别记录本次 YAML 与训练 release 中原 YAML 的路径和 SHA-256，但不要求两个 YAML 字节相同：训练完成后可以显式调整 validation 工作进程数、预取量和单工作进程缓存等 I/O 资源。模型、训练超参数和上段六个科学数据字段仍必须逐项相同；因此 I/O 调整不会被误报成科学方案变化，也不能借 I/O 调整更换监督清单。
+
+支持类 macro-F1 只平均真实候选数大于零的类别；固定六类 macro-F1 把零支持类 F1 记为 0 后仍平均 `background/ion/nucleotide_like/peptide_like/small_molecule/sugar` 六类。兼容字段 `evaluation.metrics.six_class.macro_f1` 等于 `macro_f1_supported_classes`，validation 选模继续使用该兼容口径。
+
+一次评估把结果 JSON 写到调用方指定的 Matcher 业务根子路径；`data.output_root/calibration/` 保存 claim JSON 和空互斥锁文件。结果 JSON 顶层字段如下：
+
+| 字段 | 类型与语义 |
+| --- | --- |
+| `schema_version` | 整数；结果与 claim 共用且联动提升的格式版本。 |
+| `split` | 字符串，固定为 `calibration`。 |
+| `plan_path` | 本次 calibration 读取的 YAML 绝对路径。 |
+| `plan_sha256` | 本次 calibration YAML 的 SHA-256。 |
+| `plan_name` | YAML 声明的安全计划名。 |
+| `stage_name` | validation 选定并已完成的阶段名。 |
+| `task_name` | `candidate_pretrain` 或 `full_matcher`。 |
+| `language_family` | 完整 Matcher 的语言表示；候选预训练为 `null`。 |
+| `identity_variant` | 完整 Matcher 的 `oracle/detached/joint`；候选预训练为 `null`。 |
+| `checkpoint` | 下表定义的 BEST 与训练证据对象。 |
+| `data` | 下表定义的现存清单与 calibration 记录证据对象。 |
+| `claim_path` | 绑定本次选择的一次性 claim JSON 绝对路径。 |
+| `runtime` | 下表定义的数据加载、数值后端与设备对象。 |
+| `evaluation` | 下表定义的完整损失、指标、计数、耗时与吞吐对象。 |
+| `hostname` | 实际执行节点名。 |
+| `slurm_job_id` | Slurm Job ID；非 Slurm 运行时为 `null`。 |
+| `task_launch_dir` | launch 留证目录；环境变量未提供时为 `null`。 |
+| `started_at_utc` | 开始评估的带时区 ISO 8601 时间。 |
+| `finished_at_utc` | 完成评估的带时区 ISO 8601 时间。 |
+
+`checkpoint` 字段如下：
+
+| 字段 | 类型与语义 |
+| --- | --- |
+| `path` | 已完成阶段 `BEST.pt` 的绝对路径。 |
+| `sha256` | `BEST.pt` 的 SHA-256。 |
+| `epoch` | 从 0 开始的最佳 epoch，必须等于 checkpoint 的 `best_epoch`。 |
+| `global_step` | 保存最佳模型时累计完成的参数更新数。 |
+| `best_score` | 该最佳 epoch 的有限 validation 选择分数。 |
+| `resolved_path` | 同阶段 `resolved.json` 的绝对路径。 |
+| `resolved_sha256` | `resolved.json` 的 SHA-256。 |
+| `summary_path` | 只在阶段收口时发布的阶段 `summary.json` 路径。 |
+| `summary_sha256` | 阶段 `summary.json` 的 SHA-256。 |
+| `run_path` | 阶段上一级 `run.json` 的绝对路径。 |
+| `run_sha256` | `run.json` 的 SHA-256。 |
+| `training_plan_path` | `run.json` 记录的训练 release YAML 路径。 |
+| `training_plan_sha256` | 评估时读取上述训练 YAML 得到的 SHA-256。 |
+| `model_config` | 已与本次 YAML 逐字段相等的模型配置对象。 |
+| `training_config` | 已与本次 YAML 逐字段相等的训练配置对象。 |
+
+`data` 字段如下：
+
+| 字段 | 类型与语义 |
+| --- | --- |
+| `manifest_path` | 现存 `manifest.json` 的绝对路径；缺失时禁止评估。 |
+| `manifest_sha256` | 现存 `manifest.json` 全文件的 SHA-256。 |
+| `training_manifest_sha256` | 训练开始时留存的清单摘要；既有首轮运行未记录，因此为 `null`。 |
+| `manifest_semantic_sha256` | 下文所定义 calibration 稳定清单字段的规范 JSON 摘要。 |
+| `candidates_path` | `calibration_candidates.jsonl` 的绝对路径。 |
+| `candidates_sha256` | calibration 候选 JSONL 的 SHA-256。 |
+| `identities_path` | `calibration_identities.jsonl` 的绝对路径。 |
+| `identities_sha256` | calibration 身份 JSONL 的 SHA-256。 |
+| `fingerprint` | 下文公式得到的稳定数据指纹，也是 claim 文件名的一部分。 |
+
+`runtime` 字段如下：
+
+| 字段 | 类型与语义 |
+| --- | --- |
+| `candidate_count` | 冻结 calibration Dataset 的候选数，必须等于评估样本数。 |
+| `physical_batch_size` | 单次前向候选数，沿用所选阶段。 |
+| `num_workers` | calibration DataLoader 工作进程数，沿用本次 YAML 的 validation 设置。 |
+| `prefetch_factor` | 每个工作进程预取的物理批次数。 |
+| `cache_gib_per_worker` | 单个工作进程五类最近最少使用缓存的 GiB 上限。 |
+| `multiprocessing_context` | 固定为 `spawn`。 |
+| `persistent_workers` | 固定为 `false`。 |
+| `worker_generator_seed` | 只供 calibration 工作进程播种的独立 Torch 种子。 |
+| `numeric_backend` | 含 `python_numpy_torch_seed/cudnn_benchmark/cudnn_deterministic/deterministic_algorithms/float32_matmul_precision`。 |
+| `device` | 实际 CUDA 设备名称。 |
+| `torch_version` | 执行评估的 PyTorch 版本。 |
+
+`evaluation` 字段如下；任一零分母浮点指标在内存中为 NaN，严格 JSON 落盘时为 `null`：
+
+| 字段 | 类型与语义 |
+| --- | --- |
+| `loss.total` | 按完整划分真实分母汇总的加权总损失。 |
+| `loss.classification` | 六分类损失。 |
+| `loss.ligand_area` | 候选配体区域损失。 |
+| `loss.binding_area` | 受体结合区域损失。 |
+| `loss.identity` | 有效小分子身份目标上的闭集身份损失。 |
+| `metrics.six_class.accuracy` | 全部候选的六分类正确率。 |
+| `metrics.six_class.macro_f1` | 兼容字段，等于 `macro_f1_supported_classes`。 |
+| `metrics.six_class.macro_f1_supported_classes` | 只平均真实候选数大于零类别的 F1。 |
+| `metrics.six_class.macro_f1_all_classes` | 零支持类 F1 记为 0 后固定平均六类。 |
+| `metrics.six_class.per_class` | 六个类别分别保存 `precision/recall/f1/support`。 |
+| `metrics.six_class.confusion_matrix` | 整数 `(6,6)`；第一轴为真实类，第二轴为预测类。 |
+| `metrics.intrinsic_identity.top1` | 忽略六分类预测后的身份 Top-1。 |
+| `metrics.intrinsic_identity.topk` | 忽略六分类预测后的身份 Top-K。 |
+| `metrics.intrinsic_identity.top_k` | 报告采用的最大名次 K。 |
+| `metrics.intrinsic_identity.eligible_count` | 真实小分子且身份目标有效的候选数。 |
+| `metrics.conditional_identity.top1` | 六分类预测为正确小分子条件下的身份 Top-1。 |
+| `metrics.conditional_identity.topk` | 同一条件集合上的身份 Top-K。 |
+| `metrics.conditional_identity.top_k` | 报告采用的最大名次 K。 |
+| `metrics.conditional_identity.eligible_count` | 六分类判对且身份目标有效的真实小分子数。 |
+| `metrics.conditional_identity.seen_top1` | 当前语言模型 seen 子集 Top-1。 |
+| `metrics.conditional_identity.seen_topk` | 当前语言模型 seen 子集 Top-K。 |
+| `metrics.conditional_identity.seen_count` | 当前语言模型 seen 子集候选数。 |
+| `metrics.conditional_identity.unseen_top1` | 当前语言模型 unseen 子集 Top-1。 |
+| `metrics.conditional_identity.unseen_topk` | 当前语言模型 unseen 子集 Top-K。 |
+| `metrics.conditional_identity.unseen_count` | 当前语言模型 unseen 子集候选数。 |
+| `metrics.end_to_end_identity.precision` | 类别和身份都正确数除以预测为小分子的可评估候选数。 |
+| `metrics.end_to_end_identity.recall` | 类别和身份都正确数除以有身份目标的真实小分子数。 |
+| `metrics.end_to_end_identity.f1` | 上述 precision 与 recall 的调和平均。 |
+| `metrics.end_to_end_identity.true_positive` | 类别和身份都正确的候选数。 |
+| `metrics.end_to_end_identity.predicted_small_molecule` | 有身份清单且预测为小分子的候选数。 |
+| `metrics.end_to_end_identity.actual_small_molecule` | 有当前语言身份目标的真实小分子数。 |
+| `metrics.area.ligand_micro_dice` | 跨候选、跨体素汇总的配体区域 Dice。 |
+| `metrics.area.binding_micro_dice` | 跨候选、跨体素汇总的结合区域 Dice。 |
+| `metrics.area.ligand_dice_denominator` | 配体区域预测与真实体素数之和。 |
+| `metrics.area.binding_dice_denominator` | 结合区域预测与真实体素数之和。 |
+| `sample_count` | 实际评估候选数，必须等于 `runtime.candidate_count`。 |
+| `identity_eligible_count` | 有当前语言身份目标的真实小分子数。 |
+| `elapsed_seconds` | 完整评估墙钟秒数。 |
+| `samples_per_second` | `sample_count / elapsed_seconds`。 |
+
+`claim_<data_fingerprint>.json` 字段如下：
+
+| 字段 | 类型与状态语义 |
+| --- | --- |
+| `schema_version` | 与结果 JSON 共用的整数格式版本。 |
+| `status` | `claimed` 表示选择已绑定且允许同参数失败重试；`completed` 表示结果已发布并禁止再次运行。 |
+| `data_fingerprint` | 与结果 `data.fingerprint` 相等。 |
+| `plan_sha256` | 与结果 `plan_sha256` 相等。 |
+| `stage_name` | 已绑定阶段名。 |
+| `checkpoint_sha256` | 已绑定 `BEST.pt` 的 SHA-256。 |
+| `checkpoint_path` | 已绑定 `BEST.pt` 的绝对路径。 |
+| `output_path` | 首次 claim 时绑定的结果 JSON 路径。 |
+| `output_sha256` | `claimed` 时为 `null`；`completed` 时为结果 JSON 的 SHA-256。 |
+| `claimed_at_utc` | 首次绑定时带时区的 ISO 8601 时间。 |
+| `completed_at_utc` | `claimed` 时为 `null`；`completed` 时为结果记录的评估完成时间。 |
+
+结果已发布而 claim 尚未收口时，同参数重试先核验结果中的计划、阶段、checkpoint 和数据指纹，再只把 claim 改为 `completed`，不再次执行模型。`claim_<data_fingerprint>.json.lock` 是入口不会主动删除的空互斥锁文件，只用于并发串行化，没有科学或完成状态语义；是否完成只能读取 claim 的 `status`。
+
+组合指纹先对 manifest 中来源根、监督参数、类别顺序、语言/seen 规则、calibration 文件名、PDB 计数和 calibration 摘要组成的规范 JSON 计算 SHA-256；创建时间和 train/validation 摘要不参与。再把该摘要、calibration 候选 JSONL 摘要和身份 JSONL 摘要按 `semantic + "\n" + candidates + "\n" + identities + "\n"` 的 ASCII 字节再次计算 SHA-256。SHA-256 在此只用于文件内容留证和 claim 定位，不参与样本、监督或模型计算。
 
 PP 缓存写入 `cache/pp_input_v1/top_<k>/<split>/<pdb>.npz`，并与 `F1_centered.npz` 的候选编号逐项对齐。令 `C` 为该 PDB 的候选数，`K=min(top_k,48³)`：
 

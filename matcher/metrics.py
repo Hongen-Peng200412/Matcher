@@ -1,4 +1,4 @@
-"""累积并选择 Matcher validation 指标。
+"""累积 Matcher 完整划分评估指标，并计算 validation 选模分数。
 
 ``EvaluationAccumulator`` 跨物理批次累积六分类、固有身份、条件身份、端到端身份和
 区域计数，再由 ``compute`` 返回 ``EvaluationReport``；``selection_score`` 只接收三项
@@ -57,13 +57,17 @@ class SixClassMetrics(TypedDict):
     """六分类汇总。
 
     ``accuracy`` 是全部候选的预测正确率。
-    ``macro_f1`` 只平均真实支持数大于零的类别 F1。
+    ``macro_f1`` 是与既有 validation 选模兼容的支持类 macro-F1。
+    ``macro_f1_supported_classes`` 只平均真实支持数大于零的类别 F1。
+    ``macro_f1_all_classes`` 固定平均 CLASS_NAMES 中全部六类，零支持类按 F1=0 计入。
     ``per_class`` 按 CLASS_NAMES 保存每类 PerClassMetrics。
     ``confusion_matrix`` 是 ``(6,6)`` 整数嵌套列表，第一轴为真实类，第二轴为预测类。
     """
 
     accuracy: float
     macro_f1: float
+    macro_f1_supported_classes: float
+    macro_f1_all_classes: float
     per_class: dict[str, PerClassMetrics]
     confusion_matrix: list[list[int]]
 
@@ -419,10 +423,16 @@ class EvaluationAccumulator:
             and end_precision + end_recall > 0
             else 0.0
         )
+        supported_macro_f1 = float(np.mean(class_f1)) if class_f1 else math.nan
+        all_classes_macro_f1 = float(
+            np.mean([class_metrics[name]["f1"] for name in CLASS_NAMES])
+        )
         return {
             "six_class": {
                 "accuracy": accuracy,
-                "macro_f1": float(np.mean(class_f1)) if class_f1 else math.nan,
+                "macro_f1": supported_macro_f1,
+                "macro_f1_supported_classes": supported_macro_f1,
+                "macro_f1_all_classes": all_classes_macro_f1,
                 "per_class": class_metrics,
                 "confusion_matrix": self.class_confusion.tolist(),
             },

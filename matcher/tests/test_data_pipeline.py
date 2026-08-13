@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import cast
 
 import numpy as np
@@ -16,12 +17,22 @@ from matcher.contracts import CandidateItem
 from matcher.geometry import crop_center_48, hard_scatter_receptor, keep_local_48
 from matcher.labels import OccurrenceMask, assign_candidate_target
 from matcher.ligand_graph import LigandGraphStore
-from matcher.manifest import build_manifest, load_jsonl
+from matcher.manifest import build_manifest, load_jsonl, require_manifest
 from matcher.precompute import precompute_inputs
 from matcher.pp_input import _build_pp_tokens
 from matcher.schema import SourceRoots
 
 from .factories import build_synthetic_roots
+
+
+def test_read_only_manifest_entry_never_builds_missing_files(tmp_path: Path) -> None:
+    """保留评估要求既有清单，缺失时不得产生目录或清单副作用。"""
+
+    roots = build_synthetic_roots(tmp_path)
+    assert not roots.manifest_root.exists()
+    with pytest.raises(FileNotFoundError, match="禁止在只读评估入口重建"):
+        require_manifest(roots, coverage_threshold=0.30, selection_seed=3407)
+    assert not roots.manifest_root.exists()
 
 
 def test_bidirectional_coverage_uses_score_then_occurrence_id() -> None:

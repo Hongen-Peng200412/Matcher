@@ -544,6 +544,20 @@ MoLFormer/oracle 随后完成 epoch 0：选择分数 `0.5346026`，三项分量�
 
 新 A100 allocation 的当前进程树 MaxRSS 为约 `28–29 GB`，与旧 A800 detached allocation 的历史峰值 `677.5 GB` 不在同一数量级；后者包含旧 release 同时常驻两套 16-worker 进程池的累计历史，不能用来描述新 4/4 非持久方案。六个任务的 `after_lock` 全部继续保留。
 
+## 一次性 calibration 入口：尚未读取保留集
+
+在首轮方案仍由 validation 比较期间，新增 `python -m matcher.calibration` 和 `训练与运行/sh/evaluate_calibration.sh`，但没有执行该入口，也没有读取 calibration 候选。入口只接受已完成阶段的 `BEST.pt`：它核对 checkpoint 的 `epoch == best_epoch`、最佳轮次 `epoch_record`、阶段 `summary.json`、运行 `run.json`、相邻 `resolved.json`、模型与训练配置，并逐项比较训练记录和本次计划中的 `data_root/stage1_root/output_root/coverage_threshold/selection_seed/pp_top_k`。
+
+训练完成后允许显式调整 validation 工作进程数、预取量和单工作进程缓存，因此入口分别记录训练 release 中 YAML 与本次 calibration YAML 的路径和 SHA-256，但不要求两份 YAML 字节相同；模型、训练超参数和六个科学数据字段仍必须相同。这一临时决定遵循用户允许基于 I/O 证据改变加载参数的边界，避免旧 release 的 16-worker 任务仅因后续 4/4-worker 优化而无法做同口径评估。
+
+入口只调用 `require_manifest`：冻结清单不存在时立即失败，不允许在保留评估中静默重建。已经运行的 release 没有在 `resolved.json` 保存训练当时的 manifest 内容哈希，所以当前入口不能密码学证明训练时与评估时的清单文件逐字节相同；临时采用的治理边界是版本化 `closed_set_v2` 路径、来源根与监督参数必须一致，现存 manifest、calibration candidates 和 identities 在评估前重新计算并落盘 SHA-256。该限制不会被隐去，最终 calibration 报告必须保留为溯源限制；以后新训练若需要更强证据，应在训练开始时把清单内容摘要写进 resolved/checkpoint，而不是回填旧运行。
+
+同一 calibration 稳定数据指纹在 claim 文件保留期间只能绑定一个阶段、checkpoint 和输出路径。独占锁覆盖整次评估；若结果 JSON 已原子发布但 claim 尚未从 `claimed` 收口到 `completed`，相同参数重试会先核验结果内的计划、阶段、checkpoint 和数据指纹，再只完成 claim，不再次运行模型。没有既有 claim 的任意同名输出不得冒充崩溃恢复。固定六类 macro-F1 把零支持类 F1 记为 0 并平均六类；支持类 macro-F1 只平均真实支持数大于零的类别；兼容字段 `macro_f1` 继续等于支持类口径，所以 validation 选模定义不变。
+
+表达审查代理明确批准 `_sha256_file` 以及 `_calibration_data_evidence` 内稳定语义清单摘要与三摘要组合计算的具名硬限制例外；这些哈希只用于多类正式文件的内容留证和 claim 定位，不参与样本、监督、模型或选模计算。代理同时批准保留低复用但具有独立协议或事务语义的 `require_manifest`、`configure_random_seeds_and_numeric_backend`、`_select_stage`、`_calibration_data_evidence`、`_validate_checkpoint_for_stage`、`_claim_calibration`、`_recover_claim_from_published_output`、`_parse_arguments`、`run_calibration` 和 `main`。首轮终审发现并要求修复的两项阻断是数据/BEST 完成证据未闭环，以及 output 与 completed claim 两次发布之间的崩溃恢复窗口；修订后新增数据配置错配、非最佳 checkpoint、阶段完成、稳定指纹、真实非空指标、claim 恢复、无 claim 同名输出和只读清单缺失回归测试。
+
+第二轮独立科学终审与严格表达终审均为 PASS，阻断项 0。科学审查独立核对错 selection seed、非最佳 checkpoint、epoch record 分数错配、仅 I/O 字段变化、claim 身份错配与恢复路径；表达审查逐项核对 TypedDict、CLI help、README 的结果/claim/runtime/evaluation 字段表、模块布局、中文 Docstring 与测试替身诚实性。冻结门禁为 pytest `51 passed`、mypy 38 个源文件零问题，compileall、七份 YAML、全部正式 shell 的 `bash -n`、calibration CLI help 和 `git diff --check` 全部通过。该入口截至此处仍未在服务器执行，也没有读取 calibration。
+
 ## 验证命令
 
 ```powershell

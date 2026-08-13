@@ -7,6 +7,7 @@
 配体图与两种冻结语言表示的选择证据。``excluded_pdb.jsonl`` 单独记录整 PDB
 排除原因，任何排除项都不进入训练或指标分母。所有文件位于
 ``<output_root>/manifests/closed_set_v<schema>/``，由覆盖阈值与选择种子共同决定身份。
+``ensure_manifest`` 供训练构建或复用清单；``require_manifest`` 供只读保留评估要求既有清单。
 """
 
 from __future__ import annotations
@@ -51,6 +52,20 @@ def ensure_manifest(
             _validate_existing_manifest(manifest_path, roots, coverage_threshold, selection_seed)
         else:
             build_manifest(roots, coverage_threshold, selection_seed)
+    return manifest_path
+
+
+def require_manifest(
+    roots: SourceRoots,
+    coverage_threshold: float,
+    selection_seed: int,
+) -> Path:
+    """只接受已存在且来源参数一致的正式清单；缺失时不得在评估路径重建。"""
+
+    manifest_path = roots.manifest_root / "manifest.json"
+    if not manifest_path.is_file():
+        raise FileNotFoundError(f"冻结清单不存在，禁止在只读评估入口重建：{manifest_path}")
+    _validate_existing_manifest(manifest_path, roots, coverage_threshold, selection_seed)
     return manifest_path
 
 

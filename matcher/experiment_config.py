@@ -1,9 +1,10 @@
 """读取、验证并展开正式实验 YAML。
 
 ``load_experiment_plan`` 是主要入口，返回冻结数据来源、顺序阶段、模型和训练配置组成的
-``ExperimentPlan``；``validate_run_stamp`` 验证外部分配的运行目录名。计划显式冻结 W&B
-online 项目、比较组和写入间隔；解析器拒绝未知字段、静默默认、批量不一致、相对 checkpoint
-和越过 `/storage/penghongen/tmp/Matcher/` 的产物路径。
+``ExperimentPlan``；``validate_run_stamp`` 验证外部分配的运行目录名；
+``validate_matcher_output_path`` 规范化服务器业务产物路径。计划显式冻结 W&B online 项目、
+比较组和写入间隔；解析器拒绝未知字段、静默默认、批量不一致、相对 checkpoint 和越过
+`/storage/penghongen/tmp/Matcher/` 的产物路径。
 """
 
 from __future__ import annotations
@@ -353,18 +354,6 @@ def _require_keys(values: dict[str, Any], expected: set[str], name: str) -> None
         )
 
 
-def _validate_output_root(path: Path, name: str) -> Path:
-    """规范化路径并限制业务产物位于 Matcher 临时根或其子目录。"""
-
-    posix_path = PurePosixPath(posixpath.normpath(path.as_posix()))
-    if not posix_path.is_absolute():
-        raise ValueError(f"{name}={path} 必须是绝对路径。")
-    required_root = PurePosixPath("/storage/penghongen/tmp/Matcher")
-    if not posix_path.is_relative_to(required_root):
-        raise ValueError(f"{name}={path} 不在允许的服务器产物根 {required_root} 内。")
-    return Path(posix_path.as_posix())
-
-
 def _validate_stage_initialization(stages: tuple[StageConfig, ...]) -> None:
     """限制 checkpoint 初始化为绝对路径或此前已声明阶段的 BEST/LAST。"""
 
@@ -387,6 +376,18 @@ def _validate_stage_initialization(stages: tuple[StageConfig, ...]) -> None:
 
 
 # ================================================================================================
+
+
+def validate_matcher_output_path(path: Path, name: str) -> Path:
+    """规范化路径并限制业务产物位于 Matcher 临时根或其子目录。"""
+
+    posix_path = PurePosixPath(posixpath.normpath(path.as_posix()))
+    if not posix_path.is_absolute():
+        raise ValueError(f"{name}={path} 必须是绝对路径。")
+    required_root = PurePosixPath("/storage/penghongen/tmp/Matcher")
+    if not posix_path.is_relative_to(required_root):
+        raise ValueError(f"{name}={path} 不在允许的服务器产物根 {required_root} 内。")
+    return Path(posix_path.as_posix())
 
 
 def validate_run_stamp(value: str) -> str:
@@ -419,7 +420,7 @@ def load_experiment_plan(path: Path) -> ExperimentPlan:
         },
         "data",
     )
-    canonical_data_output = _validate_output_root(
+    canonical_data_output = validate_matcher_output_path(
         _path(data_values["output_root"], "data.output_root"),
         "data.output_root",
     )
@@ -509,7 +510,7 @@ def load_experiment_plan(path: Path) -> ExperimentPlan:
     _validate_stage_initialization(stages)
     return ExperimentPlan(
         plan_name=_path_component(values["plan_name"], "plan_name"),
-        output_root=_validate_output_root(
+        output_root=validate_matcher_output_path(
             _path(values["output_root"], "output_root"),
             "output_root",
         ),

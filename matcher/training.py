@@ -16,7 +16,6 @@ from __future__ import annotations
 import itertools
 import json
 import math
-import random
 import re
 import sys
 import time
@@ -25,14 +24,17 @@ from dataclasses import asdict, dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, TypedDict, cast
 
-import numpy as np
 import torch
 from torch import nn
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torch.utils.data import DataLoader
 
-from .batching import ShuffledBatchSampler, collate_candidates
+from .batching import (
+    DATALOADER_MULTIPROCESSING_CONTEXT,
+    ShuffledBatchSampler,
+    build_candidate_loader,
+)
 from .candidate_data import CandidateDataset
 from .checkpointing import (
     CHECKPOINT_SCHEMA_VERSION,
@@ -46,6 +48,7 @@ from .losses import LossOutput, LossWeights, compute_matcher_loss
 from .manifest import ensure_manifest
 from .metrics import EvaluationAccumulator, EvaluationReport, selection_score
 from .model import CandidateEncoder, ClosedSetMatcher
+from .numeric import configure_random_seeds_and_numeric_backend
 from .schema import SMALL_MOLECULE_INDEX
 from .tracking import MetricValue, WandbTracker, start_wandb_tracking
 
@@ -59,7 +62,6 @@ GRAD_SCALER_INITIAL_SCALE = 65536.0
 GRAD_SCALER_GROWTH_FACTOR = 2.0
 GRAD_SCALER_BACKOFF_FACTOR = 0.5
 GRAD_SCALER_GROWTH_INTERVAL = 2000
-_DATALOADER_MULTIPROCESSING_CONTEXT = "spawn"
 _TENSOR_BATCH_KEYS = (
     "voxel_input",
     "class_target",
@@ -335,34 +337,6 @@ class _StageRuntime:
     resolved_config: dict[str, object]
 
 
-def _build_candidate_loader(
-    dataset: CandidateDataset,
-    sampler: ShuffledBatchSampler,
-    num_workers: int,
-    prefetch_factor: int,
-    worker_generator_seed: int,
-) -> DataLoader[CandidateBatch]:
-    """构造采用 spawn 的非持久 DataLoader 工作进程池；专用生成器隔离工作进程与模型随机状态。"""
-
-    worker_generator = torch.Generator()
-    worker_generator.manual_seed(worker_generator_seed)
-
-    return cast(
-        DataLoader[CandidateBatch],
-        DataLoader(
-            cast(Any, dataset),
-            batch_sampler=sampler,
-            num_workers=num_workers,
-            collate_fn=collate_candidates,
-            pin_memory=True,
-            persistent_workers=False,
-            prefetch_factor=prefetch_factor,
-            multiprocessing_context=_DATALOADER_MULTIPROCESSING_CONTEXT,
-            generator=worker_generator,
-        ),
-    )
-
-
 def _build_stage_runtime(
     stage: StageConfig,
     data: DataConfig,
@@ -372,7 +346,7 @@ def _build_stage_runtime(
 ) -> _StageRuntime:
     """一次性构造数据、模型和优化状态，并写出可审计的 resolved.json。"""
 
-    _configure_random_seeds_and_numeric_backend(stage.training.seed)
+    numeric_backend = configure_random_seeds_and_numeric_backend(stage.training.seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     if device.type != "cuda":
         raise RuntimeError("正式 Matcher 训练必须在 CUDA GPU 上运行。")
@@ -418,14 +392,14 @@ def _build_stage_runtime(
     )
     train_worker_generator_seed = 2 * stage.training.seed
     validation_worker_generator_seed = 2 * stage.training.seed + 1
-    train_loader = _build_candidate_loader(
+    train_loader = build_candidate_loader(
         train_dataset,
         train_sampler,
         data.train_num_workers,
         data.prefetch_factor,
         train_worker_generator_seed,
     )
-    validation_loader = _build_candidate_loader(
+    validation_loader = build_candidate_loader(
         validation_dataset,
         validation_sampler,
         data.validation_num_workers,
@@ -499,7 +473,7 @@ def _build_stage_runtime(
         "validation_num_workers": data.validation_num_workers,
         "prefetch_factor": data.prefetch_factor,
         "cache_gib_per_worker": data.cache_gib_per_worker,
-        "multiprocessing_context": _DATALOADER_MULTIPROCESSING_CONTEXT,
+        "multiprocessing_context": DATALOADER_MULTIPROCESSING_CONTEXT,
         "persistent_workers": False,
         "worker_pool_lifecycle": "per_complete_loader_iteration",
         "train_worker_generator_seed": train_worker_generator_seed,
@@ -540,13 +514,7 @@ def _build_stage_runtime(
             "grad_scaler_backoff_factor": GRAD_SCALER_BACKOFF_FACTOR,
             "grad_scaler_growth_interval": GRAD_SCALER_GROWTH_INTERVAL,
         },
-        "numeric_backend": {
-            "python_numpy_torch_seed": stage.training.seed,
-            "cudnn_benchmark": True,
-            "cudnn_deterministic": False,
-            "deterministic_algorithms": False,
-            "float32_matmul_precision": "high",
-        },
+        "numeric_backend": numeric_backend,
         "initialization": initialization,
         "train_candidate_count": len(train_dataset),
         "train_candidates_used_per_epoch": len(train_sampler)
@@ -863,19 +831,6 @@ def _resolve_initial_checkpoint(specification: str, plan_directory: Path) -> Pat
     return Path(path.as_posix())
 
 
-def _configure_random_seeds_and_numeric_backend(seed: int) -> None:
-    """设置随机种子和高吞吐数值后端；不承诺跨硬件逐位可复现。"""
-
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
-    torch.backends.cudnn.benchmark = True
-    torch.backends.cudnn.deterministic = False
-    torch.use_deterministic_algorithms(False)
-    torch.set_float32_matmul_precision("high")
-
-
 # ================================================================================================
 
 
@@ -886,10 +841,10 @@ def evaluate_model(
     class_weights: torch.Tensor | None,
     device: torch.device,
 ) -> EvaluationResult:
-    """在调用方指定的 train 或 validation loader 上返回 ``EvaluationResult``。
+    """在调用方指定的完整数据划分 loader 上返回 ``EvaluationResult``。
 
     损失按全划分真实分母汇总；指标由 ``EvaluationAccumulator`` 跨物理批次合并。
-    任一非有限模型输出或损失立即终止，不允许产生 BEST checkpoint。
+    任一非有限模型输出或损失立即终止，不返回有效 ``EvaluationResult``。
     """
 
     started_at = time.perf_counter()
@@ -1066,6 +1021,12 @@ def run_training_stage(
                 "validation/samples_per_second": validation["samples_per_second"],
                 "validation/six_class_accuracy": six_class["accuracy"],
                 "validation/six_class_macro_f1": six_class["macro_f1"],
+                "validation/six_class_macro_f1_supported_classes": six_class[
+                    "macro_f1_supported_classes"
+                ],
+                "validation/six_class_macro_f1_all_classes": six_class[
+                    "macro_f1_all_classes"
+                ],
                 "validation/intrinsic_identity_top1": intrinsic_identity["top1"],
                 "validation/intrinsic_identity_topk": intrinsic_identity["topk"],
                 "validation/intrinsic_identity_eligible_count": intrinsic_identity[

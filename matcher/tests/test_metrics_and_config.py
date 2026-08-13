@@ -1,9 +1,10 @@
-"""验证测评、损失累积、配置、checkpoint、严格 JSON 和计划执行边界。"""
+"""验证测评、损失累积、配置、checkpoint、校准留证、严格 JSON 和计划执行边界。"""
 
 from __future__ import annotations
 
+import hashlib
 import json
-from dataclasses import replace
+from dataclasses import asdict, replace
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any, cast
@@ -14,6 +15,14 @@ import yaml  # type: ignore[import-untyped]
 from torch import nn
 
 from matcher import experiment, training as training_module
+from matcher.batching import collate_candidates
+from matcher.calibration import (
+    CalibrationCheckpointEvidence,
+    _calibration_data_evidence,
+    _claim_calibration,
+    _select_stage,
+    _validate_checkpoint_for_stage,
+)
 from matcher.checkpointing import (
     CHECKPOINT_SCHEMA_VERSION,
     load_candidate_encoder_checkpoint,
@@ -25,6 +34,7 @@ from matcher.experiment_config import (
     StageConfig,
     TrackingConfig,
     load_experiment_plan,
+    validate_matcher_output_path,
 )
 from matcher.json_artifacts import append_jsonl, write_json
 from matcher.losses import LossOutput, LossWeights, MatcherLossBatch, compute_matcher_loss
@@ -92,6 +102,9 @@ def test_identity_metrics_exclude_candidates_without_current_language_representa
     metrics = accumulator.compute()
 
     assert metrics["six_class"]["accuracy"] == 1.0
+    assert metrics["six_class"]["macro_f1"] == 1.0
+    assert metrics["six_class"]["macro_f1_supported_classes"] == 1.0
+    assert metrics["six_class"]["macro_f1_all_classes"] == pytest.approx(2.0 / 6.0)
     assert metrics["conditional_identity"]["eligible_count"] == 1
     assert metrics["conditional_identity"]["top1"] == 1.0
     assert metrics["end_to_end_identity"]["true_positive"] == 1
@@ -386,6 +399,240 @@ def test_experiment_config_rejects_output_escape_and_relative_initialization(
         load_experiment_plan(relative)
 
 
+def test_calibration_requires_matching_stage_checkpoint_and_safe_output(tmp_path: Path) -> None:
+    """保留集入口必须绑定同阶段配置，并拒绝规范化后越过 Matcher 根的产物路径。"""
+
+    plan_path = (
+        Path(__file__).parents[2]
+        / "configs"
+        / "experiments"
+        / "initial"
+        / "full_scratch_molformer_oracle.yaml"
+    )
+    plan = load_experiment_plan(plan_path)
+    stage = _select_stage(plan, "full_scratch_molformer_oracle")
+    checkpoint_path = tmp_path / "run" / stage.name / "BEST.pt"
+    checkpoint_path.parent.mkdir(parents=True)
+    checkpoint_bytes = b"calibration-checkpoint-evidence"
+    checkpoint_path.write_bytes(checkpoint_bytes)
+    stage_record = asdict(stage)
+    stage_record["model"] = stage.model.to_dict()
+    resolved_path = checkpoint_path.parent / "resolved.json"
+    resolved_path.write_text(
+        json.dumps(
+            {
+                "stage": stage_record,
+                "data": {
+                    "data_root": str(plan.data.roots.data_root),
+                    "stage1_root": str(plan.data.roots.stage1_root),
+                    "output_root": str(plan.data.roots.output_root),
+                    "coverage_threshold": plan.data.coverage_threshold,
+                    "selection_seed": plan.data.selection_seed,
+                    "pp_top_k": plan.data.pp_top_k,
+                },
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    checkpoint: dict[str, object] = {
+        "schema_version": CHECKPOINT_SCHEMA_VERSION,
+        "model_state": {},
+        "stage_name": stage.name,
+        "task_name": stage.task_name,
+        "epoch": 7,
+        "best_epoch": 7,
+        "global_step": 3576,
+        "best_score": 0.65,
+        "model_config": stage.model.to_dict(),
+        "training_config": asdict(stage.training),
+        "epoch_record": {
+            "epoch": 7,
+            "global_step": 3576,
+            "selection_score": 0.65,
+            "improved": True,
+        },
+    }
+    write_json(
+        checkpoint_path.parent / "summary.json",
+        {
+            "stage": stage.name,
+            "best_epoch": 7,
+            "best_score": 0.65,
+            "last_epoch": 9,
+            "best_checkpoint": checkpoint_path.as_posix(),
+        },
+    )
+    write_json(
+        checkpoint_path.parent.parent / "run.json",
+        {"plan_name": plan.plan_name, "plan_path": plan_path.resolve().as_posix()},
+    )
+
+    evidence = _validate_checkpoint_for_stage(checkpoint_path, checkpoint, plan, stage)
+    assert evidence["epoch"] == 7
+    assert evidence["global_step"] == 3576
+    assert evidence["sha256"] == hashlib.sha256(checkpoint_bytes).hexdigest()
+    with pytest.raises(ValueError, match="stage_name"):
+        _validate_checkpoint_for_stage(
+            checkpoint_path,
+            {**checkpoint, "stage_name": "wrong"},
+            plan,
+            stage,
+        )
+    with pytest.raises(ValueError, match="epoch == checkpoint.best_epoch"):
+        _validate_checkpoint_for_stage(
+            checkpoint_path,
+            {**checkpoint, "best_epoch": 6},
+            plan,
+            stage,
+        )
+    resolved_values = json.loads(resolved_path.read_text(encoding="utf-8"))
+    resolved_values["data"]["selection_seed"] = 999999
+    resolved_path.write_text(json.dumps(resolved_values), encoding="utf-8")
+    with pytest.raises(ValueError, match="resolved.json.data 科学字段"):
+        _validate_checkpoint_for_stage(checkpoint_path, checkpoint, plan, stage)
+    resolved_values["data"]["selection_seed"] = plan.data.selection_seed
+    resolved_path.write_text(json.dumps(resolved_values), encoding="utf-8")
+    stage_record["language_family"] = "smi_ted_289m"
+    resolved_path.write_text(
+        json.dumps(
+            {
+                "stage": stage_record,
+                "data": {
+                    "data_root": str(plan.data.roots.data_root),
+                    "stage1_root": str(plan.data.roots.stage1_root),
+                    "output_root": str(plan.data.roots.output_root),
+                    "coverage_threshold": plan.data.coverage_threshold,
+                    "selection_seed": plan.data.selection_seed,
+                    "pp_top_k": plan.data.pp_top_k,
+                },
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="resolved.json.stage"):
+        _validate_checkpoint_for_stage(checkpoint_path, checkpoint, plan, stage)
+    assert validate_matcher_output_path(
+        Path("/storage/penghongen/tmp/Matcher/calibration/report.json"),
+        "output",
+    ).as_posix() == "/storage/penghongen/tmp/Matcher/calibration/report.json"
+    with pytest.raises(ValueError, match="不在允许的服务器产物根"):
+        validate_matcher_output_path(
+            Path("/storage/penghongen/tmp/Matcher/../../outside/report.json"),
+            "output",
+        )
+
+
+def test_calibration_data_fingerprint_binds_one_selection_while_claim_is_retained(
+    tmp_path: Path,
+) -> None:
+    """claim 保留期间，同一 calibration 记录只能绑定一个 checkpoint 与输出路径。"""
+
+    manifest_path = tmp_path / "manifest.json"
+    candidates_path = tmp_path / "calibration_candidates.jsonl"
+    identities_path = tmp_path / "calibration_identities.jsonl"
+    candidates_path.write_text('{"candidate_index":0}\n', encoding="utf-8")
+    identities_path.write_text('{"object_key":"LIG"}\n', encoding="utf-8")
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "created_at_utc": "2026-08-14T00:00:00+00:00",
+                "split_pdb_counts": {"train": {"included": 2}, "calibration": {"included": 1}},
+                "summary": {
+                    "splits": {
+                        "train": {"candidate_count": 2},
+                        "calibration": {"candidate_count": 1},
+                    }
+                },
+                "splits": {
+                    "calibration": {
+                        "candidates": candidates_path.name,
+                        "identities": identities_path.name,
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    data = _calibration_data_evidence(manifest_path)
+    manifest_values = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest_values["created_at_utc"] = "2026-08-14T01:00:00+00:00"
+    manifest_values["summary"]["splits"]["train"]["candidate_count"] = 999
+    manifest_path.write_text(json.dumps(manifest_values), encoding="utf-8")
+    rebuilt_data = _calibration_data_evidence(manifest_path)
+    assert rebuilt_data["manifest_sha256"] != data["manifest_sha256"]
+    assert rebuilt_data["fingerprint"] == data["fingerprint"]
+    checkpoint: CalibrationCheckpointEvidence = {
+        "path": "/storage/penghongen/tmp/Matcher/run/stage/BEST.pt",
+        "sha256": "a" * 64,
+        "epoch": 1,
+        "global_step": 2,
+        "best_score": 0.5,
+        "resolved_path": "/storage/penghongen/tmp/Matcher/run/stage/resolved.json",
+        "resolved_sha256": "c" * 64,
+        "summary_path": "/storage/penghongen/tmp/Matcher/run/stage/summary.json",
+        "summary_sha256": "d" * 64,
+        "run_path": "/storage/penghongen/tmp/Matcher/run/run.json",
+        "run_sha256": "e" * 64,
+        "training_plan_path": "/storage/penghongen/tmp/Matcher/release/plan.yaml",
+        "training_plan_sha256": "f" * 64,
+        "model_config": {},
+        "training_config": {},
+    }
+    claim_path = tmp_path / "claim.json"
+    output_path = Path("/storage/penghongen/tmp/Matcher/calibration/result.json")
+
+    claim = _claim_calibration(
+        claim_path,
+        data["fingerprint"],
+        "b" * 64,
+        "selected_stage",
+        checkpoint,
+        output_path,
+        "2026-08-14T00:00:00+00:00",
+    )
+    assert claim["status"] == "claimed"
+    assert _claim_calibration(
+        claim_path,
+        data["fingerprint"],
+        "b" * 64,
+        "selected_stage",
+        checkpoint,
+        output_path,
+        "2026-08-14T01:00:00+00:00",
+    ) == claim
+    with pytest.raises(RuntimeError, match="已绑定另一项选择"):
+        _claim_calibration(
+            claim_path,
+            data["fingerprint"],
+            "b" * 64,
+            "another_stage",
+            checkpoint,
+            output_path,
+            "2026-08-14T01:00:00+00:00",
+        )
+    write_json(
+        claim_path,
+        {
+            **claim,
+            "status": "completed",
+            "output_sha256": "9" * 64,
+            "completed_at_utc": "2026-08-14T02:00:00+00:00",
+        },
+    )
+    with pytest.raises(RuntimeError, match="已经完成一次评估"):
+        _claim_calibration(
+            claim_path,
+            data["fingerprint"],
+            "b" * 64,
+            "selected_stage",
+            checkpoint,
+            output_path,
+            "2026-08-14T03:00:00+00:00",
+        )
+
+
 def test_experiment_config_rejects_seed_outside_numpy_range(tmp_path: Path) -> None:
     """训练种子必须同时落在 Python、NumPy、Torch 和 worker 派生公式的共同范围。"""
 
@@ -478,7 +725,7 @@ def test_stage_runtime_uses_spawn_loaders_and_records_process_isolation(
         assert loader.multiprocessing_context.get_start_method() == "spawn"
         assert loader.pin_memory is True
         assert loader.persistent_workers is False
-        assert loader.collate_fn is training_module.collate_candidates
+        assert loader.collate_fn is collate_candidates
         assert loader.generator is not None
         # 正式属性已在上方断言；CPU-only 门禁不具备驱动，迭代探针只关闭测试对象的页锁定线程。
         loader.pin_memory = False

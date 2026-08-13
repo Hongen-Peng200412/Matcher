@@ -1,4 +1,8 @@
-"""全局随机排列候选，并把变长 token 与配体图拼成固定物理批次。"""
+"""全局随机排列候选，并把变长 token 与配体图拼成固定物理批次。
+
+``ShuffledBatchSampler`` 冻结候选顺序与批量边界；``build_candidate_loader`` 构造采用
+spawn 的非持久工作进程池；``collate_candidates`` 返回完整 ``CandidateBatch``。
+"""
 
 from __future__ import annotations
 
@@ -9,115 +13,14 @@ from typing import Any, Iterator, cast
 import numpy as np
 import torch
 from torch.nn.utils.rnn import pad_sequence
-from torch.utils.data import Sampler
+from torch.utils.data import DataLoader, Sampler
 
 from .candidate_data import CandidateDataset
 from .contracts import CandidateBatch, CandidateItem
 from .schema import LANGUAGE_EMBEDDING_DIM, PP_TOKEN_DIM, V_TOKEN_DIM
 
 
-class ShuffledBatchSampler(Sampler[list[int]]):
-    """在整个候选清单上随机排列，再切成固定物理批次。
-
-    采样顺序有意忽略 PDB 归属，避免同一 PDB 的相关候选连续进入模型。I/O
-    局部性由每个 DataLoader 工作进程的大字节预算 LRU 负责，而不改变样本顺序。
-    """
-
-    def __init__(
-        self,
-        dataset: CandidateDataset,
-        batch_size: int,
-        shuffle: bool,
-        drop_last: bool,
-        seed: int,
-        sample_count_multiple: int | None,
-    ) -> None:
-        if batch_size <= 0:
-            raise ValueError("batch_size 必须为正整数。")
-        if sample_count_multiple is not None and (
-            sample_count_multiple <= 0 or sample_count_multiple % batch_size != 0
-        ):
-            raise ValueError("sample_count_multiple 必须为 batch_size 的正整数倍。")
-        self.dataset = dataset
-        self.batch_size = batch_size
-        self.shuffle = shuffle
-        self.drop_last = drop_last
-        self.seed = seed
-        self.sample_count_multiple = sample_count_multiple
-        self.epoch = 0
-
-    def set_epoch(self, epoch: int) -> None:
-        """设置决定当前训练周期全局候选排列的整数。"""
-
-        self.epoch = int(epoch)
-
-    def __iter__(self) -> Iterator[list[int]]:
-        """生成全局洗牌后的物理批次。"""
-
-        generator = random.Random(self.seed + self.epoch)
-        ordered_indices = list(range(len(self.dataset)))
-        if self.shuffle:
-            generator.shuffle(ordered_indices)
-        if self.sample_count_multiple is not None:
-            usable_count = len(ordered_indices) // self.sample_count_multiple
-            ordered_indices = ordered_indices[: usable_count * self.sample_count_multiple]
-        for start in range(0, len(ordered_indices), self.batch_size):
-            batch = ordered_indices[start : start + self.batch_size]
-            if len(batch) == self.batch_size or not self.drop_last:
-                yield batch
-
-    def __len__(self) -> int:
-        """返回当前划分的物理批次数量。"""
-
-        sample_count = len(self.dataset)
-        if self.sample_count_multiple is not None:
-            sample_count = sample_count // self.sample_count_multiple * self.sample_count_multiple
-        if self.drop_last:
-            return sample_count // self.batch_size
-        return math.ceil(sample_count / self.batch_size)
-
-
-def collate_candidates(items: list[CandidateItem]) -> CandidateBatch:
-    """按 ``CandidateBatch`` 契约填充四模态、身份维度并连接配体图。"""
-
-    if not items:
-        raise ValueError("候选批次不能为空。")
-    _validate_token_index_alignment(items)
-    batch: dict[str, Any] = {
-        "metadata": [item["metadata"] for item in items],
-        "voxel_input": torch.from_numpy(np.stack([item["voxel_input"] for item in items])),
-        "class_target": torch.tensor([item["class_target"] for item in items], dtype=torch.long),
-        "ligand_area_target": torch.from_numpy(
-            np.stack([item["ligand_area_target"] for item in items])
-        ),
-        "binding_area_target": torch.from_numpy(
-            np.stack([item["binding_area_target"] for item in items])
-        ),
-        "full_candidate_voxel_count": torch.tensor(
-            [item["full_candidate_voxel_count"] for item in items],
-            dtype=torch.long,
-        ),
-    }
-    batch["a_tokens"], batch["a_mask"] = _pad_float_sequences(
-        [item["a_tokens"] for item in items]
-    )
-    batch["p_tokens"], batch["p_mask"] = _pad_float_sequences(
-        [item["p_tokens"] for item in items]
-    )
-    batch["v_tokens"], batch["v_mask"] = _pad_float_sequences(
-        [item["v_tokens"] for item in items]
-    )
-    batch["pp_tokens"], batch["pp_mask"] = _pad_float_sequences(
-        [item["pp_tokens"] for item in items]
-    )
-    batch["v_index_zyx"] = _pad_index_sequences(
-        [item["v_index_zyx"] for item in items]
-    )
-    batch["pp_index_zyx"] = _pad_index_sequences(
-        [item["pp_index_zyx"] for item in items]
-    )
-    batch.update(_collate_identities(items))
-    return cast(CandidateBatch, batch)
+DATALOADER_MULTIPROCESSING_CONTEXT = "spawn"
 
 
 def _pad_float_sequences(arrays: list[np.ndarray]) -> tuple[torch.Tensor, torch.Tensor]:
@@ -270,3 +173,142 @@ def _empty_or_concatenated_graph(
         "graph_edge_index": torch.cat(edge_indices, dim=1).long(),
         "graph_edge_features": torch.cat(edge_features, dim=0).float(),
     }
+
+
+# ================================================================================================
+
+
+class ShuffledBatchSampler(Sampler[list[int]]):
+    """在整个候选清单上随机排列，再切成固定物理批次。
+
+    采样顺序有意忽略 PDB 归属，避免同一 PDB 的相关候选连续进入模型。I/O
+    局部性由每个 DataLoader 工作进程的大字节预算 LRU 负责，而不改变样本顺序。
+    """
+
+    def __init__(
+        self,
+        dataset: CandidateDataset,
+        batch_size: int,
+        shuffle: bool,
+        drop_last: bool,
+        seed: int,
+        sample_count_multiple: int | None,
+    ) -> None:
+        if batch_size <= 0:
+            raise ValueError("batch_size 必须为正整数。")
+        if sample_count_multiple is not None and (
+            sample_count_multiple <= 0 or sample_count_multiple % batch_size != 0
+        ):
+            raise ValueError("sample_count_multiple 必须为 batch_size 的正整数倍。")
+        self.dataset = dataset
+        self.batch_size = batch_size
+        self.shuffle = shuffle
+        self.drop_last = drop_last
+        self.seed = seed
+        self.sample_count_multiple = sample_count_multiple
+        self.epoch = 0
+
+    def set_epoch(self, epoch: int) -> None:
+        """设置决定当前训练周期全局候选排列的整数。"""
+
+        self.epoch = int(epoch)
+
+    def __iter__(self) -> Iterator[list[int]]:
+        """生成全局洗牌后的物理批次。"""
+
+        generator = random.Random(self.seed + self.epoch)
+        ordered_indices = list(range(len(self.dataset)))
+        if self.shuffle:
+            generator.shuffle(ordered_indices)
+        if self.sample_count_multiple is not None:
+            usable_count = len(ordered_indices) // self.sample_count_multiple
+            ordered_indices = ordered_indices[: usable_count * self.sample_count_multiple]
+        for start in range(0, len(ordered_indices), self.batch_size):
+            batch = ordered_indices[start : start + self.batch_size]
+            if len(batch) == self.batch_size or not self.drop_last:
+                yield batch
+
+    def __len__(self) -> int:
+        """返回当前划分的物理批次数量。"""
+
+        sample_count = len(self.dataset)
+        if self.sample_count_multiple is not None:
+            sample_count = sample_count // self.sample_count_multiple * self.sample_count_multiple
+        if self.drop_last:
+            return sample_count // self.batch_size
+        return math.ceil(sample_count / self.batch_size)
+
+
+def build_candidate_loader(
+    dataset: CandidateDataset,
+    sampler: ShuffledBatchSampler,
+    num_workers: int,
+    prefetch_factor: int,
+    worker_generator_seed: int,
+) -> DataLoader[CandidateBatch]:
+    """构造采用 spawn 的非持久 DataLoader 工作进程池。
+
+    ``sampler`` 唯一决定候选顺序和物理批量。专用 ``torch.Generator`` 只为工作
+    进程播种，避免创建迭代器时推进模型使用的全局 Torch 随机状态。每次完整
+    train、validation 或 calibration 迭代结束后，工作进程池随迭代器退出。
+    """
+
+    worker_generator = torch.Generator()
+    worker_generator.manual_seed(worker_generator_seed)
+    return cast(
+        DataLoader[CandidateBatch],
+        DataLoader(
+            cast(Any, dataset),
+            batch_sampler=sampler,
+            num_workers=num_workers,
+            collate_fn=collate_candidates,
+            pin_memory=True,
+            persistent_workers=False,
+            prefetch_factor=prefetch_factor,
+            multiprocessing_context=DATALOADER_MULTIPROCESSING_CONTEXT,
+            generator=worker_generator,
+        ),
+    )
+
+
+def collate_candidates(items: list[CandidateItem]) -> CandidateBatch:
+    """按 ``CandidateBatch`` 契约填充四模态、身份维度并连接配体图。"""
+
+    if not items:
+        raise ValueError("候选批次不能为空。")
+    _validate_token_index_alignment(items)
+    batch: dict[str, Any] = {
+        "metadata": [item["metadata"] for item in items],
+        "voxel_input": torch.from_numpy(np.stack([item["voxel_input"] for item in items])),
+        "class_target": torch.tensor([item["class_target"] for item in items], dtype=torch.long),
+        "ligand_area_target": torch.from_numpy(
+            np.stack([item["ligand_area_target"] for item in items])
+        ),
+        "binding_area_target": torch.from_numpy(
+            np.stack([item["binding_area_target"] for item in items])
+        ),
+        "full_candidate_voxel_count": torch.tensor(
+            [item["full_candidate_voxel_count"] for item in items],
+            dtype=torch.long,
+        ),
+    }
+    batch["a_tokens"], batch["a_mask"] = _pad_float_sequences(
+        [item["a_tokens"] for item in items]
+    )
+    batch["p_tokens"], batch["p_mask"] = _pad_float_sequences(
+        [item["p_tokens"] for item in items]
+    )
+    batch["v_tokens"], batch["v_mask"] = _pad_float_sequences(
+        [item["v_tokens"] for item in items]
+    )
+    batch["pp_tokens"], batch["pp_mask"] = _pad_float_sequences(
+        [item["pp_tokens"] for item in items]
+    )
+    batch["v_index_zyx"] = _pad_index_sequences(
+        [item["v_index_zyx"] for item in items]
+    )
+    batch["pp_index_zyx"] = _pad_index_sequences(
+        [item["pp_index_zyx"] for item in items]
+    )
+    batch.update(_collate_identities(items))
+    return cast(CandidateBatch, batch)
