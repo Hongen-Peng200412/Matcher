@@ -20,4 +20,5 @@ exec bash "${TASK_PROJECT_ROOT}/训练与运行/sh/train_experiment.sh" \
 - launch：`/home/penghongen/Feedback/Matcher/launches/340894/train_experiment_job340894_20260814T041802_a6`。
 - W&B：run ID `h41na5ea`；[在线曲线](https://wandb.ai/pencounkdual-111/AdaLigand-Matcher-Batch1/runs/h41na5ea)。project 为 `AdaLigand-Matcher-Batch1`，group 为 `matcher-batch1-five-class-manual-features`。
 - 首步验收：global batch 32；有效身份目标 7；计算 `61.7351 s`；裁剪前梯度范数 `49.9738`；峰值已分配/保留显存 `28,143,265,792 / 39,747,321,856 bytes`。首步已完成有限性检查、参数更新和 CUDA 同步；未见 OOM、NaN 或 Traceback。
+- 2026-08-14 06:54 读取完整 validation 记录：最佳值仍为 epoch 3 的 selection score `0.6812668732`；epoch 4 为 `0.6786411725`，坏验证轮数为 1，下一轮学习率降为 `5e-5`。epoch 4 的六分类 macro-F1、五类条件 Top-1、五类端到端 F1 和小分子兼容端到端 F1 分别为 `0.5313831/0.8526749/0.6518656/0.6307978`。单轮 selection score 相对最佳值仅回落约 `0.39%`，未达到多指标明显退化的判断尺度，任务继续运行。
 - 最终结果：训练中；只在新 epoch、validation、失败或自然收口时补充。

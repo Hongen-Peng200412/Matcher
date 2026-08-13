@@ -755,3 +755,38 @@ $remote = "sbatch --parsable --job-name=matcher-batch2-7z2c-geometry " +
 Job `341618` 为 `COMPLETED/0:0`，运行 11 秒，stderr 为空。输出证实完整 V `170`，质心 ZYX `[39.6117647059,39.8352941176,70.5882352941]`，请求起点 `[16,16,47]`，限制后 `[16,16,32]`；旧 `[16,64)³` 保留 0，新视野保留 170。脚本只读取一个 `F1_centered.npz` 的 V offsets/indices，没有导入 Matcher 模型、加载 checkpoint、创建 DataLoader、运行 W&B、计算指标或创建 calibration claim。
 
 06:28 的第 2 批冻结门禁为 pytest `77 passed`、mypy 38 个源码文件零问题、pyflakes、compileall、15 份正式 YAML 解析、8 个 shell 的 `bash -n` 与 `git diff --check` 全部通过。独立科学终审确认候选集合、监督、global batch、统一裁剪几何、缓存起点绑定、exp/sim↔F1↔probability 空间链、采样统计及旧产物迁移均无阻断；严格表达终审确认跨模块函数与结构化字段、五份 YAML、持久缓存契约、三层账本和 calibration 状态说明均可冷读。两项终审结论均为 PASS，阻断项为零；下一步只做实现提交、安全同步、内容寻址 release 与 train/validation v2 缓存预计算，不执行 calibration 模型推理。
+
+第 2 批实现、五份配置、测试和三层账本提交为 `852c56954e0d74a6344cf75fedd6e6962d6a5ae6 feat(batch2): center local views on candidate V`。随后执行 `与服务器交互/sync_code.ps1` 安全同步；它没有删除服务器项目、release、launch、锁或实验产物。服务器 `geometry.py/voxel_input.py/pp_input.py/precompute.py/oracle YAML` 的 SHA-256 与本地逐项一致，正式环境全套 pytest 为 `76 passed, 1 skipped`；跳过项只受服务器设备条件影响，本地同一提交为 77 项全过。
+
+同步后先确认 `cache/voxel_input_v2/v_centroid` 与 `cache/pp_input_v2/v_centroid/top_1024` 均不存在，再提交纯 CPU 预计算 Job `341634`。完整控制端执行命令如下；命令不含 `--time`、不申请 GPU、只请求 train/validation，并同时显式选择 voxel/PP 和 `v_centroid`：
+
+```bash
+cd /home/penghongen/My_Project/Matcher && bash 训练与运行/submit_task.sh \
+  --sh 训练与运行/sh/precompute_data.sh \
+  --resource cpu --partition cpu --qos cpu96 --cpus 16 --mem 512G \
+  --job-name matcher-batch2-v2-precompute \
+  -- \
+  --data-root /storage/penghongen/AdaLigand/Ori_Data \
+  --stage1-root /storage/penghongen/AdaLigand_stage1_inference/Find_0-CPC1-ligand_PRAUC_0.675477/artifacts/Find_0 \
+  --output-root /storage/penghongen/tmp/Matcher \
+  --coverage-threshold 0.30 --selection-seed 3407 \
+  --splits train validation --workers 16 \
+  --products voxel pp --pp-top-k 1024 \
+  --local-crop-strategy v_centroid
+```
+
+Job `341634` 于 06:40 在 `cnode01` 开始运行，资源为 `cpu/cpu96`、16 CPU、512 GiB，release 为 `/home/penghongen/Feedback/Matcher/releases/Matcher_3cc75993d69e/Matcher`，launch 为 `/home/penghongen/Feedback/Matcher/launches/341634/precompute_data_job341634_20260814T064021_a1`。本次没有 `--pre_hold/--after_hold`；程序自然结束后 CPU allocation 自动释放。06:49 的明确进度为程序已报告完成 train 候选 `5,114/14,312`，已原子发布 train voxel `5,761/14,312` 和 PP PDB `137/480`，validation 尚未开始；文件数可因多个工作进程正在并发发布而暂时领先主进程完成计数。stderr 只有 release 创建记录，没有异常。GPU Job 和六个 `after_lock` 均未修改；前三个第 2 批 A100 命令只在缓存自然完成并通过计数与随机样本读取后安装。
+
+06:54 对第 1 批三份 `history.jsonl` 做事件式复核：oracle 的最佳 selection score 为 epoch 3 的 `0.6812668732`，epoch 4 为 `0.6786411725`、坏验证轮数 1、下一轮学习率 `5e-5`；detached 在 epoch 4 改善到 `0.6756995547`；joint 在 epoch 3 改善到 `0.6452062205`。三项继续运行，所有 `after_lock` 保留；这次读取只使用 validation 记录，没有访问 calibration。
+
+Job `341634` 随后完成全部 `20,807` 个 train/validation 候选，于 07:31 记账为 `COMPLETED/0:0`，耗时 `00:50:45`。最终 v2 voxel 文件精确为 train `14,312`、validation `6,495`，PP 文件精确为 train `480`、validation `181`；没有生成 calibration 缓存。放卡脚本 `tmp/batch2_launch/install_a100_tasks.sh` 的 SHA-256 为 `313774F25A09D1953B530CFAE7B128329DBDF4BA3C1E80CF818450D705F1F022`；它在首次删除锁前完成四个热点源码与三份 YAML 的 SHA-256 核对、三项 allocation 旧任务身份与资源核对、三类实验输出防重复、正式 YAML 解析，以及固定 seed `3407` 下每个划分 8 个候选的 Dataset 实际读取。该脚本经独立只读终审判定 PASS；三份动态命令全部安装完成后才开始删除锁，且唯一删除对象是 `try_lock_340897/340898/340899`。三份 `run_cmd` 的 SHA-256 依次为 `9bf0f8ac2add452b39e8e5c8083482544cf7e4f70a467f1d34268861acabb0f4`、`0a7f8a4c4fd6fa2fbfae74cbf772cfb960791c7e6e16d6c0c6d4001c3fc17669`、`97a01ac91fc6549043bbe267f2f24321fa6f49b83b7f02e9859fa356d69738c0`。
+
+07:33:00 控制端严格按 oracle→detached→joint 顺序删除上述三把 `try_lock`；allocation runner 各自独立轮询，因此实际 launch 墙钟顺序不作科学含义解释。三项均使用 release `/home/penghongen/Feedback/Matcher/releases/Matcher_3cc75993d69e/Matcher`，完整身份如下：
+
+| 变体 | Job / launch | W&B run | 首步计算 / 裁剪前梯度 / 峰值保留显存 |
+|---|---|---|---|
+| oracle | `340897` / `train_experiment_job340897_20260814T073305_a2` | `6soiol5e` | `25.8580 s / 42.1343 / 19,610,468,352 bytes` |
+| detached | `340898` / `train_experiment_job340898_20260814T073316_a2` | `i0j1i1hc` | `25.0679 s / 26.4270 / 19,440,599,040 bytes` |
+| joint | `340899` / `train_experiment_job340899_20260814T073303_a2` | `s3lj6298` | `24.4089 s / 25.6375 / 19,442,696,192 bytes` |
+
+三项均连接 W&B project `AdaLigand-Matcher-Batch2`、group `matcher-batch2-full-v-centroid-sampling`，首个参数更新的 global batch 为 32、有效身份目标为 7；事件发生在有限性检查、参数更新和 CUDA 同步之后。未见 OOM、NaN、Traceback 或缓存回退。07:35 复核显示六个受管 allocation 均为 `RUNNING` 且只保留各自 `after_lock`；没有删除或释放任何 `after_lock`。第 2 批两个候选任务继续等待第 1 批 A800 自然产生 `try_lock`，不抢占或中断正在运行的 Job `340894/340895`。

@@ -20,4 +20,5 @@ exec bash "${TASK_PROJECT_ROOT}/训练与运行/sh/train_experiment.sh" \
 - launch：`/home/penghongen/Feedback/Matcher/launches/340895/train_experiment_job340895_20260814T041633_a3`。launch 名中的节点时间早于控制端触发时间，属于节点时钟偏差；attempt 3 与 release、动态命令和业务目录的身份一致。
 - W&B：run ID `vry3gxt2`；[在线曲线](https://wandb.ai/pencounkdual-111/AdaLigand-Matcher-Batch1/runs/vry3gxt2)。project 为 `AdaLigand-Matcher-Batch1`，group 为 `matcher-batch1-five-class-manual-features`。
 - 首步验收：global batch 32；有效身份目标 7；计算 `62.6836 s`；裁剪前梯度范数 `32.3384`；峰值已分配/保留显存 `28,143,814,144 / 39,522,926,592 bytes`。首步已完成有限性检查、参数更新和 CUDA 同步；未见 OOM、NaN 或 Traceback。
+- 2026-08-14 06:54 读取完整 validation 记录：epoch 4 的 selection score 改善为 `0.6756995547`，坏验证轮数为 0，学习率继续为 `1e-4`。六分类 macro-F1、五类条件 Top-1、五类端到端 F1 和小分子兼容端到端 F1 分别为 `0.5327544/0.8462852/0.6480590/0.6321627`；任务继续运行。
 - 最终结果：训练中；只在新 epoch、validation、失败或自然收口时补充。

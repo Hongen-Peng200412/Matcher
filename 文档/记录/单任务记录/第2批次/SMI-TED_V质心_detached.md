@@ -5,5 +5,22 @@
 - 直接对照：第 1 批 SMI-TED 五类 detached；只改变局部视野与四项采样统计。
 - 预定资源：受管 Job `340898`，单张 A100，16 CPU；物理批量 8、梯度累积 4、global batch 32。
 - W&B：project `AdaLigand-Matcher-Batch2`，group `matcher-batch2-full-v-centroid-sampling`。
-- 状态：未提交；等待最终门禁、双审、release 和 v2 缓存验收。
-- 提交命令、release、launch、W&B run、首步验收和最终 validation：提交后追加，当前不得虚构。
+- 控制端触发：2026-08-14 07:33:00（Asia/Shanghai）。先原子安装下列动态命令，再只删除 `try_lock_340898`；`after_lock_340898` 保留。
+
+```bash
+rm -- /home/penghongen/Feedback/Matcher/allocations/try_lock_340898
+```
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+exec bash "${TASK_PROJECT_ROOT}/训练与运行/sh/train_experiment.sh" \
+    --plan configs/experiments/batch2/full_smi_ted_v_centroid_detached_a100.yaml
+```
+
+- release：`/home/penghongen/Feedback/Matcher/releases/Matcher_3cc75993d69e/Matcher`。
+- launch：`/home/penghongen/Feedback/Matcher/launches/340898/train_experiment_job340898_20260814T073316_a2`。
+- W&B：run ID `i0j1i1hc`；[在线曲线](https://wandb.ai/pencounkdual-111/AdaLigand-Matcher-Batch2/runs/i0j1i1hc)。
+- 首步验收：global batch 32；有效身份目标 7；计算 `25.0679 s`；裁剪前梯度范数 `26.4270`；峰值已分配/保留显存 `14,195,192,320 / 19,440,599,040 bytes`。参数更新与 CUDA 同步均已完成，未见 OOM、NaN 或 Traceback。
+- 状态：训练中；最终 validation 与第 1 批 detached 头对头结果待自然收口后追加。

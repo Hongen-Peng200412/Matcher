@@ -20,4 +20,5 @@ exec bash "${TASK_PROJECT_ROOT}/训练与运行/sh/train_experiment.sh" \
 - launch：`/home/penghongen/Feedback/Matcher/launches/340893/train_experiment_job340893_20260814T041902_a2`。
 - W&B：run ID `amdxqwjc`；[在线曲线](https://wandb.ai/pencounkdual-111/AdaLigand-Matcher-Batch1/runs/amdxqwjc)。project 为 `AdaLigand-Matcher-Batch1`，group 为 `matcher-batch1-five-class-manual-features`。
 - 首步验收：global batch 32；有效身份目标 7；计算 `24.2634 s`；裁剪前梯度范数 `30.3424`；峰值已分配/保留显存 `14,195,499,008 / 19,511,902,208 bytes`。首步已完成有限性检查、参数更新和 CUDA 同步；未见 OOM、NaN 或 Traceback。
+- 2026-08-14 06:54 读取完整 validation 记录：epoch 3 的 selection score 改善为 `0.6452062205`，坏验证轮数为 0，学习率为 `5e-5`。六分类 macro-F1、五类条件 Top-1、五类端到端 F1 和小分子兼容端到端 F1 分别为 `0.4506733/0.8943270/0.5906183/0.5346985`；当前仍在改善，不因与两项 A800 任务的单点差距提前判负。
 - 最终结果：训练中。第 0 批没有对应 SMI-TED joint，最终只做批内 oracle/detached/joint 比较，不虚构基线。
