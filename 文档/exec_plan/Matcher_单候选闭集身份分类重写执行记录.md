@@ -419,6 +419,8 @@ bash 训练与运行/submit_task.sh \
   --pp-top-k 1024
 ```
 
+实现提交为 `c0ac5fc`。安全同步后，本地与远端 `matcher/pp_input.py` 的 SHA-256 均为 `8255d03fb76863ea5bb7adfd011b060ef30bd267ee2c4803a99b8ebe47c6166e`，`matcher/precompute.py` 均为 `5c62a481bd0e31960852ab3fca5f004316372f4240a9c6b853ad29035b54149a`；服务器正式 Conda 环境的数据专项为 `15 passed`。上述命令随后原样提交为 Job `341221`。提交器报告 `resource=cpu`、`cpus_per_task=16`、`pre_hold=0`、`after_hold=0`，未出现 `--time`；Slurm 首次复核显示 partition/QOS 为 `cpu/cpu96`、状态 `PENDING (Resources)`、尚未分配节点。该有限 CPU 预计算完成后自动释放，不创建或删除任何 GPU 任务的 `after_lock`。
+
 2026-08-13 15:57:21（Asia/Shanghai）的轻量只读检查显示 Job `340894` 在 `gnode10` 已运行 `8:21:41`，Job `340895` 在 `gnode09` 已运行 `3:59:54`；两者 `after_lock` 均保留、`try_lock` 均不存在，且没有新 checkpoint。Job `340893`、`340897`、`340898`、`340899` 仍为 `PENDING (Priority)`。Job `340896` 已从 `squeue` 消失，随后用 `sacct -X` 核实为 `CANCELLED by 0`、elapsed `00:00:00`、未分配节点、未建立锁或业务产物；这不是训练异常。用户随后明确要求暂时跳过该 SMI-TED Light 289M/joint 任务，因此不提交替代 Job、不创建新锁，也不把它作为当前批次完成的前置条件；只有用户再次明确要求时才恢复。
 
 ## 验证命令
