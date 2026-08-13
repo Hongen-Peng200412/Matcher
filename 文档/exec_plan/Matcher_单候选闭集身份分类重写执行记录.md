@@ -683,3 +683,26 @@ W&B 指标同时从笼统的 `train/*`、`validation/*` 首层改为职责优先
 03:54 的最终冻结门禁为 pytest `59 passed`、mypy 38 个源文件零问题、pyflakes、compileall、10 份正式 YAML 解析、全部 shell 的 `bash -n` 和 `git diff --check` 通过。独立科学终审结论为 PASS：五类清单与缺失表示跳过语义、三种损失的类别概率梯度、global-batch 分母、四模态手动特征拼接、宽松端到端逐类归桶、PP 零增量和旧 artifact 迁移均无阻断。严格表达终审结论为 PASS：持久 manifest v3 字段、候选与批次张量、W&B 路径、三份 YAML、三层账本和测试替身均可冷读。
 
 严格表达代理代用户批准以下具名结构例外：旧配置经 `MatcherModelConfig.from_dict` 缺失 `use_manual_features` 时只迁移为 `false`；`CandidateDataset.cache_bytes_per_worker` 与 `EvaluationAccumulator.top_k` 的程序化默认仅服务独立构造，正式 YAML 仍显式配置；低复用的 `_candidate_manual_features/_identity_target_index/_extend_manifest/_annotate_seen/_publish_manifest/identity_eligible_mask/normalize_candidate_manual_features/identity_scope_class_indices/_evaluation_wandb_metrics` 各自集中单一科学或事务契约；`matcher/manifest.py` 本批保留部分 `dict[str,Any]`，由持久字段文档和回归测试冻结。`文档/记录/目标草案.md` 保留用户原始讨论文本，不改写成正式规划文体。至此第 1 批可以进入实现提交、服务器同步和清单预计算；calibration 模型推理仍被禁止。
+
+### 第 1 批实现提交、同步与清单 v3 物化
+
+第 1 批实现与测试提交为 `2467b39 feat(batch1): expand identity matching to five ligand classes`，冻结门禁和三层账本提交为 `8f7f56c docs(batch1): record five-class release gate`。随后执行 `powershell -File 与服务器交互/sync_code.ps1`，只做安全同步，不删除服务器项目、release、launch、锁或实验产物。远端正式环境的 Matcher 全量 pytest 为 59 项通过；compileall 和 10 份 YAML 正式解析通过。远端 Conda 环境没有安装 mypy，因此服务器 mypy 命令以 `No module named mypy` 退出；这不是代码失败，本地冻结门禁已经对 38 个源文件完成 mypy 零问题检查。
+
+同步后，本地与 `/home/penghongen/My_Project/Matcher` 的关键文件 SHA-256 一致：`manifest.py=2b45a16c…71525`、`candidate_data.py=e65efd3e…b7d17`、`losses.py=956dde82…8fec`、`metrics.py=9adb8dc8…3a40`、`tracking.py=c4b1e3ae…03b6`；三份第 1 批配置分别为 oracle `de15aa54…615a`、detached `56d2ad00…93d3`、joint `af591933…606a`。完整摘要由本地与远端 `sha256sum` 输出留证；省略号仅用于本执行记录的紧凑索引。
+
+03:53:45（Asia/Shanghai）提交 CPU-only Job `341600`，精确命令为：
+
+```bash
+cd /home/penghongen/My_Project/Matcher
+bash 训练与运行/submit_task.sh \
+  --sh 训练与运行/sh/build_manifest.sh \
+  --resource cpu --partition cpu --qos cpu96 --cpus 2 --mem 16G \
+  --job-name matcher-batch1-manifest-v3 -- \
+  --data-root /storage/penghongen/AdaLigand/Ori_Data \
+  --stage1-root /storage/penghongen/AdaLigand_stage1_inference/Find_0-CPC1-ligand_PRAUC_0.675477/artifacts/Find_0 \
+  --output-root /storage/penghongen/tmp/Matcher \
+  --coverage-threshold 0.30 --selection-seed 3407 \
+  --splits train validation
+```
+
+该 Job 使用 `cpu/cpu96`、2 CPU、16 GiB，不申请 GPU，也不设置时间上限；release 为 `/home/penghongen/Feedback/Matcher/releases/Matcher_bb899c6e37ed/Matcher`，launch 为 `/home/penghongen/Feedback/Matcher/launches/341600/build_manifest_job341600_20260814T035348_a1`。04:03 前该 Job 仍在构建，清单目录只有原子构建锁 `.build.lock`，尚未发布不完整 JSONL。六个受管 GPU allocation 同时核验为 RUNNING 且空闲；共享 allocation 根中的六个 `try_lock_<job>` 与各 Job 目录中的六个 `after_lock_<job>` 均存在，没有 `pre_lock` 或 `kill_lock`。在清单候选数、身份数、类别计数、SMI-TED 目标可用数和 calibration deferred 状态全部通过前，不替换动态命令、不删除任何 `try_lock`。

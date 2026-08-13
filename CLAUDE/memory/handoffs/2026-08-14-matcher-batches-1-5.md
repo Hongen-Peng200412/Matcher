@@ -4,9 +4,9 @@ Date: 2026-08-14
 
 ## Current State
 
-Matcher 第 0 批重建与基线 Goal 已完成，新的第 1–5 批 Goal 已激活。当前分支是 `codex/matcher-closed-set-rewrite`，实现基线提交是 `aca2184`；工作区正在开发第 1 批，尚未发布或启动新训练。
+Matcher 第 0 批重建与基线 Goal 已完成，新的第 1–5 批 Goal 已激活。当前分支是 `codex/matcher-closed-set-rewrite`；第 1 批实现端点为 `8f7f56c`，其中 `2467b39` 保存实现与测试，`8f7f56c` 保存冻结门禁和三层账本。源码已安全同步到服务器，尚未启动第 1 批 GPU 训练。
 
-6 个受管 Slurm allocation 为 `340893/340894/340895/340897/340898/340899`。2026-08-14 02:40 只读核验均为 RUNNING，每个仅保留自己的 `after_lock`；不得释放资源或触碰用户其它任务。
+6 个受管 Slurm allocation 为 `340893/340894/340895/340897/340898/340899`。2026-08-14 03:59 只读核验均为 RUNNING 且已空闲，每个都有共享锁目录中的 `try_lock_<job>` 和本 Job 目录中的 `after_lock_<job>`；不得释放资源或触碰用户其它任务。
 
 ## Completed
 
@@ -14,7 +14,8 @@ Matcher 第 0 批重建与基线 Goal 已完成，新的第 1–5 批 Goal 已�
 - 当前第 0 批最高 selection score 是 SMI-TED detached `0.6696320918`；SMI-TED joint 未运行，不能记为低分。
 - calibration 入口已实现，但正式推理冻结；曾启动的准备进程已停止，未创建 claim 或结果 JSON。
 - I/O 方案已验证：PP 缓存命中后不读完整 probability map；train/validation 默认各 4 个 spawn、非持久工作进程。
-- 第 1 批已实现 manifest v3、显式划分物化、五类身份清单、`identity_scope`、12 维候选手动特征、目标身份类别概率特征、多层身份指标及 W&B 职责优先命名；三个 Batch1 YAML 与十份单实验账本已建立。四组手动统计分别紧邻 A/P/V/PP 摘要进入融合层。冻结门禁为 `59 passed`、mypy 38 个源文件、pyflakes、compileall、10 份 YAML、全部 shell 和 diff-check；科学与严格表达双审均 PASS。尚未提交或发布。
+- 第 1 批已实现 manifest v3、显式划分物化、五类身份清单、`identity_scope`、12 维候选手动特征、目标身份类别概率特征、多层身份指标及 W&B 职责优先命名；三个 Batch1 YAML 与十份单实验账本已建立。四组手动统计分别紧邻 A/P/V/PP 摘要进入融合层。冻结门禁为 `59 passed`、mypy 38 个源文件、pyflakes、compileall、10 份 YAML、全部 shell 和 diff-check；科学与严格表达双审均 PASS。实现已经提交并安全同步，远端关键源码与三份 YAML 的 SHA-256 和本地一致。
+- CPU-only Job `341600` 正在用 release `Matcher_bb899c6e37ed` 物化 `closed_set_v3` 的 train/validation 清单；提交资源为 `cpu/cpu96`、2 CPU、16 GiB，不含 GPU 和时间上限，命令显式使用 `--splits train validation`。清单原子发布前只存在 `.build.lock`，calibration 仍 deferred。
 
 ## Decisions
 
@@ -32,8 +33,8 @@ Matcher 第 0 批重建与基线 Goal 已完成，新的第 1–5 批 Goal 已�
 
 ## Next Actions
 
-1. 保存第 1 批实现提交并安全同步；随后物化 `closed_set_v3` 的 train/validation 清单。
-2. 建立第 1 批三个内容寻址 release 与动态命令；按 oracle/detached/joint 顺序复用三张受管 GPU，不删除任何 after_lock。
+1. 等待 Job `341600` 自然完成，核验 manifest v3 的候选数、身份数、六类计数、SMI-TED 有效身份目标数及 calibration deferred 状态。
+2. 核验通过后原子替换 Job `340894/340895/340893` 的动态命令；按 oracle/detached/joint 顺序只删除相应 `try_lock`，不删除任何 `after_lock`。
 3. 首步成功后记录 Job、release、launch、W&B run ID/URL、配置差异和显存/梯度/I/O。
 4. 第 1 批稳定运行后开始第 2 批 V 质心视野实现；不等待第 1 批全部结束才开发，但调度仍服从批次优先级。
 
