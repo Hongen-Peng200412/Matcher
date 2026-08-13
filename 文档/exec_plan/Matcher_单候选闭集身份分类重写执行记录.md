@@ -530,6 +530,20 @@ Job `341231` 的四个单进程动作依次设为 20、25、25、20 分钟。原
 
 截至本快照，没有发现仍留在活动 release 中且会改变样本、监督、global batch 或模型定义的有害偏差。若后续训练或评估出现此类证据，将在本节单独记录，而不会归入性能调整。
 
+## 18:38 首轮 epoch 进展
+
+2026-08-13 18:37:56（Asia/Shanghai）只读检查确认六个已授权 Job 仍为 RUNNING，且每个任务都只有对应 `after_lock`；没有 `pre_lock`、`try_lock` 或 `kill_lock`，标准错误末尾只有 PyTorch 的未来弃用警告，没有训练异常。Job `340896` 继续按用户要求跳过。
+
+候选 mean/max 阶段完成 epoch 0，validation macro-F1 为 `0.5268334`。训练 14,304 个候选耗时 `1461.65 s`，吞吐 `9.7862 candidates/s`，其中 DataLoader 等待仅 `4.68 s`；完整 validation 的 `6495` 个候选耗时 `748.75 s`，吞吐 `8.6745 candidates/s`。这组真实 GPU 结果说明 4 个 train worker 没有形成候选预训练的主要瓶颈，因此不为增加 worker 数中断任务。
+
+SMI-TED Light 289M/oracle 从 epoch 2 的 `0.5787330` 继续改善到 epoch 3 的 `0.6130376`。epoch 3 的三项选模分量分别是六分类 macro-F1 `0.5025572`、条件身份 Top-1 `0.7687861` 和端到端身份 F1 `0.5677695`；训练/validation 分别耗时 `1174.49/291.47 s`，训练 DataLoader 等待 `8.76 s`。
+
+SMI-TED Light 289M/detached 在 epoch 4 首次未改善：选择分数 `0.6279913`，坏轮数为 1，调度器把下一轮学习率从 `1e-4` 降为 `5e-5`。epoch 5 使用 `5e-5` 后重新改善到 `0.6455865`，坏轮数归零；三项分量是 `0.5301863/0.7588358/0.6477374`。该轮训练/validation 分别耗时 `1304.36/284.72 s`，所以没有早停或重启依据。
+
+MoLFormer/oracle 随后完成 epoch 0：选择分数 `0.5346026`，三项分量是 `0.5021218/0.6161369/0.4855491`。训练耗时 `1927.36 s`，其中 DataLoader 等待 `352.97 s`；validation 耗时 `376.50 s`。第一轮的数据等待占训练总时长约 18%，但仍远低于模型计算且任务已经产生 BEST/LAST；先观察缓存变热后的下一轮，不用单个冷轮结果重启。MoLFormer/detached 与 joint 尚未写出 epoch 记录，仍在各自 epoch 0。
+
+新 A100 allocation 的当前进程树 MaxRSS 为约 `28–29 GB`，与旧 A800 detached allocation 的历史峰值 `677.5 GB` 不在同一数量级；后者包含旧 release 同时常驻两套 16-worker 进程池的累计历史，不能用来描述新 4/4 非持久方案。六个任务的 `after_lock` 全部继续保留。
+
 ## 验证命令
 
 ```powershell
