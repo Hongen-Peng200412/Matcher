@@ -384,7 +384,7 @@ class RaUnetBackbone(nn.Module):
         self.feature_projection = nn.Conv3d(branch_channels * 3, feature_channels, kernel_size=3, padding=1)
 
     def forward(self, voxel_input: torch.Tensor) -> torch.Tensor:
-        """返回 ``(B,C_feature,48,48,48)`` 的最高分辨率体素特征。"""
+        """返回 ``(B,C_feature,48,48,48)`` 的最高分辨率体素特征；每个前置无梯度 recycle 后清空当前自动混合精度权重缓存。"""
 
         if voxel_input.ndim != 5 or voxel_input.shape[1] != self.input_channels:
             raise ValueError(
@@ -407,8 +407,7 @@ class RaUnetBackbone(nn.Module):
                 with torch.no_grad():
                     _, decoded0 = self._forward_once(voxel_input, recycle)
                 recycle = decoded0.detach()
-                # 前置 recycle 在 no_grad 中执行；若保留其自动混合精度权重缓存，最终可训练
-                # recycle 会复用不带梯度的参数转换，checkpoint 回算也会看到不同的保存序列。
+                # 清空前置无梯度轮留下的自动混合精度权重缓存，避免最后一轮复用无梯度参数转换并改变非重入激活重计算保存的张量序列。
                 torch.clear_autocast_cache()
         if final_feature is None:
             raise AssertionError("至少应执行一次 RAUNet recycle。")

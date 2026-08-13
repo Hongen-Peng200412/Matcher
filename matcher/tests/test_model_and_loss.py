@@ -265,9 +265,12 @@ def test_raunet_three_recycles_have_no_dead_trainable_parameters() -> None:
     assert missing == []
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="需要 CUDA 自动混合精度。")
+@pytest.mark.skipif(
+    not torch.cuda.is_available() or not torch.cuda.is_bf16_supported(),
+    reason="需要支持 BF16 的 CUDA 设备。",
+)
 def test_checkpointed_raunet_recycles_preserve_gradients_under_cuda_bfloat16() -> None:
-    """三轮 recycle 清除 no_grad 权重缓存后，BF16 checkpoint 回算必须覆盖全部参数。"""
+    """三轮 recycle 中每个无梯度前置轮清除缓存后，CUDA BF16 非重入激活重计算须为全部参数产生有限梯度。"""
 
     backbone = RaUnetBackbone(
         input_channels=3,

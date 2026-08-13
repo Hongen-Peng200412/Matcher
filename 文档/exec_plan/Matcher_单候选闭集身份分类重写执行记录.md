@@ -210,12 +210,31 @@ RuntimeError: index_add_(): self (Float) and source (BFloat16) must have the sam
 
 A800 设备探针先把四层瓶颈注意力单独放入 checkpoint；非重入带缓存、非重入禁用缓存和重入带缓存三种方式都可有限反向，说明注意力算子本身不是根因。把正式宽度、三轮 recycle 的 RAUNet 单独运行后得到决定性证据：
 
-- 非重入 checkpoint、默认 autocast 权重缓存：复现同一个 `CheckpointError`，峰值约 `3.34 GiB`；
+- 非重入 checkpoint、默认 autocast 权重缓存：复现同一个 `CheckpointError`，冻结探针峰值为 `3.3944 GiB`；
 - 重入 checkpoint、默认缓存：虽然不抛异常，但 `input_projection`、`stem`、三个多尺度卷积与 `feature_projection` 共 10 个参数无梯度，不能采用；
-- 非重入 checkpoint、禁用全部 autocast 权重缓存：反向通过、无缺失或非有限梯度，峰值约 `3.42 GiB`；
-- 非重入 checkpoint、仅在每个 `no_grad` recycle 后清空 autocast 权重缓存：同样反向通过、无缺失或非有限梯度，峰值约 `3.47 GiB`。
+- 非重入 checkpoint、禁用全部 autocast 权重缓存：反向通过、无缺失或非有限梯度，冻结探针峰值为 `3.4782 GiB`；
+- 非重入 checkpoint、仅在每个 `no_grad` recycle 后清空 autocast 权重缓存：同样反向通过、无缺失或非有限梯度，冻结探针峰值为 `3.4818 GiB`。
 
 根因是前三轮 recycle 的前两轮处于 `no_grad`，但和最终可训练轮共享一个外层 autocast 上下文。权重转换缓存会把前两轮不带梯度的转换留给最终轮复用，并使 checkpoint 回算重新保存不同的张量序列。最终采用更窄的修复：每个前置 `no_grad` recycle 形成 `decoded0.detach()` 后调用 `torch.clear_autocast_cache()`；不改变 BF16 算子、模型结构、激活重计算方式、损失或批量，只隔离无梯度轮与最终可训练轮的权重转换缓存。新增可选 CUDA BF16 回归，要求三轮 recycle、非重入 checkpoint 的全部参数都有有限梯度。修复后模型专项 `14 passed`，mypy 32 个源文件零问题，compileall 与 `git diff --check` 通过。
+
+四组对照已经冻结为正式包之外的服务器诊断脚本和日志：
+
+- 脚本：`/storage/penghongen/tmp/Matcher/diagnostics/job340894_checkpoint_20260813/probe_checkpoint_recycle.py`；
+- 脚本 SHA-256：`8169584e19774df9132127be933759a4ed941c637be9c8163d7683f6c6f38fe5`；
+- 日志：`/storage/penghongen/tmp/Matcher/diagnostics/job340894_checkpoint_20260813/probe_checkpoint_recycle.log`。
+
+脚本以相同随机种子、正式九级通道、三轮 recycle、四层瓶颈注意力和物理批量 2 依次执行上述四组；完整运行命令为：
+
+```bash
+srun --jobid=340894 --overlap --ntasks=1 --cpus-per-task=2 bash -lc '
+source /home/penghongen/anaconda3/etc/profile.d/conda.sh &&
+conda activate Pocket_Plus_centos7_cu121_allgpu &&
+export PYTHONPATH=/home/penghongen/My_Project/Matcher &&
+python /storage/penghongen/tmp/Matcher/diagnostics/job340894_checkpoint_20260813/probe_checkpoint_recycle.py 2>&1 |
+tee /storage/penghongen/tmp/Matcher/diagnostics/job340894_checkpoint_20260813/probe_checkpoint_recycle.log'
+```
+
+第一次冻结脚本运行遗漏 `PYTHONPATH`，在导入 `matcher` 时立即以 `ModuleNotFoundError` 退出，未进入 GPU 探针；上面的修正命令显式绑定远端正式源码并成功生成最终日志。
 
 ## 验证命令
 
