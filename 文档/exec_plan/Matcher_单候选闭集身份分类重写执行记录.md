@@ -206,6 +206,17 @@ RuntimeError: index_add_(): self (Float) and source (BFloat16) must have the sam
 
 最新本地设备探针使用 NVIDIA GeForce RTX 4060 Laptop GPU：候选、六分类、两个区域、三种身份表示和身份分数全部有限，loss 有限，422 个实际得到梯度的参数张量全部具有有限梯度。修复后的阶段证据为模型专项 `13 passed`、全套 `36 passed`、mypy 32 个源文件零问题、compileall 与 `git diff --check` 通过。08:32 后 `try_lock_340894` 与 `after_lock_340894` 同时存在，A800 回到 2 MiB、0% 使用；在独立科学和严格表达审查对最终两处修复通过并同步新源码后，计划复用同一 allocation 进行第二次正式执行，不删除 `after_lock`，也不先缩减 RAUNet 或物理批量。
 
+两项独立审查随后均判定两处 dtype 修复通过。本地提交 `c1fbd92` 同步后，远端 `ligand_matcher.py` SHA-256 为 `1fb991173e99047ce10613ca2e2e517e5c73a0abb6f5913efd64e2953ca80a59`；08:49:47 删除 `try_lock_340894`，仍保留 `after_lock_340894`。第二次执行建立 release `Matcher_3914f11a8153` 与 launch `train_experiment_job340894_20260813T084857_a2`，成功越过图消息和图身份注意力前向，但在第一次 global batch 的反向传播中由 PyTorch 2.4.1 抛出 `torch.utils.checkpoint.CheckpointError`：非重入式激活重计算保存的张量元数据与回算元数据不一致。仍未执行优化器更新，也未打印首步验收事件。
+
+A800 设备探针先把四层瓶颈注意力单独放入 checkpoint；非重入带缓存、非重入禁用缓存和重入带缓存三种方式都可有限反向，说明注意力算子本身不是根因。把正式宽度、三轮 recycle 的 RAUNet 单独运行后得到决定性证据：
+
+- 非重入 checkpoint、默认 autocast 权重缓存：复现同一个 `CheckpointError`，峰值约 `3.34 GiB`；
+- 重入 checkpoint、默认缓存：虽然不抛异常，但 `input_projection`、`stem`、三个多尺度卷积与 `feature_projection` 共 10 个参数无梯度，不能采用；
+- 非重入 checkpoint、禁用全部 autocast 权重缓存：反向通过、无缺失或非有限梯度，峰值约 `3.42 GiB`；
+- 非重入 checkpoint、仅在每个 `no_grad` recycle 后清空 autocast 权重缓存：同样反向通过、无缺失或非有限梯度，峰值约 `3.47 GiB`。
+
+根因是前三轮 recycle 的前两轮处于 `no_grad`，但和最终可训练轮共享一个外层 autocast 上下文。权重转换缓存会把前两轮不带梯度的转换留给最终轮复用，并使 checkpoint 回算重新保存不同的张量序列。最终采用更窄的修复：每个前置 `no_grad` recycle 形成 `decoded0.detach()` 后调用 `torch.clear_autocast_cache()`；不改变 BF16 算子、模型结构、激活重计算方式、损失或批量，只隔离无梯度轮与最终可训练轮的权重转换缓存。新增可选 CUDA BF16 回归，要求三轮 recycle、非重入 checkpoint 的全部参数都有有限梯度。修复后模型专项 `14 passed`，mypy 32 个源文件零问题，compileall 与 `git diff --check` 通过。
+
 ## 验证命令
 
 ```powershell

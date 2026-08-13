@@ -265,6 +265,32 @@ def test_raunet_three_recycles_have_no_dead_trainable_parameters() -> None:
     assert missing == []
 
 
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="需要 CUDA 自动混合精度。")
+def test_checkpointed_raunet_recycles_preserve_gradients_under_cuda_bfloat16() -> None:
+    """三轮 recycle 清除 no_grad 权重缓存后，BF16 checkpoint 回算必须覆盖全部参数。"""
+
+    backbone = RaUnetBackbone(
+        input_channels=3,
+        feature_channels=4,
+        planes=(4, 16, 16, 16, 16, 16, 8, 8, 4),
+        recycle_iterations=3,
+        gradient_checkpointing=True,
+        bottleneck_attention_layers=1,
+    ).cuda().train()
+    voxel_input = torch.randn(1, 3, 48, 48, 48, device="cuda", requires_grad=True)
+    with torch.autocast("cuda", dtype=torch.bfloat16):
+        output = backbone(voxel_input)
+        loss = output.float().square().mean()
+    loss.backward()
+    missing = [name for name, parameter in backbone.named_parameters() if parameter.grad is None]
+    assert missing == []
+    assert all(
+        torch.isfinite(parameter.grad).all()
+        for parameter in backbone.parameters()
+        if parameter.grad is not None
+    )
+
+
 def test_single_identity_inventory_is_an_exact_zero_increment() -> None:
     """单身份清单没有其他身份可读，上下文分支必须返回严格零。"""
 
