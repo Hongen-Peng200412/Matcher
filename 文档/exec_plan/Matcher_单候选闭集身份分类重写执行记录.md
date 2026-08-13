@@ -272,6 +272,10 @@ tee /storage/penghongen/tmp/Matcher/diagnostics/job340894_box_origin_20260813/au
 
 审计结果是：体素尺寸逐元素不一致数为 0；超过 `2e-5 Å` 的候选为 20 个；全体最大误差仍为 `3.0517578125e-05 Å`；超过 `5e-5 Å` 的候选为 0。临时修复据此只把绝对容差从 `2e-5 Å` 调到 `5e-5 Å`，保持 `rtol=0` 与体素尺寸逐元素相等检查，并在错误中报告最大差；新增回归接受真实的一格 float32 间隔，同时拒绝约 `1e-3 Å` 的额外错位。该容差仍比一个 1.5 Å 体素小 30,000 倍，不改变 A/P/V/PP 的轴、原点或裁剪边界。
 
+该修复由独立科学审查与严格表达审查分别判定通过；完整 Matcher 测试为 `38 passed`，服务器正式环境的数据专项为 `12 passed`。提交 `1257e7d` 安全同步后，本地与远端的 `matcher/candidate_data.py`、`matcher/tests/test_data_pipeline.py` 和本执行记录 SHA-256 分别一致为 `f00b9aadfef3148d0c8d541a52d9be849ba935c36df969c73b8fcc14faca8d2b`、`9a10ca97c8d8d78cb319a329de5646caf418475ea1c780ab769113568cf1ba26` 和 `d5467400c45815c7effb8d74303706105fa0ca778ed1edaa97e93c73f07e9b6b`。只删除 `try_lock_340894` 后建立第四次快照：release 为 `/home/penghongen/Feedback/Matcher/releases/Matcher_7e0270aab6a1/Matcher`，launch 为 `/home/penghongen/Feedback/Matcher/launches/340894/train_experiment_job340894_20260813T102050_a4`。
+
+第四次执行在 10:22:47 完成自己的首个 global batch 32 优化器更新：计算耗时 `62.4596 s`，有效身份监督数 5，裁剪前梯度范数 `39.9936`，峰值已分配/保留显存仍为 `28140193792/40080769024` bytes。10:32 的复核已经超过第三次执行首步后约 6 分钟的确定性失败窗口；此时训练进程及 workers 已运行约 11 分钟，A800 为 `38849 MiB/100%`，日志没有新异常，`try_lock` 未重建，`after_lock` 保留。因此把第四次执行判定为稳定训练，而不是只通过首步验收；后续按 30 分钟低消耗间隔检查明确状态变化，不为无变化状态追加日志。
+
 ## 验证命令
 
 ```powershell
