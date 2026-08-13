@@ -480,6 +480,8 @@ def test_stage_runtime_uses_spawn_loaders_and_records_process_isolation(
         assert loader.persistent_workers is False
         assert loader.collate_fn is training_module.collate_candidates
         assert loader.generator is not None
+        # 正式属性已在上方断言；CPU-only 门禁不具备驱动，迭代探针只关闭测试对象的页锁定线程。
+        loader.pin_memory = False
     assert runtime.train_loader.generator is not runtime.validation_loader.generator
     assert runtime.train_loader.generator.initial_seed() == 2 * plan.stages[0].training.seed
     assert (
