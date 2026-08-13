@@ -419,9 +419,13 @@ bash 训练与运行/submit_task.sh \
   --pp-top-k 1024
 ```
 
-实现提交为 `c0ac5fc`。安全同步后，本地与远端 `matcher/pp_input.py` 的 SHA-256 均为 `8255d03fb76863ea5bb7adfd011b060ef30bd267ee2c4803a99b8ebe47c6166e`，`matcher/precompute.py` 均为 `5c62a481bd0e31960852ab3fca5f004316372f4240a9c6b853ad29035b54149a`；服务器正式 Conda 环境的数据专项为 `15 passed`。上述命令随后原样提交为 Job `341221`。提交器报告 `resource=cpu`、`cpus_per_task=16`、`pre_hold=0`、`after_hold=0`，未出现 `--time`；Slurm 首次复核显示 partition/QOS 为 `cpu/cpu96`、状态 `PENDING (Resources)`、尚未分配节点。该有限 CPU 预计算完成后自动释放，不创建或删除任何 GPU 任务的 `after_lock`。
+实现提交为 `c0ac5fc`。安全同步后，本地与远端 `matcher/pp_input.py` 的 SHA-256 均为 `8255d03fb76863ea5bb7adfd011b060ef30bd267ee2c4803a99b8ebe47c6166e`，`matcher/precompute.py` 均为 `5c62a481bd0e31960852ab3fca5f004316372f4240a9c6b853ad29035b54149a`；服务器正式 Conda 环境的数据专项为 `15 passed`。上述命令随后原样提交为 Job `341221`。提交器报告 `resource=cpu`、`cpus_per_task=16`、`pre_hold=0`、`after_hold=0`，未出现 `--time`。Job 在 `cpu/cpu96` 的 `cnode04` 运行 `00:01:40` 后以 ExitCode `0:0` 完成并自动释放；没有创建或删除任何 GPU 任务的 `after_lock`。
+
+正式缓存结果为 train `480 PDB/14,312 candidates/323,431,872 bytes`，validation `181 PDB/6,495 candidates/146,709,428 bytes`，合计 `661 PDB/20,807 candidates/470,141,300 bytes`。独立只读验收逐个 PDB 检查缓存候选数与 `closed_set_v2` 清单从 0 连续对齐；再从两个划分各取排序后首、中、末 PDB 的中间候选，共 6 个真实候选，从原 `probability_map.npz` 重新构造 PP，缓存 token 和 ZYX 索引均逐值相等。由此，后续新 release 的正式 train/validation PP 热路径可以确定命中，不再读取完整 probability map。
 
 2026-08-13 15:57:21（Asia/Shanghai）的轻量只读检查显示 Job `340894` 在 `gnode10` 已运行 `8:21:41`，Job `340895` 在 `gnode09` 已运行 `3:59:54`；两者 `after_lock` 均保留、`try_lock` 均不存在，且没有新 checkpoint。Job `340893`、`340897`、`340898`、`340899` 仍为 `PENDING (Priority)`。Job `340896` 已从 `squeue` 消失，随后用 `sacct -X` 核实为 `CANCELLED by 0`、elapsed `00:00:00`、未分配节点、未建立锁或业务产物；这不是训练异常。用户随后明确要求暂时跳过该 SMI-TED Light 289M/joint 任务，因此不提交替代 Job、不创建新锁，也不把它作为当前批次完成的前置条件；只有用户再次明确要求时才恢复。
+
+2026-08-13 16:24:29，Job `340895` 完成 epoch 0 的完整 validation，并写出 `history.jsonl`、`LAST.pt` 和 `BEST.pt`；选择分数为 `0.5529791207038862`。训练使用 14,304 个候选，447 次参数更新，纯计算 `1263.75 s`、DataLoader 等待 `51.18 s`、总计 `1317.12 s`，吞吐 `10.8600 candidates/s`。相同模型的 validation 读取 6,495 个候选却耗时 `13343.99 s`，吞吐只有 `0.486736 candidates/s`；六分类 macro-F1 为 `0.5220903`，以六分类判对为条件的身份 top-1 为 `0.6264501`，端到端身份 F1 为 `0.5103970`。16:34 的 Slurm 统计显示 Job `340894/340895` 累计读字节约为 `2.979/3.034 TB`，MaxRSS 约为 `548/673 GB`。这组同一真实运行的训练/验证耗时、累计读取和内存证据证明旧 release 的 validation 是 I/O/内存系统瓶颈，而不是三维模型计算瓶颈；Job `340895` 随后继续 epoch 1，现有 checkpoint 与指标保留。
 
 ## 验证命令
 
