@@ -299,7 +299,32 @@ tee /storage/penghongen/tmp/Matcher/diagnostics/job340894_box_origin_20260813/au
   -Command 'source /home/penghongen/anaconda3/etc/profile.d/conda.sh && conda activate Pocket_Plus_centos7_cu121_allgpu && python -c "import inspect,wandb; print(wandb.__version__); print(inspect.signature(wandb.init))"'
 ```
 
-本地追踪增量的冻结门禁结果为 mypy 34 个源文件零问题、pytest `42 passed`、compileall、7 个 shell 的 `bash -n`、七个 YAML 正式解析与 `git diff --check` 通过。服务器 W&B `0.17.3` 的实际 `wandb.init` 签名同样接受上述显式参数。独立科学审查与严格表达审查正在对最终冻结快照作收口复核；通过并安全同步前，不删除任何待启动任务的 `pre_lock`。
+本地追踪增量的冻结门禁结果为 mypy 34 个源文件零问题、pytest `42 passed`、compileall、7 个 shell 的 `bash -n`、七个 YAML 正式解析与 `git diff --check` 通过。服务器 W&B `0.17.3` 的实际 `wandb.init` 签名同样接受上述显式参数。独立科学审查确认 global-batch 损失、A100/A800 更新等价、CUDA 同步计时、支持数、异常收口与 checkpoint 时序通过；严格表达审查确认 W&B 最小接口、十字段元数据、六条自定义横轴、七份 YAML 和 README 契约通过。实现提交为 `d9717c2`。
+
+安全同步命令为：
+
+```powershell
+& '.\与服务器交互\sync_code.ps1'
+```
+
+同步只覆盖 `/home/penghongen/My_Project/Matcher` 的同名源码，不改变正在运行的 release。下列四个代表文件的本地与远端 SHA-256 逐项一致：
+
+- `matcher/tracking.py`：`4ec0da1eef41acf38a9df04a804a6f7bb61bf760c28a8f27b823249448185e37`；
+- `matcher/training.py`：`ccfedd01c8632f776976a96d449e310a30c78fc63f20b55427f2543f6a8afbd4`；
+- `configs/experiments/initial/candidate_pretrain_pair.yaml`：`4c87430757c643bbaafed8c6acc788f7f23654faeb7f5708e4860344a2044518`；
+- `configs/experiments/initial/full_scratch_molformer_oracle.yaml`：`0f7ff427b4d28a9d08e9e3ca8dd7948d19b47b572823c279d6205609f484defd`。
+
+正式环境验证通过统一 SSH 入口把本地临时脚本 `tmp/validate_wandb_remote.sh` 作为标准输入发送，不把探针脚本混入正式源码：
+
+```powershell
+& '.\与服务器交互\other\Invoke-PasswordSsh.ps1' `
+  -Command 'bash -s' `
+  -InputFile '.\tmp\validate_wandb_remote.sh'
+```
+
+第一次尝试在 conda 激活前启用 `set -u`，被环境激活脚本的未定义 `ADDR2LINE` 立即拒绝；第二次先激活环境，但试图运行正式环境未安装的 mypy，同样在测试与 W&B 初始化前结束。最终脚本先以 `set -eo pipefail` 激活 `Pocket_Plus_centos7_cu121_allgpu`，再启用 `set -u`；mypy 只使用已经通过的本地门禁，服务器执行 compileall、pytest 和真实 W&B 生命周期。最终正式环境结果为 pytest `41 passed, 1 skipped`，其中一项只因登录节点没有 CUDA 而按测试设计跳过。
+
+真实 online 探针创建 run `wimmkf3s`，先记录一个 global batch 32 的逐步点，再记录一个 validation/selection epoch 点和最终摘要，以退出码 0 完成同步。曲线地址是 `https://wandb.ai/pencounkdual-111/AdaLigand-Matcher/runs/wimmkf3s`；全部本地诊断产物位于 `/storage/penghongen/tmp/Matcher/diagnostics/wandb_online_20260813T034138Z/`。该探针明确命名为 `wandb_adapter_smoke`，不会与七个正式 stage 混淆。至此可以让后续新 launch 使用 W&B online；仍不删除任何待启动任务的 `pre_lock`，只有任务实际取得资源且放卡前检查通过时才启动。
 
 ## 验证命令
 
