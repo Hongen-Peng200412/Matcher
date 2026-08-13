@@ -59,6 +59,7 @@ GRAD_SCALER_INITIAL_SCALE = 65536.0
 GRAD_SCALER_GROWTH_FACTOR = 2.0
 GRAD_SCALER_BACKOFF_FACTOR = 0.5
 GRAD_SCALER_GROWTH_INTERVAL = 2000
+_DATALOADER_MULTIPROCESSING_CONTEXT = "spawn"
 _TENSOR_BATCH_KEYS = (
     "voxel_input",
     "class_target",
@@ -397,6 +398,7 @@ def _build_stage_runtime(
             pin_memory=True,
             persistent_workers=True,
             prefetch_factor=data.prefetch_factor,
+            multiprocessing_context=_DATALOADER_MULTIPROCESSING_CONTEXT,
         ),
     )
     validation_loader = cast(
@@ -409,6 +411,7 @@ def _build_stage_runtime(
             pin_memory=True,
             persistent_workers=True,
             prefetch_factor=data.prefetch_factor,
+            multiprocessing_context=_DATALOADER_MULTIPROCESSING_CONTEXT,
         ),
     )
 
@@ -477,6 +480,7 @@ def _build_stage_runtime(
         "num_workers": data.num_workers,
         "prefetch_factor": data.prefetch_factor,
         "cache_gib_per_worker": data.cache_gib_per_worker,
+        "multiprocessing_context": _DATALOADER_MULTIPROCESSING_CONTEXT,
     }
     training_record = stage_record["training"]
     if not isinstance(training_record, dict):
@@ -903,7 +907,8 @@ def run_training_stage(
 
     本入口只构造 train 与 validation，不读取 calibration。它先创建不可复用的阶段目录，
     再冻结运行环境，并写出 resolved、tracking、history、BEST、LAST 和 summary 六类产物。
-    W&B online 初始化发生在任何 DataLoader worker 启动前；初始化或同步失败不降级为离线。
+    W&B online 初始化发生在任何 DataLoader worker 启动前；worker 使用 ``spawn``，不会继承
+    主进程的 W&B 客户端或 TLS 会话。初始化或同步失败不降级为离线。
     """
 
     stage_directory.mkdir(parents=True, exist_ok=False)
