@@ -27,6 +27,7 @@ LanguageFamily = Literal["molformer", "smi_ted_289m"]
 Precision = Literal["bf16", "fp16", "fp32"]
 TrackingProvider = Literal["wandb"]
 TrackingMode = Literal["online"]
+_MAXIMUM_NUMPY_RANDOM_SEED = 2**32 - 1
 
 
 @dataclass(frozen=True)
@@ -37,16 +38,18 @@ class DataConfig:
     ``coverage_threshold`` 是候选与 occurrence 双向覆盖率共同采用的命中阈值。
     ``selection_seed`` 决定每个身份固定选择哪一个有效 occurrence 语言表示。
     ``pp_top_k`` 是每个候选从完整概率图采样的 PP token 最大数。
-    ``num_workers`` 是每个训练进程的 DataLoader 工作进程数。
+    ``train_num_workers`` 是每次 train 迭代建立的 DataLoader 工作进程数。
+    ``validation_num_workers`` 是每次 validation 迭代建立的 DataLoader 工作进程数。
     ``prefetch_factor`` 是每个 DataLoader 工作进程预取的物理批次数。
-    ``cache_gib_per_worker`` 是单个工作进程四类 LRU 缓存的 GiB 总上限，不预分配内存。
+    ``cache_gib_per_worker`` 是单个工作进程五类 LRU 缓存的 GiB 总上限，不预分配内存。
     """
 
     roots: SourceRoots
     coverage_threshold: float
     selection_seed: int
     pp_top_k: int
-    num_workers: int
+    train_num_workers: int
+    validation_num_workers: int
     prefetch_factor: int
     cache_gib_per_worker: float
 
@@ -77,7 +80,7 @@ class TrackingConfig:
 class TrainingConfig:
     """保存单个阶段的优化、批量、早停和数值精度参数。
 
-    ``seed`` 控制候选洗牌、模型初始化和训练随机源。
+    ``seed`` 控制候选洗牌、模型初始化和训练随机源，且不超过 NumPy 接受的最大种子。
     ``physical_batch_size`` 是一次前向的候选数。
     ``gradient_accumulation`` 是一次参数更新包含的物理批次数。
     ``global_batch_size`` 必须等于前两项乘积，首轮正式实验固定为 32。
@@ -133,7 +136,7 @@ class ExperimentPlan:
 
     ``plan_name`` 是实验结果目录的安全单级名称。
     ``output_root`` 是运行、阶段和 checkpoint 的根目录，必须位于 Matcher 临时产物根。
-    ``data`` 是全部阶段共享的 DataConfig；其中 data.output_root 用于清单与体素缓存。
+    ``data`` 是全部阶段共享的 DataConfig；其中 data.output_root 用于清单、体素与 PP token 缓存。
     ``tracking`` 是每个阶段分别建立 W&B online run 的共享配置。
     ``stages`` 是非空有序 StageConfig 元组，stage:name 引用只能指向此前阶段。
     """
@@ -253,8 +256,8 @@ def _parse_stage(values: dict[str, Any]) -> StageConfig:
         raise ValueError("physical_batch_size 和 gradient_accumulation 必须为正整数。")
     if training.global_batch_size != 32:
         raise ValueError("当前正式实验的 global_batch_size 固定为 32。")
-    if training.seed < 0:
-        raise ValueError("seed 不能为负数。")
+    if not 0 <= training.seed <= _MAXIMUM_NUMPY_RANDOM_SEED:
+        raise ValueError(f"seed 必须位于 [0,{_MAXIMUM_NUMPY_RANDOM_SEED}]。")
     if training.learning_rate <= 0:
         raise ValueError("learning_rate 必须为正数。")
     if training.weight_decay < 0 or training.gradient_clip_norm <= 0:
@@ -409,7 +412,8 @@ def load_experiment_plan(path: Path) -> ExperimentPlan:
             "coverage_threshold",
             "selection_seed",
             "pp_top_k",
-            "num_workers",
+            "train_num_workers",
+            "validation_num_workers",
             "prefetch_factor",
             "cache_gib_per_worker",
         },
@@ -428,7 +432,14 @@ def load_experiment_plan(path: Path) -> ExperimentPlan:
         coverage_threshold=_finite_float(data_values["coverage_threshold"], "coverage_threshold"),
         selection_seed=_integer(data_values["selection_seed"], "selection_seed"),
         pp_top_k=_integer(data_values["pp_top_k"], "pp_top_k"),
-        num_workers=_integer(data_values["num_workers"], "num_workers"),
+        train_num_workers=_integer(
+            data_values["train_num_workers"],
+            "train_num_workers",
+        ),
+        validation_num_workers=_integer(
+            data_values["validation_num_workers"],
+            "validation_num_workers",
+        ),
         prefetch_factor=_integer(data_values["prefetch_factor"], "prefetch_factor"),
         cache_gib_per_worker=_finite_float(
             data_values["cache_gib_per_worker"],
@@ -439,8 +450,16 @@ def load_experiment_plan(path: Path) -> ExperimentPlan:
         raise ValueError("coverage_threshold 必须位于 (0,1]。")
     if data.pp_top_k <= 0:
         raise ValueError("pp_top_k 必须为正整数。")
-    if data.num_workers <= 0 or data.prefetch_factor <= 0 or data.cache_gib_per_worker <= 0:
-        raise ValueError("num_workers/prefetch_factor/cache_gib_per_worker 必须为正数。")
+    if (
+        data.train_num_workers <= 0
+        or data.validation_num_workers <= 0
+        or data.prefetch_factor <= 0
+        or data.cache_gib_per_worker <= 0
+    ):
+        raise ValueError(
+            "train_num_workers/validation_num_workers/prefetch_factor/"
+            "cache_gib_per_worker 必须为正数。"
+        )
 
     tracking_values = _mapping(values["tracking"], "tracking")
     _require_keys(

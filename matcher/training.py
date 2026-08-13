@@ -310,8 +310,8 @@ class _StageRuntime:
     """保存一次正式阶段构造完成后，各 epoch 共同使用的运行对象。
 
     ``model`` 是已放入 CUDA 的 CandidateEncoder 或 ClosedSetMatcher。
-    ``train_loader`` 只读取 train，并且只产生完整 global batch 所需的物理批次。
-    ``validation_loader`` 只读取 validation，保留划分尾部不满物理批次的候选。
+    ``train_loader`` 只读取 train，并且只产生完整 global batch 所需的物理批次；worker 不常驻。
+    ``validation_loader`` 只读取 validation，保留划分尾部不满物理批次的候选；worker 不常驻。
     ``train_sampler`` 在每轮按 seed+epoch 全候选洗牌。
     ``optimizer`` 是显式冻结全部语义的 AdamW。
     ``scheduler`` 是根据完整 validation 选择分数更新的 ReduceLROnPlateau。
@@ -340,8 +340,12 @@ def _build_candidate_loader(
     sampler: ShuffledBatchSampler,
     num_workers: int,
     prefetch_factor: int,
+    worker_generator_seed: int,
 ) -> DataLoader[CandidateBatch]:
-    """统一构造 Matcher 候选 DataLoader；spawn 隔离主进程的 W&B/TLS 状态。"""
+    """构造采用 spawn 的非持久 DataLoader 工作进程池；专用生成器隔离工作进程与模型随机状态。"""
+
+    worker_generator = torch.Generator()
+    worker_generator.manual_seed(worker_generator_seed)
 
     return cast(
         DataLoader[CandidateBatch],
@@ -351,9 +355,10 @@ def _build_candidate_loader(
             num_workers=num_workers,
             collate_fn=collate_candidates,
             pin_memory=True,
-            persistent_workers=True,
+            persistent_workers=False,
             prefetch_factor=prefetch_factor,
             multiprocessing_context=_DATALOADER_MULTIPROCESSING_CONTEXT,
+            generator=worker_generator,
         ),
     )
 
@@ -411,17 +416,21 @@ def _build_stage_runtime(
         seed=stage.training.seed,
         sample_count_multiple=None,
     )
+    train_worker_generator_seed = 2 * stage.training.seed
+    validation_worker_generator_seed = 2 * stage.training.seed + 1
     train_loader = _build_candidate_loader(
         train_dataset,
         train_sampler,
-        data.num_workers,
+        data.train_num_workers,
         data.prefetch_factor,
+        train_worker_generator_seed,
     )
     validation_loader = _build_candidate_loader(
         validation_dataset,
         validation_sampler,
-        data.num_workers,
+        data.validation_num_workers,
         data.prefetch_factor,
+        validation_worker_generator_seed,
     )
 
     model: nn.Module
@@ -486,10 +495,18 @@ def _build_stage_runtime(
         "coverage_threshold": data.coverage_threshold,
         "selection_seed": data.selection_seed,
         "pp_top_k": data.pp_top_k,
-        "num_workers": data.num_workers,
+        "train_num_workers": data.train_num_workers,
+        "validation_num_workers": data.validation_num_workers,
         "prefetch_factor": data.prefetch_factor,
         "cache_gib_per_worker": data.cache_gib_per_worker,
         "multiprocessing_context": _DATALOADER_MULTIPROCESSING_CONTEXT,
+        "persistent_workers": False,
+        "worker_pool_lifecycle": "per_complete_loader_iteration",
+        "train_worker_generator_seed": train_worker_generator_seed,
+        "validation_worker_generator_seed": validation_worker_generator_seed,
+        "worker_generator_lifecycle": (
+            "one generator per loader; iterator creation advances only that generator"
+        ),
     }
     training_record = stage_record["training"]
     if not isinstance(training_record, dict):
@@ -716,6 +733,8 @@ def _train_epoch(
             "train/step/peak_cuda_reserved_bytes": torch.cuda.max_memory_reserved(device),
         }
         tracker.log_global_step(global_step, step_metrics)
+    # 循环不会额外请求 StopIteration；显式释放迭代器，确保 validation 前回收训练 worker。
+    del loader_iterator
     elapsed_seconds = time.perf_counter() - started_at
     identity_diagnostics: IdentityDiagnostics | None
     if isinstance(model, ClosedSetMatcher):

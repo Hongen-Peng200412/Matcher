@@ -304,7 +304,7 @@ def test_selection_score_uses_only_validation_report_components() -> None:
 
 
 def test_all_initial_experiment_plans_preserve_resource_and_stopping_contracts() -> None:
-    """七个已排队任务的 YAML 都使用 16 worker、global batch 32 且不设时间或 epoch 上限。"""
+    """七个首轮 YAML 分别冻结 train/validation worker 与 global batch 32。"""
 
     config_root = Path(__file__).parents[2] / "configs" / "experiments" / "initial"
     paths = sorted(config_root.glob("*.yaml"))
@@ -313,7 +313,8 @@ def test_all_initial_experiment_plans_preserve_resource_and_stopping_contracts()
 
     for plan in plans:
         assert plan.output_root.is_relative_to(Path("/storage/penghongen/tmp/Matcher"))
-        assert plan.data.num_workers == 16
+        assert plan.data.train_num_workers == 4
+        assert plan.data.validation_num_workers == 4
         assert plan.tracking == TrackingConfig(
             provider="wandb",
             mode="online",
@@ -385,6 +386,25 @@ def test_experiment_config_rejects_output_escape_and_relative_initialization(
         load_experiment_plan(relative)
 
 
+def test_experiment_config_rejects_seed_outside_numpy_range(tmp_path: Path) -> None:
+    """训练种子必须同时落在 Python、NumPy、Torch 和 worker 派生公式的共同范围。"""
+
+    source = (
+        Path(__file__).parents[2]
+        / "configs"
+        / "experiments"
+        / "initial"
+        / "full_scratch_molformer_oracle.yaml"
+    )
+    for value in (-1, 2**32):
+        values = yaml.safe_load(source.read_text(encoding="utf-8"))
+        values["stages"][0]["training"]["seed"] = value
+        invalid = tmp_path / f"seed_{value}.yaml"
+        invalid.write_text(yaml.safe_dump(values, sort_keys=False), encoding="utf-8")
+        with pytest.raises(ValueError, match=r"seed 必须位于 \[0,4294967295\]"):
+            load_experiment_plan(invalid)
+
+
 def test_initial_checkpoint_resolver_accepts_only_stage_dsl_or_posix_absolute_path() -> None:
     """运行时解析器只接受同计划阶段引用或服务器 POSIX 绝对路径。"""
 
@@ -409,7 +429,7 @@ def test_stage_runtime_uses_spawn_loaders_and_records_process_isolation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """train/validation 必须统一使用 spawn，并把该运行事实写入 resolved.json。"""
+    """train/validation 分别配置非持久 spawn 进程池，并把随机隔离契约写入产物。"""
 
     class CpuOnlyModel(nn.Module):
         """提供不触发真实 CUDA 分配的最小可优化模型替身。"""
@@ -430,7 +450,8 @@ def test_stage_runtime_uses_spawn_loaders_and_records_process_isolation(
     data = replace(
         plan.data,
         roots=roots,
-        num_workers=1,
+        train_num_workers=1,
+        validation_num_workers=2,
         prefetch_factor=1,
         cache_gib_per_worker=0.01,
     )
@@ -448,14 +469,45 @@ def test_stage_runtime_uses_spawn_loaders_and_records_process_isolation(
         tmp_path,
     )
 
-    for loader in (runtime.train_loader, runtime.validation_loader):
+    for loader, expected_workers in (
+        (runtime.train_loader, 1),
+        (runtime.validation_loader, 2),
+    ):
+        assert loader.num_workers == expected_workers
         assert loader.multiprocessing_context is not None
         assert loader.multiprocessing_context.get_start_method() == "spawn"
         assert loader.pin_memory is True
-        assert loader.persistent_workers is True
+        assert loader.persistent_workers is False
         assert loader.collate_fn is training_module.collate_candidates
+        assert loader.generator is not None
+    assert runtime.train_loader.generator is not runtime.validation_loader.generator
+    assert runtime.train_loader.generator.initial_seed() == 2 * plan.stages[0].training.seed
+    assert (
+        runtime.validation_loader.generator.initial_seed()
+        == 2 * plan.stages[0].training.seed + 1
+    )
+    torch.manual_seed(71)
+    expected_global_draw = torch.rand(4)
+    torch.manual_seed(71)
+    for loader in (runtime.train_loader, runtime.validation_loader):
+        loader_iterator = iter(loader)
+        worker_processes = tuple(cast(Any, loader_iterator)._workers)
+        assert list(loader_iterator) == []
+        for process in worker_processes:
+            process.join(timeout=5.0)
+            assert not process.is_alive()
+    assert torch.equal(torch.rand(4), expected_global_draw)
     resolved = json.loads((stage_directory / "resolved.json").read_text(encoding="utf-8"))
     assert resolved["data"]["multiprocessing_context"] == "spawn"
+    assert resolved["data"]["train_num_workers"] == 1
+    assert resolved["data"]["validation_num_workers"] == 2
+    assert resolved["data"]["persistent_workers"] is False
+    assert resolved["data"]["worker_pool_lifecycle"] == "per_complete_loader_iteration"
+    assert resolved["data"]["train_worker_generator_seed"] == 6814
+    assert resolved["data"]["validation_worker_generator_seed"] == 6815
+    assert resolved["data"]["worker_generator_lifecycle"] == (
+        "one generator per loader; iterator creation advances only that generator"
+    )
 
 
 def test_checkpoint_schema_and_candidate_prefix_loading(tmp_path: Path) -> None:
