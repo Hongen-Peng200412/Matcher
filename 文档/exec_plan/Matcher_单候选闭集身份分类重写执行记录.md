@@ -326,6 +326,34 @@ tee /storage/penghongen/tmp/Matcher/diagnostics/job340894_box_origin_20260813/au
 
 真实 online 探针创建 run `wimmkf3s`，先记录一个 global batch 32 的逐步点，再记录一个 validation/selection epoch 点和最终摘要，以退出码 0 完成同步。曲线地址是 `https://wandb.ai/pencounkdual-111/AdaLigand-Matcher/runs/wimmkf3s`；全部本地诊断产物位于 `/storage/penghongen/tmp/Matcher/diagnostics/wandb_online_20260813T034138Z/`。该探针明确命名为 `wandb_adapter_smoke`，不会与七个正式 stage 混淆。至此可以让后续新 launch 使用 W&B online；仍不删除任何待启动任务的 `pre_lock`，只有任务实际取得资源且放卡前检查通过时才启动。
 
+## Job 340895：首个带 W&B 曲线的正式任务
+
+2026-08-13 11:57:27（Asia/Shanghai），Job `340895` 获得 `gnode09` 的一张 A800；12:19 的检查首次发现这一状态。放卡前逐项确认：Slurm 资源为 `nvlink/cpu96`、1×A800、16 CPU，提交命令没有显式 `--time`；任务使用 `--pre_hold --after_hold`；`/home/penghongen/Feedback/Matcher/allocations/pre_lock_340895` 和 allocation 内的 `after_lock_340895` 均存在；动态命令只运行 `configs/experiments/initial/full_scratch_smi_ted_light_289m_detached.yaml`；该配置的本地与远端 SHA-256 都是 `33578f58a10300781dfcd0eabc20272c2a11a7c17d38739b65974a6fc07ca466`。配置保持 A800 物理批量 16、梯度累积 2、global batch 32、16 个 worker 和每 worker 32 GiB 缓存上限。
+
+第一次放锁命令把远端 `$(sha256sum ...)` 放在 PowerShell 可插值字符串中，本地 PowerShell 在连接前误解释并拒绝命令；随后确认 `pre_lock_340895` 仍存在，因此没有发生远端删除。正式放锁改用本地临时审核脚本 `tmp/release_prelock_340895.sh`，脚本同时断言 pre-lock、after-lock 和远端配置哈希，仅在三项均正确时删除指定 pre-lock：
+
+```powershell
+& '.\与服务器交互\other\Invoke-PasswordSsh.ps1' `
+  -Command 'bash -s' `
+  -InputFile '.\tmp\release_prelock_340895.sh'
+```
+
+12:21:41 脚本成功删除且只删除 `/home/penghongen/Feedback/Matcher/allocations/pre_lock_340895`，allocation 随即冻结：
+
+- release：`/home/penghongen/Feedback/Matcher/releases/Matcher_16b0873c6884/Matcher`；
+- launch：`/home/penghongen/Feedback/Matcher/launches/340895/train_experiment_job340895_20260813T121932_a1`；
+- 业务产物根：`/storage/penghongen/tmp/Matcher/experiments/full_scratch_smi_ted_light_289m_detached/train_experiment_job340895_20260813T121932_a1/`；
+- W&B run ID：`pki0o1zr`；
+- W&B 曲线：`https://wandb.ai/pencounkdual-111/AdaLigand-Matcher/runs/pki0o1zr`。
+
+W&B online 初始化成功后，任务在 12:24 左右完成首个真实 global optimizer step，并同时把逐步指标写入在线 run：
+
+```json
+{"event":"first_global_step_accepted","stage":"full_scratch_smi_ted_light_289m_detached","global_step":1,"global_batch_size":32,"identity_eligible_count":5,"preclip_gradient_norm":29.054296493530273,"peak_cuda_allocated_bytes":28140193792,"peak_cuda_reserved_bytes":40076574720,"global_step_compute_seconds":65.70703677739948}
+```
+
+该事件发生在损失与梯度有限性检查、参数更新和无条件 CUDA 同步之后，证明最新 W&B release 没有改变 A800 正式训练语义。此时 Job `340895` 仍为 RUNNING，`after_lock_340895` 保留，`try_lock_340895` 不存在。后续逐步损失、梯度、学习率、数据等待、计算吞吐、门值和显存可以由用户直接在线查看；完整 validation 指标在 epoch 结束后出现。
+
 ## 验证命令
 
 ```powershell
