@@ -445,6 +445,67 @@ bash 训练与运行/submit_task.sh \
 
 第五次 oracle 执行随后冻结 release `/home/penghongen/Feedback/Matcher/releases/Matcher_67c4e42bd46a/Matcher`，launch 为 `/home/penghongen/Feedback/Matcher/launches/340894/train_experiment_job340894_20260813T165002_a5`，业务目录为 `/storage/penghongen/tmp/Matcher/experiments/full_scratch_smi_ted_light_289m_oracle/train_experiment_job340894_20260813T165002_a5/`。W&B run ID 为 `aiqbj6b5`，曲线地址为 `https://wandb.ai/pencounkdual-111/AdaLigand-Matcher/runs/aiqbj6b5`。新 release 在 16:53 前完成首个真实 global batch 32 参数更新：计算 `62.2150 s`、有效身份监督数 5、裁剪前梯度范数 `39.9681`、峰值已分配/保留显存 `28140193792/39564869632 bytes`；`after_lock_340894` 继续保留，`try_lock/kill_lock` 均不存在。
 
+## I/O 系统审计与 DataLoader 生命周期收口
+
+用户允许独立使用 CPU 诊断 I/O，并要求每项预设最长测试时间、最迟两小时收口。三个诊断 Job 的脚本、标准输出、标准错误和 JSON 只写入 `/storage/penghongen/tmp/Matcher/diagnostics/`，没有申请 GPU，也没有使用或改变任何 GPU allocation 的四锁。实际提交命令如下：
+
+```bash
+sbatch --parsable \
+  --job-name=matcher-io-audit \
+  --partition=cpu --qos=cpu96 \
+  --nodes=1 --ntasks=1 --cpus-per-task=32 --mem=1000G \
+  --time=01:50:00 \
+  --output=/storage/penghongen/tmp/Matcher/diagnostics/io_system_audit_20260813/slurm-%j.out \
+  --error=/storage/penghongen/tmp/Matcher/diagnostics/io_system_audit_20260813/slurm-%j.err \
+  --wrap='exec bash /storage/penghongen/tmp/Matcher/diagnostics/io_system_audit_20260813/run_cpu_audit.sh'
+
+sbatch --parsable \
+  --job-name=matcher-io-dataloader \
+  --partition=cpu --qos=cpu96 \
+  --nodes=1 --ntasks=1 --cpus-per-task=8 --mem=256G \
+  --time=01:20:00 \
+  --output=/storage/penghongen/tmp/Matcher/diagnostics/io_dataloader_20260813/slurm-%j.out \
+  --error=/storage/penghongen/tmp/Matcher/diagnostics/io_dataloader_20260813/slurm-%j.err \
+  --wrap='exec bash /storage/penghongen/tmp/Matcher/diagnostics/io_dataloader_20260813/run_dataloader_audit.sh'
+
+sbatch --parsable \
+  --job-name=matcher-io-full-val \
+  --partition=cpu --qos=cpu96 \
+  --nodes=1 --ntasks=1 --cpus-per-task=8 --mem=256G \
+  --time=00:50:00 \
+  --output=/storage/penghongen/tmp/Matcher/diagnostics/io_full_validation_20260813/slurm-%j.out \
+  --error=/storage/penghongen/tmp/Matcher/diagnostics/io_full_validation_20260813/slurm-%j.err \
+  --wrap='exec bash /storage/penghongen/tmp/Matcher/diagnostics/io_full_validation_20260813/run_full_validation_audit.sh'
+```
+
+Job `341231` 的四个单进程动作依次设为 20、25、25、20 分钟。原请求为 32 CPU/1000 G；确认负载不使用额外核后，在尚未分配时通过 `scontrol update` 逐步降为 1 CPU/125 G，并清除临时节点约束，最终在 cnode01 运行 `1:21`，`COMPLETED/0:0`。Job `341236` 的准备动作限 20 分钟，四个对照各限 12 分钟，最终在 cnode02 运行 `6:22`，`COMPLETED/0:0`。Job `341238` 只运行完整 6,495 候选验证集读取，动作限 45 分钟，最终在 cnode02 运行 `10:02`，`COMPLETED/0:0`。所有动作都使用 `timeout --signal=TERM --kill-after=30s`；这些上限仅属于用户要求的 CPU 诊断，不是训练或 GPU Slurm 时限。
+
+审计确认以下热路径事实：PP schema v1 命中后不再读取完整 probability map；105 通道体素缓存命中后不读取原始实验或模拟密度图。旧 Job `340895` 的 16 个 train worker 与 16 个 validation worker 曾同时常驻，进程树 MaxRSS 约 `677.5 GB`，首次 validation 为 `13343.99 s`；epoch 1 在操作系统页缓存变热后缩短为 `289.72 s`，所以不能把旧 release 的每轮 validation 都描述为数小时。当前 HEAD 使用完整 PP 缓存、未压缩体素和 4 workers 读取完整 validation 的结果为 `568.216 s`、`11.4305 candidates/s`、进程树峰值 `13.734 GB`、累计读取 `151.785 GB`。固定 256 候选对照中，候选派生量预物化把吞吐从 `9.51` 提高到 `11.48 candidates/s`，但样本和收益不足以支持立即增加正式 schema；Deflate level 1 虽降低读取量，却把吞吐降到 `8.77 candidates/s`，因此不采用。完整证据分别位于 `io_system_audit_20260813`、`io_dataloader_20260813` 和 `io_full_validation_20260813` 三个诊断目录。
+
+源代码复核同时纠正一项审计过程中的误读：`matcher/candidate_data.py::_CENTERED_FIELDS` 只有一个 `voxel_final`。早期终端输出的相邻分片发生重叠，曾被误读成重复字段；这不是正式实现缺陷，也没有产生删除改动。
+
+据此，提交 `e8241dd` 将 train 与 validation 的工作进程数拆成两个必填配置，七份首轮 YAML 均显式采用 `4/4`；两个 DataLoader 使用 `spawn`、`persistent_workers=False`，训练精确消费结束后显式释放迭代器，因此 validation 前不会保留训练 worker。train 与 validation 各自使用独立 `torch.Generator`，种子为 `2 × training.seed` 与 `2 × training.seed + 1`；这避免每轮重建迭代器推进模型和 dropout 使用的全局 Torch 随机状态。`resolved.json` 保存两套 worker 数、spawn、非持久生命周期、两个生成器种子及其推进规则。候选集合、`ShuffledBatchSampler(seed+epoch)` 的全局随机顺序、监督、模型、损失、物理批量、梯度累积和 global batch 32 均未改变。
+
+独立科学审查和严格表达审查均给出 PASS。冻结门禁为 pytest `47 passed`、mypy 35 个源文件零问题、compileall、七份 YAML 解析、Git Bash `bash -n` 与 `git diff --check` 通过。服务器登录节点的 CPU-only 生命周期测试最初因测试模拟 CUDA 可用后真实启动 `pin_memory=True`，而节点没有 NVIDIA 驱动，触发 PyTorch 2.4.1 初始化失败；提交 `a433715` 先断言生产 loader 的 `pin_memory=True`，再只对 CPU 测试对象关闭页锁定线程。科学与表达复核确认该测试仍真实覆盖 spawn、独立生成器、全局随机状态隔离和 worker 退出；服务器正式 Conda 环境随后为 `14 passed`。
+
+## A100 放卡与在线曲线
+
+2026-08-13 17:28 左右，Job `340893` 和 `340897` 分别取得 gnode02 与 gnode07 的一张 A100；两者均为 `a100/a100g4`、16 CPU、`TIME_LIMIT=UNLIMITED`，并由 `pre_lock` 与 `after_lock` 安全保留。完成上述实现、双审、本地门禁、服务器门禁和同步后，放卡脚本逐项断言：两个 Job 仍 RUNNING；只有各自的 pre/after 锁；动态命令分别指向 `candidate_pretrain_pair.yaml` 与 `full_scratch_molformer_oracle.yaml`；四个代表文件的本地/远端 SHA-256 一致；配置为 train/validation 4/4 workers、W&B online、A100 `8 × 4 = global 32`；PP 缓存文件数为 train 480、validation 181。脚本随后且只删除 `pre_lock_340893` 与 `pre_lock_340897`，两个 `after_lock` 均保留。
+
+两个任务冻结同一 release `/home/penghongen/Feedback/Matcher/releases/Matcher_95a9659383c2/Matcher`：
+
+- Job `340893` launch 为 `/home/penghongen/Feedback/Matcher/launches/340893/train_experiment_job340893_20260813T175925_a1`。第一阶段 W&B run ID 为 `mxornctd`，曲线为 `https://wandb.ai/pencounkdual-111/AdaLigand-Matcher/runs/mxornctd`。首个 global batch 32 于 18:01 前完成：计算 `23.8973 s`、身份监督数 0、裁剪前梯度范数 `28.1286`、峰值已分配/保留显存 `14154330112/19363004416 bytes`。
+- Job `340897` launch 为 `/home/penghongen/Feedback/Matcher/launches/340897/train_experiment_job340897_20260813T175915_a1`。W&B run ID 为 `mkaiyufz`，曲线为 `https://wandb.ai/pencounkdual-111/AdaLigand-Matcher/runs/mkaiyufz`。首个 global batch 32 于 18:01 前完成：计算 `25.0321 s`、有效身份监督数 5、裁剪前梯度范数 `53.1809`、峰值已分配/保留显存 `14190904832/19526582272 bytes`。
+
+18:01 的轻量统计中，两个新作业进程树 RSS 约为 `15.4/15.1 GB`，两个首步事件均发生在有限损失与梯度检查、参数更新和 CUDA 同步之后。由此，新 DataLoader 生命周期不仅通过合成测试，也已在真实 A100 正式任务中稳定启动。
+
+同一次状态检查发现 Job `340898/340899` 也已分别在 gnode04 与 gnode02 取得一张 A100，并由 pre/after 锁保留。放卡脚本再次逐项核对 Job 为 RUNNING、动态命令、锁、四个代表文件哈希、W&B online、MolFormer 身份损失变体、`4/4` workers、A100 `8 × 4 = global 32` 与 PP 缓存文件数；随后且只删除这两个 pre-lock，after-lock 继续保留。两者同样复用 release `Matcher_95a9659383c2`：
+
+- Job `340898` launch 为 `/home/penghongen/Feedback/Matcher/launches/340898/train_experiment_job340898_20260813T180543_a1`。W&B run ID 为 `0lam2vpk`，曲线为 `https://wandb.ai/pencounkdual-111/AdaLigand-Matcher/runs/0lam2vpk`。detached 首个 global batch 32 的计算时间为 `24.8004 s`、有效身份监督数 5、裁剪前梯度范数 `29.4950`、峰值已分配/保留显存 `14192313856/19457376256 bytes`。
+- Job `340899` launch 为 `/home/penghongen/Feedback/Matcher/launches/340899/train_experiment_job340899_20260813T180559_a1`。W&B run ID 为 `1z2vvfxj`，曲线为 `https://wandb.ai/pencounkdual-111/AdaLigand-Matcher/runs/1z2vvfxj`。joint 首个 global batch 32 的计算时间为 `22.2045 s`、有效身份监督数 5、裁剪前梯度范数 `29.3475`、峰值已分配/保留显存 `14192313856/19457376256 bytes`。
+
+截至 18:07，四个 A100 任务均已稳定开始正式训练，没有剩余 pre-lock；Job `340896` 仍按用户要求跳过。同期，SMI-TED Light 289M/oracle 已完成 epoch 1，选择分数从 `0.5607736` 改善为 `0.5727896`；旧 release 的 SMI-TED Light 289M/detached 已完成 epoch 3，选择分数从 epoch 2 的 `0.6022308` 改善为 `0.6373626`。两个 A800 任务均继续训练，after-lock 保留。
+
 ## 验证命令
 
 ```powershell
@@ -458,7 +519,8 @@ git diff --check
 
 ## 待执行与待复核项
 
-- v2 清单与首轮数据审计已经完成；BRANCHED 伪几何修复已通过独立科学与严格表达审查，待重新安全同步并冻结放卡前源码哈希。
+- v2 清单、105 通道体素、PP token 缓存、BRANCHED 多残基伪几何修复和 DataLoader 生命周期均已完成双审、安全同步与服务器门禁；后续 release 必须继续在放卡前核对源码和配置哈希。
 - `pp_top_k=1024`、六分类 `class_weights=null`、区域辅助损失权重 `0.10/0.10` 和完整 Matcher validation 三指标等权选模是首轮显式起点，需根据清单摘要和首个稳定实验记录复核。
+- Job `340893/340894/340895/340897/340898/340899` 均在正式训练。仅在新 epoch、训练阶段切换、失败或任务完成时追加执行记录，不按固定心跳重复写相同状态。Job `340896` 保持暂停，不自动补交。
 - GPU 资源实际分配后，删除 `pre_lock` 会直接启动正式命令；每个阶段的首个真实 global optimizer step 同时作为连续验收点。只有完成有限损失与梯度检查、参数更新和 CUDA 同步后，程序才打印一次 `first_global_step_accepted`，其中含 global batch、有效身份数、裁剪前梯度范数、峰值显存和首步计算耗时。这样不在验收与正式训练之间闲置 GPU；若 OOM 或非有限数值失败，程序不会打印成功事件，`after_hold` 仍会保留 allocation 供修订后重试。若 batch size 超出显存，按用户确认的顺序先将 RAUNet 通道降到原宽度的 3/4，再降低物理批量并增加梯度累积，始终保持 global batch 32。
 - 首个完整训练若超过 16 小时，只暂停后续随机种子；不中止当前训练，不设任何时间上限。
