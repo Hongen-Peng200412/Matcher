@@ -44,12 +44,23 @@ from .checkpointing import (
 from .contracts import CandidateBatch
 from .experiment_config import DataConfig, Precision, StageConfig, TrackingConfig
 from .json_artifacts import append_jsonl, write_json
-from .losses import LossOutput, LossWeights, compute_matcher_loss
+from .losses import (
+    LossOutput,
+    LossWeights,
+    MatcherLossBatch,
+    compute_matcher_loss,
+    identity_eligible_mask,
+)
 from .manifest import ensure_manifest
-from .metrics import EvaluationAccumulator, EvaluationReport, selection_score
+from .metrics import (
+    EvaluationAccumulator,
+    EvaluationReport,
+    IdentityScopeMetrics,
+    selection_score,
+)
 from .model import CandidateEncoder, ClosedSetMatcher
 from .numeric import configure_random_seeds_and_numeric_backend
-from .schema import SMALL_MOLECULE_INDEX
+from .schema import CLASS_NAMES, IdentityScope
 from .tracking import MetricValue, WandbTracker, start_wandb_tracking
 
 
@@ -68,6 +79,7 @@ _TENSOR_BATCH_KEYS = (
     "ligand_area_target",
     "binding_area_target",
     "full_candidate_voxel_count",
+    "candidate_manual_features",
     "a_tokens",
     "a_mask",
     "p_tokens",
@@ -80,6 +92,7 @@ _TENSOR_BATCH_KEYS = (
     "pp_index_zyx",
     "language_embeddings",
     "identity_mask",
+    "identity_class_index",
     "identity_target",
     "graph_to_sample",
     "graph_to_identity",
@@ -100,7 +113,7 @@ class LossValues(TypedDict):
     ``classification`` 是按候选或类别权重和归一的六分类交叉熵。
     ``ligand_area`` 是按候选平均的配体区域损失。
     ``binding_area`` 是按候选平均的受体结合区域损失。
-    ``identity`` 是按真实且身份目标有效的小分子候选平均的身份损失。
+    ``identity`` 是按当前身份范围内且目标有效的真实候选平均的身份损失。
     """
 
     total: float
@@ -126,7 +139,7 @@ class TrainingEpochResult(TypedDict):
 
     ``loss`` 是按完整 epoch 分母汇总的五项损失。
     ``sample_count`` 是本轮实际参与训练的候选数。
-    ``identity_eligible_count`` 是有当前语言身份目标的真实小分子候选数。
+    ``identity_eligible_count`` 是当前身份范围内有语言与配体图目标的真实候选数。
     ``optimizer_steps`` 是本轮完成的 global-batch 参数更新次数。
     ``skipped_optimizer_steps`` 保留统一训练产物字段；当前 fail-fast 策略下恒为 0。
     ``mean_preclip_gradient_norm`` 是各更新裁剪前全模型 L2 梯度范数均值。
@@ -168,7 +181,7 @@ class EvaluationResult(TypedDict):
     ``loss`` 是按整个划分真实分母汇总的五项损失。
     ``metrics`` 是六分类、身份与区域指标的完整 EvaluationReport。
     ``sample_count`` 是该划分实际纳入评估的候选数。
-    ``identity_eligible_count`` 是有当前语言身份目标的真实小分子候选数。
+    ``identity_eligible_count`` 是当前身份范围内有语言与配体图目标的真实候选数。
     ``elapsed_seconds`` 是完整评估墙钟秒数。
     ``samples_per_second`` 是 sample_count 除以 elapsed_seconds。
     """
@@ -189,7 +202,7 @@ class StageSummary(TypedDict):
     ``best_score`` 是有限的最佳 validation 选择分数。
     ``last_epoch`` 是实际完成的最后一个零起始 epoch。
     ``global_step`` 是阶段结束后的累计 global-batch 更新次数。
-    ``stopped_by_patience`` 表示是否因连续两轮 validation 无改善停止。
+    ``stopped_by_patience`` 表示是否达到本阶段配置的连续坏轮数后停止。
     ``best_checkpoint`` 是严格改善时原子更新的 BEST.pt 路径。
     ``last_checkpoint`` 是每轮原子更新的 LAST.pt 路径。
     ``tracking_run_id`` 是本阶段 W&B online run 的不可变标识。
@@ -237,7 +250,7 @@ class EpochRecord(TypedDict):
 
 @dataclass
 class _LossStatistics:
-    """按样本累积三个基础损失，按有效真实小分子累积身份损失分子。"""
+    """按样本累积三个基础损失，按当前范围内有效真实身份累积身份损失分子。"""
 
     sample_count: int = 0
     classification_numerator: float = 0.0
@@ -278,7 +291,7 @@ class _LossStatistics:
         self.identity_eligible_count += eligible_count
 
     def compute(self, weights: LossWeights) -> LossValues:
-        """返回三个样本均值、全局有效小分子均值与按配置加权的总损失。"""
+        """返回三个样本均值、全局有效身份均值与按配置加权的总损失。"""
 
         if self.sample_count == 0:
             raise RuntimeError("不能汇总空损失统计。")
@@ -354,6 +367,7 @@ def _build_stage_runtime(
         data.roots,
         data.coverage_threshold,
         data.selection_seed,
+        ("train", "validation"),
     )
     cache_bytes_per_worker = int(data.cache_gib_per_worker * 1024**3)
     train_dataset = CandidateDataset(
@@ -362,6 +376,7 @@ def _build_stage_runtime(
         split_name="train",
         task_name=stage.task_name,
         language_family=stage.language_family,
+        identity_scope=stage.identity_scope,
         pp_top_k=data.pp_top_k,
         cache_bytes_per_worker=cache_bytes_per_worker,
     )
@@ -371,6 +386,7 @@ def _build_stage_runtime(
         split_name="validation",
         task_name=stage.task_name,
         language_family=stage.language_family,
+        identity_scope=stage.identity_scope,
         pp_top_k=data.pp_top_k,
         cache_bytes_per_worker=cache_bytes_per_worker,
     )
@@ -588,14 +604,18 @@ def _train_epoch(
                 f"global batch 应含 {stage.training.global_batch_size} 个候选，"
                 f"实际为 {group_sample_count}。"
             )
-        group_eligible_count = sum(
-            int(
-                (
-                    (batch["class_target"] == SMALL_MOLECULE_INDEX)
-                    & (batch["identity_target"] >= 0)
-                ).sum()
+        group_eligible_count = (
+            sum(
+                int(
+                    identity_eligible_mask(
+                        cast(MatcherLossBatch, batch),
+                        stage.identity_scope,
+                    ).sum()
+                )
+                for batch in cpu_group
             )
-            for batch in cpu_group
+            if stage.identity_scope is not None
+            else 0
         )
         group_classification_denominator = _classification_denominator(
             cpu_group,
@@ -613,6 +633,7 @@ def _train_epoch(
                     batch,
                     stage.training.loss_weights,
                     stage.identity_variant,
+                    stage.identity_scope,
                     class_weights,
                 )
                 scaled_loss = _accumulation_backward_loss(
@@ -681,25 +702,34 @@ def _train_epoch(
             graph_gate = None
             inventory_gate = None
         step_metrics: dict[str, MetricValue] = {
-            "train/step/loss_total": group_loss["total"],
-            "train/step/loss_classification": group_loss["classification"],
-            "train/step/loss_ligand_area": group_loss["ligand_area"],
-            "train/step/loss_binding_area": group_loss["binding_area"],
-            "train/step/loss_identity": group_loss["identity"],
-            "train/step/identity_eligible_count": group_eligible_count,
-            "train/step/preclip_gradient_norm": gradient_norm,
-            "train/step/graph_branch_gradient_norm": graph_gradient_norm,
-            "train/step/inventory_branch_gradient_norm": inventory_gradient_norm,
-            "train/step/graph_gate": graph_gate,
-            "train/step/inventory_gate": inventory_gate,
-            "train/step/learning_rate": float(optimizer.param_groups[0]["lr"]),
-            "train/step/data_wait_seconds": group_data_wait_seconds,
-            "train/step/compute_seconds": global_step_compute_seconds,
-            "train/step/samples_per_second": group_sample_count
+            "loss/train_step/total": group_loss["total"],
+            "loss/train_step/classification": group_loss["classification"],
+            "loss/train_step/ligand_area": group_loss["ligand_area"],
+            "loss/train_step/binding_area": group_loss["binding_area"],
+            "loss/train_step/identity": group_loss["identity"],
+            "statistics/train_step/identity_eligible_count": group_eligible_count,
+            "gradient/train_step/preclip_norm": gradient_norm,
+            "learning_rate/train_step/current": float(optimizer.param_groups[0]["lr"]),
+            "performance/train_step/data_wait_seconds": group_data_wait_seconds,
+            "performance/train_step/compute_seconds": global_step_compute_seconds,
+            "performance/train_step/samples_per_second": group_sample_count
             / max(group_data_wait_seconds + global_step_compute_seconds, 1e-12),
-            "train/step/peak_cuda_allocated_bytes": torch.cuda.max_memory_allocated(device),
-            "train/step/peak_cuda_reserved_bytes": torch.cuda.max_memory_reserved(device),
+            "memory/train_step/peak_cuda_allocated_bytes": (
+                torch.cuda.max_memory_allocated(device)
+            ),
+            "memory/train_step/peak_cuda_reserved_bytes": (
+                torch.cuda.max_memory_reserved(device)
+            ),
         }
+        if graph_gradient_norm is not None:
+            step_metrics["gradient/train_step/graph_branch_norm"] = graph_gradient_norm
+        if inventory_gradient_norm is not None:
+            step_metrics[
+                "gradient/train_step/inventory_branch_norm"
+            ] = inventory_gradient_norm
+        if graph_gate is not None and inventory_gate is not None:
+            step_metrics["gate/train_step/graph"] = graph_gate
+            step_metrics["gate/train_step/inventory"] = inventory_gate
         tracker.log_global_step(global_step, step_metrics)
     # 循环不会额外请求 StopIteration；显式释放迭代器，确保 validation 前回收训练 worker。
     del loader_iterator
@@ -748,7 +778,7 @@ def _accumulation_backward_loss(
     group_classification_denominator: float,
     group_identity_eligible_count: int,
 ) -> torch.Tensor:
-    """按 global batch 样本数缩放基础项，并按同一 global batch 的真实有效小分子数缩放身份项。"""
+    """按 global batch 样本数缩放基础项，并按同组当前身份范围的真实有效数缩放身份项。"""
 
     classification_fraction = (
         losses["classification_denominator"] / group_classification_denominator
@@ -831,6 +861,153 @@ def _resolve_initial_checkpoint(specification: str, plan_directory: Path) -> Pat
     return Path(path.as_posix())
 
 
+def _append_identity_scope_wandb_metrics(
+    destination: dict[str, MetricValue],
+    prefix: str,
+    report: IdentityScopeMetrics,
+) -> None:
+    """把一个身份范围的三层报告展开到同一 W&B 命名子树。"""
+
+    intrinsic = report["intrinsic"]
+    conditional = report["conditional"]
+    end_to_end = report["end_to_end"]
+    destination.update(
+        {
+            f"{prefix}/intrinsic/top1": intrinsic["top1"],
+            f"{prefix}/intrinsic/topk": intrinsic["topk"],
+            f"{prefix}/intrinsic/eligible_count": intrinsic["eligible_count"],
+            f"{prefix}/conditional/top1": conditional["top1"],
+            f"{prefix}/conditional/topk": conditional["topk"],
+            f"{prefix}/conditional/eligible_count": conditional["eligible_count"],
+            f"{prefix}/end_to_end/precision": end_to_end["precision"],
+            f"{prefix}/end_to_end/recall": end_to_end["recall"],
+            f"{prefix}/end_to_end/f1": end_to_end["f1"],
+            f"{prefix}/end_to_end/true_positive_count": end_to_end["true_positive"],
+            f"{prefix}/end_to_end/predicted_positive_count": end_to_end[
+                "predicted_positive"
+            ],
+            f"{prefix}/end_to_end/actual_positive_count": end_to_end[
+                "actual_positive"
+            ],
+        }
+    )
+
+
+def _evaluation_wandb_metrics(
+    evaluation: EvaluationResult,
+    identity_scope: IdentityScope | None,
+) -> dict[str, MetricValue]:
+    """把完整 validation 结果展开为按职责分组的 W&B 标量。"""
+
+    report = evaluation["metrics"]
+    six_class = report["six_class"]
+    area = report["area"]
+    metrics: dict[str, MetricValue] = {
+        "loss/validation/total": evaluation["loss"]["total"],
+        "loss/validation/classification": evaluation["loss"]["classification"],
+        "loss/validation/ligand_area": evaluation["loss"]["ligand_area"],
+        "loss/validation/binding_area": evaluation["loss"]["binding_area"],
+        "loss/validation/identity": evaluation["loss"]["identity"],
+        "performance/validation/elapsed_seconds": evaluation["elapsed_seconds"],
+        "performance/validation/samples_per_second": evaluation["samples_per_second"],
+        "statistics/validation/sample_count": evaluation["sample_count"],
+        "statistics/validation/identity_eligible_count": evaluation[
+            "identity_eligible_count"
+        ],
+        "classification_summary/accuracy": six_class["accuracy"],
+        "classification_summary/macro_f1": six_class["macro_f1"],
+        "classification_summary/macro_f1_supported_classes": six_class[
+            "macro_f1_supported_classes"
+        ],
+        "classification_summary/macro_f1_all_classes": six_class[
+            "macro_f1_all_classes"
+        ],
+        "area/ligand/micro_dice": area["ligand_micro_dice"],
+        "area/ligand/dice_denominator": area["ligand_dice_denominator"],
+        "area/binding/micro_dice": area["binding_micro_dice"],
+        "area/binding/dice_denominator": area["binding_dice_denominator"],
+    }
+    for class_name, class_metrics in six_class["per_class"].items():
+        prefix = f"classification_per_class/{class_name}"
+        metrics[f"{prefix}/precision"] = class_metrics["precision"]
+        metrics[f"{prefix}/recall"] = class_metrics["recall"]
+        metrics[f"{prefix}/f1"] = class_metrics["f1"]
+        metrics[f"{prefix}/support"] = class_metrics["support"]
+        metrics[f"{prefix}/predicted_count"] = class_metrics["predicted_count"]
+    for true_index, true_name in enumerate(CLASS_NAMES):
+        for predicted_index, predicted_name in enumerate(CLASS_NAMES):
+            metrics[
+                f"classification_confusion/{true_name}/{predicted_name}"
+            ] = six_class["confusion_matrix"][true_index][predicted_index]
+    if identity_scope is not None:
+        configured_intrinsic = report["intrinsic_identity"]
+        configured_conditional = report["conditional_identity"]
+        configured_end_to_end = report["end_to_end_identity"]
+        metrics.update(
+            {
+                "identity_configured/intrinsic/top1": configured_intrinsic["top1"],
+                "identity_configured/intrinsic/topk": configured_intrinsic["topk"],
+                "identity_configured/intrinsic/eligible_count": configured_intrinsic[
+                    "eligible_count"
+                ],
+                "identity_configured/conditional/top1": configured_conditional["top1"],
+                "identity_configured/conditional/topk": configured_conditional["topk"],
+                "identity_configured/conditional/eligible_count": configured_conditional[
+                    "eligible_count"
+                ],
+                "identity_configured/conditional/seen/top1": configured_conditional[
+                    "seen_top1"
+                ],
+                "identity_configured/conditional/seen/topk": configured_conditional[
+                    "seen_topk"
+                ],
+                "identity_configured/conditional/seen/count": configured_conditional[
+                    "seen_count"
+                ],
+                "identity_configured/conditional/unseen/top1": configured_conditional[
+                    "unseen_top1"
+                ],
+                "identity_configured/conditional/unseen/topk": configured_conditional[
+                    "unseen_topk"
+                ],
+                "identity_configured/conditional/unseen/count": configured_conditional[
+                    "unseen_count"
+                ],
+                "identity_configured/end_to_end/precision": configured_end_to_end[
+                    "precision"
+                ],
+                "identity_configured/end_to_end/recall": configured_end_to_end["recall"],
+                "identity_configured/end_to_end/f1": configured_end_to_end["f1"],
+                "identity_configured/end_to_end/true_positive_count": (
+                    configured_end_to_end["true_positive"]
+                ),
+                "identity_configured/end_to_end/predicted_positive_count": (
+                    configured_end_to_end["predicted_positive"]
+                ),
+                "identity_configured/end_to_end/actual_positive_count": (
+                    configured_end_to_end["actual_positive"]
+                ),
+            }
+        )
+        _append_identity_scope_wandb_metrics(
+            metrics,
+            "identity_small_molecule",
+            report["small_molecule_identity"],
+        )
+        _append_identity_scope_wandb_metrics(
+            metrics,
+            "identity_all_non_background",
+            report["all_non_background_identity"],
+        )
+        for class_name, identity_report in report["identity_per_class"].items():
+            _append_identity_scope_wandb_metrics(
+                metrics,
+                f"identity_{class_name}",
+                identity_report,
+            )
+    return metrics
+
+
 # ================================================================================================
 
 
@@ -849,7 +1026,7 @@ def evaluate_model(
 
     started_at = time.perf_counter()
     model.eval()
-    metrics = EvaluationAccumulator(top_k=5)
+    metrics = EvaluationAccumulator(identity_scope=stage.identity_scope, top_k=5)
     statistics = _LossStatistics()
     with torch.inference_mode():
         for cpu_batch in loader:
@@ -861,6 +1038,7 @@ def evaluate_model(
                     batch,
                     stage.training.loss_weights,
                     stage.identity_variant,
+                    stage.identity_scope,
                     class_weights,
                 )
             batch_size = int(batch["class_target"].shape[0])
@@ -991,85 +1169,59 @@ def run_training_stage(
             save_checkpoint(stage_directory / "LAST.pt", checkpoint_state)
             if improved:
                 save_checkpoint(stage_directory / "BEST.pt", checkpoint_state)
-            validation_report = validation["metrics"]
-            six_class = validation_report["six_class"]
-            intrinsic_identity = validation_report["intrinsic_identity"]
-            conditional_identity = validation_report["conditional_identity"]
-            end_to_end_identity = validation_report["end_to_end_identity"]
-            area = validation_report["area"]
             epoch_metrics: dict[str, MetricValue] = {
-                "train/epoch/loss_total": training["loss"]["total"],
-                "train/epoch/loss_classification": training["loss"]["classification"],
-                "train/epoch/loss_ligand_area": training["loss"]["ligand_area"],
-                "train/epoch/loss_binding_area": training["loss"]["binding_area"],
-                "train/epoch/loss_identity": training["loss"]["identity"],
-                "train/epoch/samples_per_second": training["samples_per_second"],
-                "train/epoch/data_wait_seconds": training["data_wait_seconds"],
-                "train/epoch/compute_seconds": training["compute_seconds"],
-                "train/epoch/mean_preclip_gradient_norm": training[
+                "loss/train_epoch/total": training["loss"]["total"],
+                "loss/train_epoch/classification": training["loss"]["classification"],
+                "loss/train_epoch/ligand_area": training["loss"]["ligand_area"],
+                "loss/train_epoch/binding_area": training["loss"]["binding_area"],
+                "loss/train_epoch/identity": training["loss"]["identity"],
+                "statistics/train_epoch/sample_count": training["sample_count"],
+                "statistics/train_epoch/identity_eligible_count": training[
+                    "identity_eligible_count"
+                ],
+                "performance/train_epoch/elapsed_seconds": training["elapsed_seconds"],
+                "performance/train_epoch/samples_per_second": training[
+                    "samples_per_second"
+                ],
+                "performance/train_epoch/data_wait_seconds": training["data_wait_seconds"],
+                "performance/train_epoch/compute_seconds": training["compute_seconds"],
+                "memory/train_epoch/peak_cuda_allocated_bytes": training[
+                    "peak_cuda_allocated_bytes"
+                ],
+                "memory/train_epoch/peak_cuda_reserved_bytes": training[
+                    "peak_cuda_reserved_bytes"
+                ],
+                "gradient/train_epoch/preclip_mean_norm": training[
                     "mean_preclip_gradient_norm"
                 ],
-                "train/epoch/maximum_preclip_gradient_norm": training[
+                "gradient/train_epoch/preclip_maximum_norm": training[
                     "maximum_preclip_gradient_norm"
                 ],
-                "train/epoch/learning_rate_used": learning_rate_used,
-                "validation/loss_total": validation["loss"]["total"],
-                "validation/loss_classification": validation["loss"]["classification"],
-                "validation/loss_ligand_area": validation["loss"]["ligand_area"],
-                "validation/loss_binding_area": validation["loss"]["binding_area"],
-                "validation/loss_identity": validation["loss"]["identity"],
-                "validation/samples_per_second": validation["samples_per_second"],
-                "validation/six_class_accuracy": six_class["accuracy"],
-                "validation/six_class_macro_f1": six_class["macro_f1"],
-                "validation/six_class_macro_f1_supported_classes": six_class[
-                    "macro_f1_supported_classes"
-                ],
-                "validation/six_class_macro_f1_all_classes": six_class[
-                    "macro_f1_all_classes"
-                ],
-                "validation/intrinsic_identity_top1": intrinsic_identity["top1"],
-                "validation/intrinsic_identity_topk": intrinsic_identity["topk"],
-                "validation/intrinsic_identity_eligible_count": intrinsic_identity[
-                    "eligible_count"
-                ],
-                "validation/conditional_identity_top1": conditional_identity["top1"],
-                "validation/conditional_identity_topk": conditional_identity["topk"],
-                "validation/conditional_identity_eligible_count": conditional_identity[
-                    "eligible_count"
-                ],
-                "validation/conditional_seen_top1": conditional_identity["seen_top1"],
-                "validation/conditional_seen_topk": conditional_identity["seen_topk"],
-                "validation/conditional_seen_count": conditional_identity["seen_count"],
-                "validation/conditional_unseen_top1": conditional_identity["unseen_top1"],
-                "validation/conditional_unseen_topk": conditional_identity["unseen_topk"],
-                "validation/conditional_unseen_count": conditional_identity["unseen_count"],
-                "validation/end_to_end_identity_precision": end_to_end_identity["precision"],
-                "validation/end_to_end_identity_recall": end_to_end_identity["recall"],
-                "validation/end_to_end_identity_f1": end_to_end_identity["f1"],
-                "validation/end_to_end_true_positive_count": end_to_end_identity[
-                    "true_positive"
-                ],
-                "validation/end_to_end_predicted_small_molecule_count": end_to_end_identity[
-                    "predicted_small_molecule"
-                ],
-                "validation/end_to_end_actual_small_molecule_count": end_to_end_identity[
-                    "actual_small_molecule"
-                ],
-                "validation/ligand_micro_dice": area["ligand_micro_dice"],
-                "validation/binding_micro_dice": area["binding_micro_dice"],
-                "validation/ligand_dice_denominator": area["ligand_dice_denominator"],
-                "validation/binding_dice_denominator": area["binding_dice_denominator"],
+                "learning_rate/train_epoch/used": learning_rate_used,
                 "selection/score": score,
                 "selection/best_score": best_score,
                 "selection/improved": improved,
                 "selection/bad_validation_epochs": bad_validation_epochs,
-                "selection/next_learning_rate": next_learning_rate,
+                "learning_rate/train_epoch/next": next_learning_rate,
             }
-            for class_name, class_metrics in six_class["per_class"].items():
-                epoch_metrics[f"validation/six_class_f1/{class_name}"] = class_metrics["f1"]
-                epoch_metrics[f"validation/six_class_support/{class_name}"] = class_metrics[
-                    "support"
+            if training["identity_diagnostics"] is not None:
+                epoch_metrics["gate/train_epoch/graph"] = training[
+                    "identity_diagnostics"
+                ]["graph_gate"]
+                epoch_metrics["gate/train_epoch/inventory"] = training[
+                    "identity_diagnostics"
+                ]["inventory_gate"]
+            if training["mean_graph_branch_gradient_norm"] is not None:
+                epoch_metrics["gradient/train_epoch/graph_branch_mean_norm"] = training[
+                    "mean_graph_branch_gradient_norm"
                 ]
+            if training["mean_inventory_branch_gradient_norm"] is not None:
+                epoch_metrics[
+                    "gradient/train_epoch/inventory_branch_mean_norm"
+                ] = training["mean_inventory_branch_gradient_norm"]
+            epoch_metrics.update(
+                _evaluation_wandb_metrics(validation, stage.identity_scope)
+            )
             tracker.log_epoch(epoch, global_step, epoch_metrics)
             print(
                 json.dumps(

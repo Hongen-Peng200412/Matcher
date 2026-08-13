@@ -170,24 +170,23 @@ def test_wandb_tracker_records_complete_metadata_intervals_nulls_summary_and_exi
     assert fake_wandb.initialization["project"] == "AdaLigand-Matcher"
     assert fake_wandb.initialization["entity"] == "pencounkdual-111"
     assert fake_wandb.settings == {"init_timeout": 120}
-    assert run.metric_definitions == [
-        ("global_step", None),
-        ("train/step/*", "global_step"),
-        ("epoch", None),
-        ("train/epoch/*", "epoch"),
-        ("validation/*", "epoch"),
-        ("selection/*", "epoch"),
-    ]
+    assert ("global_step", None) in run.metric_definitions
+    assert ("loss/train_step/*", "global_step") in run.metric_definitions
+    assert ("gradient/train_step/*", "global_step") in run.metric_definitions
+    assert ("epoch", None) in run.metric_definitions
+    assert ("classification_summary/*", "epoch") in run.metric_definitions
+    assert ("identity_all_non_background/*", "epoch") in run.metric_definitions
+    assert ("selection/*", "epoch") in run.metric_definitions
 
-    tracker.log_global_step(1, {"train/step/loss_total": 1.0})
-    tracker.log_global_step(2, {"train/step/loss_total": 0.75})
-    tracker.log_global_step(3, {"train/step/loss_total": 0.5})
+    tracker.log_global_step(1, {"loss/train_step/total": 1.0})
+    tracker.log_global_step(2, {"loss/train_step/total": 0.75})
+    tracker.log_global_step(3, {"loss/train_step/total": 0.5})
     tracker.log_epoch(
         0,
         2,
         {
-            "validation/conditional_seen_top1": float("nan"),
-            "validation/conditional_seen_count": 0,
+            "identity_configured/conditional/seen/top1": float("nan"),
+            "identity_configured/conditional/seen/count": 0,
         },
     )
     tracker.update_summary({"best_epoch": 0, "best_score": 0.4})
@@ -195,7 +194,7 @@ def test_wandb_tracker_records_complete_metadata_intervals_nulls_summary_and_exi
 
     assert [values["global_step"] for values in run.logs[:2]] == [1, 2]
     assert run.logs[2]["epoch"] == 0
-    assert run.logs[2]["validation/conditional_seen_top1"] is None
+    assert run.logs[2]["identity_configured/conditional/seen/top1"] is None
     assert run.summary.values == {"best_epoch": 0, "best_score": 0.4}
     assert run.exit_codes == [0]
 
@@ -224,9 +223,9 @@ def test_wandb_tracker_rejects_unexplained_nonfinite_training_metrics(
     )
 
     with pytest.raises(FloatingPointError, match="未被零支持分母解释"):
-        tracker.log_global_step(1, {"train/step/loss_total": float("nan")})
+        tracker.log_global_step(1, {"loss/train_step/total": float("nan")})
     with pytest.raises(FloatingPointError, match="含 Inf"):
-        tracker.log_global_step(1, {"train/step/loss_total": float("inf")})
+        tracker.log_global_step(1, {"loss/train_step/total": float("inf")})
 
 
 def test_wandb_start_rejects_empty_run_id_and_finishes_created_run(

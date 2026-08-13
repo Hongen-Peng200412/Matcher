@@ -12,7 +12,7 @@ from typing import Literal, TypedDict
 import torch
 from torch.nn import functional as F
 
-from .schema import SMALL_MOLECULE_INDEX
+from .schema import CLASS_NAMES, IdentityScope, identity_scope_class_indices
 
 
 IdentityLossVariant = Literal["oracle", "detached", "joint"]
@@ -40,6 +40,8 @@ class MatcherLossBatch(TypedDict):
     ``class_target`` 和 ``identity_target`` 是 int64 ``(B,)``；后者以 ``-1``
     表示没有身份监督。``ligand_area_target`` 和 ``binding_area_target`` 是 bool
     ``(B,Z,Y,X)``。``identity_mask`` 是 bool ``(B,I)``，真值表示有效身份槽。
+    ``identity_class_index`` 是 int64 ``(B,I)``；有效槽保存五类非背景下标，
+    补零槽保存 -1，非负 identity_target 指向的类别必须等于 class_target。
     """
 
     class_target: torch.Tensor
@@ -47,10 +49,11 @@ class MatcherLossBatch(TypedDict):
     binding_area_target: torch.Tensor
     identity_target: torch.Tensor
     identity_mask: torch.Tensor
+    identity_class_index: torch.Tensor
 
 
 class LossOutput(TypedDict):
-    """损失输出：``total/classification/ligand_area/binding_area/identity`` 均是浮点标量；``classification_denominator`` 是六分类权重和浮点标量；``identity_eligible_count`` 是 int64 标量真实有效小分子数。"""
+    """损失输出：``total/classification/ligand_area/binding_area/identity`` 均是浮点标量；``classification_denominator`` 是六分类权重和浮点标量；``identity_eligible_count`` 是 int64 标量真实有效身份目标数。"""
 
     total: torch.Tensor
     classification: torch.Tensor
@@ -66,12 +69,13 @@ def compute_matcher_loss(
     batch: MatcherLossBatch,
     weights: LossWeights,
     identity_variant: IdentityLossVariant | None,
+    identity_scope: IdentityScope | None,
     class_weights: torch.Tensor | None,
 ) -> LossOutput:
     """读取 ``outputs`` 的 ``class_logits`` ``(B,6)``、两个 ``(B,Z,Y,X)`` 区域分数和完整 Matcher 才需的 ``identity_logits`` ``(B,I)``，再与 ``MatcherLossBatch`` 对应目标计算 ``LossOutput``。
 
-    身份项只覆盖真实六分类标签为 small_molecule 且当前语言模型存在目标表示的
-    候选。三个变体都除以这类候选的真实数量，不以 ``p_small`` 权重和作分母。
+    身份项覆盖 ``identity_scope`` 中具有有效目标的候选。三个变体都除以真实
+    有效候选数，不以目标类别概率权重和作分母。
     """
 
     per_candidate_classification = F.cross_entropy(
@@ -103,6 +107,8 @@ def compute_matcher_loss(
     identity = base.new_zeros(())
     eligible_count = torch.zeros((), device=base.device, dtype=torch.long)
     if identity_variant is not None:
+        if identity_scope is None:
+            raise ValueError("启用身份损失时必须指定 identity_scope。")
         if identity_variant not in ("oracle", "detached", "joint"):
             raise ValueError(f"不支持 identity_variant={identity_variant!r}。")
         if "identity_logits" not in outputs:
@@ -112,7 +118,10 @@ def compute_matcher_loss(
             outputs["class_logits"],
             batch,
             identity_variant,
+            identity_scope,
         )
+    elif identity_scope is not None:
+        raise ValueError("未启用身份损失时 identity_scope 必须为 None。")
     total = base + weights.identity * identity
     return {
         "total": total,
@@ -153,8 +162,9 @@ def _identity_loss(
     class_logits: torch.Tensor,
     batch: MatcherLossBatch,
     variant: IdentityLossVariant,
+    identity_scope: IdentityScope,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """对 ``(B,I)`` 身份分数实现三种门控交叉熵，返回损失标量与真实有效小分子计数。"""
+    """按目标身份所属类别门控 ``(B,I)`` 交叉熵，返回损失与有效候选数。"""
 
     target = batch["identity_target"]
     identity_mask = batch["identity_mask"]
@@ -164,7 +174,14 @@ def _identity_loss(
         or identity_mask.shape != identity_logits.shape
     ):
         raise ValueError("identity_mask 必须是与 identity_logits 同形的 bool (B,I) 张量。")
-    eligible = (batch["class_target"] == SMALL_MOLECULE_INDEX) & (target >= 0)
+    identity_class_index = batch["identity_class_index"]
+    if identity_class_index.shape != identity_mask.shape or identity_class_index.dtype != torch.long:
+        raise ValueError("identity_class_index 必须是与 identity_mask 同形的 int64 张量。")
+    if torch.any(identity_class_index[identity_mask] <= 0) or torch.any(
+        identity_class_index[identity_mask] >= len(CLASS_NAMES)
+    ):
+        raise ValueError("有效身份必须属于非背景类别。")
+    eligible = identity_eligible_mask(batch, identity_scope)
     count = eligible.sum()
     if not torch.any(eligible):
         # 保留身份分支计算图，使分布式或自动混合精度训练的零样本批次行为一致。
@@ -177,10 +194,36 @@ def _identity_loss(
         raise ValueError("identity_target 超出 identity_logits 的身份轴。")
     if not torch.all(identity_mask[eligible, selected_target]):
         raise ValueError("identity_target 必须指向 identity_mask 中的有效身份。")
+    selected_class = identity_class_index[eligible, selected_target]
+    if not torch.equal(selected_class, batch["class_target"][eligible]):
+        raise ValueError("identity_target 指向的身份类别必须等于候选真实六分类类别。")
     per_candidate = F.cross_entropy(selected_logits, selected_target, reduction="none")
     if variant == "oracle":
         multiplier = torch.ones_like(per_candidate)
     else:
-        p_small = torch.softmax(class_logits, dim=-1)[eligible, SMALL_MOLECULE_INDEX]
-        multiplier = p_small.detach() if variant == "detached" else p_small
+        target_class_probability = torch.softmax(class_logits, dim=-1)[
+            eligible,
+            selected_class,
+        ]
+        multiplier = (
+            target_class_probability.detach()
+            if variant == "detached"
+            else target_class_probability
+        )
     return (multiplier * per_candidate).sum() / count.to(per_candidate.dtype), count
+
+
+def identity_eligible_mask(
+    batch: MatcherLossBatch,
+    identity_scope: IdentityScope,
+) -> torch.Tensor:
+    """返回 ``(B,)`` 身份损失分母掩码，不读取模型预测。"""
+
+    class_target = batch["class_target"]
+    target = batch["identity_target"]
+    if class_target.shape != target.shape or class_target.ndim != 1:
+        raise ValueError("class_target 与 identity_target 必须是同形 (B,) 张量。")
+    allowed = torch.zeros_like(class_target, dtype=torch.bool)
+    for class_index in identity_scope_class_indices(identity_scope):
+        allowed |= class_target == class_index
+    return allowed & (target >= 0)

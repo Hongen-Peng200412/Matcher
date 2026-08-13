@@ -14,9 +14,10 @@ from torch import nn
 from torch.nn import functional as F
 
 from ..contracts import CandidateBatch
-from ..schema import LANGUAGE_EMBEDDING_DIM
+from ..schema import CANDIDATE_MANUAL_FEATURE_DIM, CLASS_NAMES, LANGUAGE_EMBEDDING_DIM
 from .candidate_encoder import CandidateEncoder, CandidateEncoderOutput
 from .config import MatcherModelConfig
+from .fusion import normalize_candidate_manual_features
 
 
 class IdentityRepresentations(TypedDict):
@@ -305,50 +306,81 @@ class IdentityEncoder(nn.Module):
 
 
 class PairScorer(nn.Module):
-    """对候选和一类身份表示打分。构造参数是模型宽度 ``D_m`` 和 dropout；前向输入 ``(B,D_m)`` 与 ``(B,I,D_m)``，输出 ``(B,I)``。"""
+    """对候选和一类身份表示打分。启用手动特征时，兼容性 MLP 额外读取 ``(B,12)`` 候选统计和 ``(B,I)`` 目标类别概率；输出 ``(B,I)``。"""
 
-    def __init__(self, model_dim: int, dropout: float) -> None:
+    def __init__(self, model_dim: int, dropout: float, use_manual_features: bool) -> None:
         super().__init__()
+        self.use_manual_features = use_manual_features
         self.candidate = nn.Linear(model_dim, model_dim, bias=False)
         self.identity = nn.Linear(model_dim, model_dim, bias=False)
         self.log_scale = nn.Parameter(torch.tensor(math.log(10.0)))
+        compatibility_dim = (
+            model_dim * 4 + CANDIDATE_MANUAL_FEATURE_DIM + 1
+            if use_manual_features
+            else model_dim * 4
+        )
         self.compatibility = nn.Sequential(
-            nn.LayerNorm(model_dim * 4),
-            nn.Linear(model_dim * 4, model_dim),
+            nn.LayerNorm(compatibility_dim),
+            nn.Linear(compatibility_dim, model_dim),
             nn.GELU(),
             nn.Dropout(dropout),
             nn.Linear(model_dim, 1),
         )
 
-    def forward(self, candidate: torch.Tensor, identities: torch.Tensor) -> torch.Tensor:
-        """余弦点积对通道轴 ``D_m`` 求和，保留批次轴 ``B`` 和身份轴 ``I``，再加逐身份兼容性残差。"""
+    def forward(
+        self,
+        candidate: torch.Tensor,
+        identities: torch.Tensor,
+        normalized_manual_features: torch.Tensor | None,
+        identity_class_probability: torch.Tensor | None,
+    ) -> torch.Tensor:
+        """余弦点积沿 ``D_m`` 求和，再用候选—身份及可选手动特征计算残差。"""
 
         candidate_projected = F.normalize(self.candidate(candidate), dim=-1)
         identity_projected = F.normalize(self.identity(identities), dim=-1)
         cosine = torch.einsum("bd,bid->bi", candidate_projected, identity_projected)
         candidate_expanded = candidate[:, None, :].expand_as(identities)
-        residual = self.compatibility(
-            torch.cat(
+        compatibility_parts = [
+            candidate_expanded,
+            identities,
+            candidate_expanded * identities,
+            torch.abs(candidate_expanded - identities),
+        ]
+        if self.use_manual_features:
+            if normalized_manual_features is None or identity_class_probability is None:
+                raise ValueError("启用手动特征的身份打分必须提供候选统计和身份类别概率。")
+            if normalized_manual_features.shape != (
+                candidate.shape[0],
+                CANDIDATE_MANUAL_FEATURE_DIM,
+            ):
+                raise ValueError("身份打分的候选手动特征形状错误。")
+            if identity_class_probability.shape != identities.shape[:2]:
+                raise ValueError("身份类别概率必须与身份轴对齐。")
+            compatibility_parts.extend(
                 (
-                    candidate_expanded,
-                    identities,
-                    candidate_expanded * identities,
-                    torch.abs(candidate_expanded - identities),
-                ),
-                dim=-1,
+                    normalized_manual_features[:, None, :].expand(
+                        -1,
+                        identities.shape[1],
+                        -1,
+                    ),
+                    identity_class_probability[..., None],
+                )
             )
-        )[..., 0]
+        elif normalized_manual_features is not None or identity_class_probability is not None:
+            raise ValueError("未启用手动特征的身份打分不得接收额外特征。")
+        residual = self.compatibility(torch.cat(compatibility_parts, dim=-1))[..., 0]
         return cosine * self.log_scale.exp().clamp_max(100.0) + residual
 
 
 class IdentityScorer(nn.Module):
     """合并三条候选—身份分支。构造参数是模型宽度 ``D_m`` 和 dropout；native 始终参与，graph/inventory 出口标量门从严格零开始；前向输出 ``(B,I)``。"""
 
-    def __init__(self, model_dim: int, dropout: float) -> None:
+    def __init__(self, model_dim: int, dropout: float, use_manual_features: bool) -> None:
         super().__init__()
-        self.native = PairScorer(model_dim, dropout)
-        self.graph = PairScorer(model_dim, dropout)
-        self.inventory = PairScorer(model_dim, dropout)
+        self.use_manual_features = use_manual_features
+        self.native = PairScorer(model_dim, dropout, use_manual_features)
+        self.graph = PairScorer(model_dim, dropout, use_manual_features)
+        self.inventory = PairScorer(model_dim, dropout, use_manual_features)
         self.graph_gate = nn.Parameter(torch.zeros(()))
         self.inventory_gate = nn.Parameter(torch.zeros(()))
 
@@ -357,8 +389,11 @@ class IdentityScorer(nn.Module):
         candidate: torch.Tensor,
         identities: IdentityRepresentations,
         identity_mask: torch.Tensor,
+        class_logits: torch.Tensor,
+        identity_class_index: torch.Tensor,
+        candidate_manual_features: torch.Tensor,
     ) -> torch.Tensor:
-        """将 native 分数与两个门控增量逐元素相加；``(B,I)`` 掩码为假的位置在末端设为当前 dtype 的有限最小值。"""
+        """合并三条分支；启用时拼接候选统计和切断梯度的目标类别概率。"""
 
         if candidate.shape[0] != identity_mask.shape[0]:
             raise ValueError("候选和身份掩码的批次轴不一致。")
@@ -371,9 +406,47 @@ class IdentityScorer(nn.Module):
             raise ValueError("三种身份表示必须与 (B,I) 掩码对齐。")
         if identity_mask.shape[1] == 0:
             return candidate.new_empty((candidate.shape[0], 0))
-        logits = self.native(candidate, identities["native"])
-        logits = logits + self.graph_gate * self.graph(candidate, identities["graph"])
-        inventory_increment = self.inventory(candidate, identities["inventory"])
+        normalized_manual: torch.Tensor | None = None
+        identity_class_probability: torch.Tensor | None = None
+        if self.use_manual_features:
+            if class_logits.shape != (candidate.shape[0], len(CLASS_NAMES)):
+                raise ValueError("class_logits 必须是与候选轴对齐的 (B,6)。")
+            if identity_class_index.shape != identity_mask.shape:
+                raise ValueError("identity_class_index 必须与 identity_mask 同形。")
+            valid_class = identity_class_index[identity_mask]
+            if torch.any(valid_class <= 0) or torch.any(valid_class >= len(CLASS_NAMES)):
+                raise ValueError("有效身份的 class_index 必须属于五类非背景下标。")
+            if torch.any(identity_class_index[~identity_mask] != -1):
+                raise ValueError("补零身份的 class_index 必须为 -1。")
+            normalized_manual = normalize_candidate_manual_features(
+                candidate_manual_features
+            )
+            safe_class = identity_class_index.clamp_min(0)
+            identity_class_probability = torch.softmax(class_logits, dim=-1).gather(
+                1,
+                safe_class,
+            ).detach()
+            identity_class_probability = identity_class_probability * identity_mask.to(
+                dtype=identity_class_probability.dtype
+            )
+        logits = self.native(
+            candidate,
+            identities["native"],
+            normalized_manual,
+            identity_class_probability,
+        )
+        logits = logits + self.graph_gate * self.graph(
+            candidate,
+            identities["graph"],
+            normalized_manual,
+            identity_class_probability,
+        )
+        inventory_increment = self.inventory(
+            candidate,
+            identities["inventory"],
+            normalized_manual,
+            identity_class_probability,
+        )
         has_other_identity = identity_mask.sum(dim=1, keepdim=True) > 1
         inventory_increment = inventory_increment * has_other_identity.to(
             dtype=inventory_increment.dtype
@@ -386,14 +459,18 @@ class IdentityScorer(nn.Module):
 
 
 class ClosedSetMatcher(nn.Module):
-    """在候选六分类主干后执行 PDB 内小分子闭集身份分类。构造参数 ``config`` 定义候选、身份与打分模块；前向输入 ``CandidateBatch``，输出 ``FullMatcherOutput``。"""
+    """在候选六分类主干后执行 PDB 内可配置前景范围的闭集身份分类。构造参数 ``config`` 定义候选、身份与打分模块；前向输入 ``CandidateBatch``，输出 ``FullMatcherOutput``。"""
 
     def __init__(self, config: MatcherModelConfig) -> None:
         super().__init__()
         self.config = config
         self.candidate_encoder = CandidateEncoder(config)
         self.identity_encoder = IdentityEncoder(config)
-        self.identity_scorer = IdentityScorer(config.model_dim, config.dropout)
+        self.identity_scorer = IdentityScorer(
+            config.model_dim,
+            config.dropout,
+            config.use_manual_features,
+        )
 
     def forward(self, batch: CandidateBatch) -> FullMatcherOutput:
         """候选分支只读体素和 A/P/V/PP；身份分支另读语言、图与清单，最后仅通过 ``(B,I)`` 配对分数与候选表示交互。"""
@@ -404,6 +481,9 @@ class ClosedSetMatcher(nn.Module):
             candidate_output["candidate_embedding"],
             identities,
             batch["identity_mask"],
+            candidate_output["class_logits"],
+            batch["identity_class_index"],
+            batch["candidate_manual_features"],
         )
         output = dict(candidate_output)
         output["identity_logits"] = identity_logits

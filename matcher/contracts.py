@@ -26,6 +26,9 @@ class CandidateItem(TypedDict):
     A/P/V/PP 分别为 ``(N,229)/(N,116)/(N,52)/(N,4)`` float32；V/PP 的
     ``index_zyx`` 为对应 token 在中心 ``48³`` 中的整数索引。体素输入是
     ``(105,48,48,48)`` float16；两个区域目标是同空间形状的 bool 数组。
+    ``candidate_manual_features`` 是 float32 ``(12,)``，顺序为 A/P/V/PP 各自的 ``(token_count,probability_mean,probability_max)``。
+    ``candidate_manual_features`` 的计数单位为 token 个数，概率是无量纲 Stage1 固化原值，空模态三项均为 0。
+    ``identity_class_index`` 是 int64 ``(I,)``，与语言表示、配体图和 object_key 逐身份对齐，有效值属于六分类下标 ``[1,5]``。
     身份语言表示为 ``(I,768)``，配体图和 object_key 均与身份轴一一对应；
     ``identity_target=-1`` 表示当前语言模型下没有可监督的真实身份。
     """
@@ -42,7 +45,9 @@ class CandidateItem(TypedDict):
     ligand_area_target: np.ndarray
     binding_area_target: np.ndarray
     full_candidate_voxel_count: int
+    candidate_manual_features: np.ndarray
     identity_object_keys: list[str]
+    identity_class_index: np.ndarray
     language_embeddings: np.ndarray
     ligand_graphs: list[LigandGraph]
     identity_target: int
@@ -56,6 +61,8 @@ class CandidateBatch(TypedDict):
 
     ``voxel_input`` 是 float16 ``(B,105,48,48,48)``。``class_target`` 是
     int64 ``(B,)``。``full_candidate_voxel_count`` 是 int64 ``(B,)``。
+    ``candidate_manual_features`` 是 float32 ``(B,12)``，顺序为 A/P/V/PP 各自的 ``(token_count,probability_mean,probability_max)``。
+    ``candidate_manual_features`` 的计数单位为 token 个数，概率是无量纲 Stage1 固化原值，空模态三项均为 0。
     ``ligand_area_target`` 和 ``binding_area_target`` 都是 bool
     ``(B,48,48,48)``。
 
@@ -66,8 +73,9 @@ class CandidateBatch(TypedDict):
     ``(B,N_V,3)/(B,N_PP,3)``；补零索引为零，只有对应掩码为真时可读取。
 
     ``language_embeddings`` 是 float32 ``(B,I,768)``。``identity_mask`` 是
-    bool ``(B,I)``。``identity_target`` 是 int64 ``(B,)``；``-1`` 表示当前
-    语言模型没有可监督目标，否则是该样本身份轴上的有效下标。
+    bool ``(B,I)``。``identity_class_index`` 是 int64 ``(B,I)``，有效槽属于六分类下标 ``[1,5]``，补零槽为 -1。
+    ``identity_target`` 是 int64 ``(B,)``；``-1`` 表示当前
+    语言模型没有可监督目标，否则是该样本身份轴上的有效下标，且该槽类别必须等于 ``class_target``。
 
     ``graph_element/graph_charge/graph_residue_id`` 是 int64 ``(N,)``。
     ``graph_node_continuous`` 是 float32 ``(N,15)``。
@@ -84,6 +92,7 @@ class CandidateBatch(TypedDict):
     ligand_area_target: torch.Tensor
     binding_area_target: torch.Tensor
     full_candidate_voxel_count: torch.Tensor
+    candidate_manual_features: torch.Tensor
     a_tokens: torch.Tensor
     a_mask: torch.Tensor
     p_tokens: torch.Tensor
@@ -96,6 +105,7 @@ class CandidateBatch(TypedDict):
     pp_index_zyx: torch.Tensor
     language_embeddings: torch.Tensor
     identity_mask: torch.Tensor
+    identity_class_index: torch.Tensor
     identity_target: torch.Tensor
     identity_object_keys: list[list[str]]
     graph_to_sample: torch.Tensor

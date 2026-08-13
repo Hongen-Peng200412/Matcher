@@ -3,10 +3,11 @@
 ``manifest.json`` 固定源目录、覆盖阈值、语言表示选择种子、六分类顺序、三个
 划分的文件名和摘要。每个 ``<split>_candidates.jsonl`` 对应一个 Stage1 候选，
 记录完整组件覆盖率标签、匹配 occurrence、object_key 和语言监督可用性；每个
-``<split>_identities.jsonl`` 对应一个 ``(pdb_id,object_key)`` 小分子身份，记录
+``<split>_identities.jsonl`` 对应一个 ``(pdb_id,class_name,object_key)`` 前景身份，记录
 配体图与两种冻结语言表示的选择证据。``excluded_pdb.jsonl`` 单独记录整 PDB
 排除原因，任何排除项都不进入训练或指标分母。所有文件位于
 ``<output_root>/manifests/closed_set_v<schema>/``，由覆盖阈值与选择种子共同决定身份。
+训练入口只请求 train/validation；calibration 准备必须由单独命令显式物化，评估入口不会补建。
 ``ensure_manifest`` 供训练构建或复用清单；``require_manifest`` 供只读保留评估要求既有清单。
 """
 
@@ -27,10 +28,13 @@ from .labels import OccurrenceMask, assign_candidate_target
 from .locking import exclusive_file_lock
 from .schema import (
     CLASS_NAMES,
+    CLASS_TO_INDEX,
+    FOREGROUND_CLASS_NAMES,
     LANGUAGE_EMBEDDING_DIM,
     LANGUAGE_FAMILIES,
     LANGUAGE_MODEL_NAMES,
     MANIFEST_SCHEMA_VERSION,
+    OCCURRENCE_TYPE_TO_CLASS,
     SourceRoots,
     safe_object_filename,
 )
@@ -43,15 +47,39 @@ def ensure_manifest(
     roots: SourceRoots,
     coverage_threshold: float,
     selection_seed: int,
+    required_splits: tuple[str, ...],
 ) -> Path:
-    """若正式清单不存在则在跨任务文件锁内构建，并返回主清单路径。"""
+    """在跨任务文件锁内构建或扩展显式请求的划分，并返回主清单路径。"""
 
+    _validate_split_names(required_splits)
     manifest_path = roots.manifest_root / "manifest.json"
     with exclusive_file_lock(roots.manifest_root / ".build.lock"):
         if manifest_path.is_file():
-            _validate_existing_manifest(manifest_path, roots, coverage_threshold, selection_seed)
+            manifest = _validate_existing_manifest(
+                manifest_path,
+                roots,
+                coverage_threshold,
+                selection_seed,
+            )
+            missing_splits = tuple(
+                split_name
+                for split_name in required_splits
+                if split_name not in manifest["splits"]
+            )
+            if missing_splits:
+                _extend_manifest(
+                    roots,
+                    manifest,
+                    coverage_threshold,
+                    selection_seed,
+                    missing_splits,
+                )
         else:
-            build_manifest(roots, coverage_threshold, selection_seed)
+            if "train" not in required_splits:
+                raise FileNotFoundError(
+                    "首次构建清单必须显式包含 train；不得从其它划分推导 seen 身份。"
+                )
+            build_manifest(roots, coverage_threshold, selection_seed, required_splits)
     return manifest_path
 
 
@@ -59,13 +87,25 @@ def require_manifest(
     roots: SourceRoots,
     coverage_threshold: float,
     selection_seed: int,
+    required_splits: tuple[str, ...],
 ) -> Path:
-    """只接受已存在且来源参数一致的正式清单；缺失时不得在评估路径重建。"""
+    """只接受已存在、来源一致且含显式请求划分的清单，不产生任何写入。"""
 
+    _validate_split_names(required_splits)
     manifest_path = roots.manifest_root / "manifest.json"
     if not manifest_path.is_file():
         raise FileNotFoundError(f"冻结清单不存在，禁止在只读评估入口重建：{manifest_path}")
-    _validate_existing_manifest(manifest_path, roots, coverage_threshold, selection_seed)
+    manifest = _validate_existing_manifest(
+        manifest_path,
+        roots,
+        coverage_threshold,
+        selection_seed,
+    )
+    missing_splits = sorted(set(required_splits).difference(manifest["splits"]))
+    if missing_splits:
+        raise FileNotFoundError(
+            f"冻结清单尚未物化请求划分 {missing_splits}；只读入口不得补建。"
+        )
     return manifest_path
 
 
@@ -73,19 +113,23 @@ def build_manifest(
     roots: SourceRoots,
     coverage_threshold: float,
     selection_seed: int,
+    split_names: tuple[str, ...],
 ) -> Path:
-    """构造所有候选、身份表示选择、排除原因和 seen/unseen 标记。"""
+    """首次构造显式划分的候选、身份表示选择、排除原因和 seen 标记。"""
 
     if not 0.0 <= coverage_threshold <= 1.0:
         raise ValueError("coverage_threshold 必须位于 [0,1]。")
+    _validate_split_names(split_names)
+    if "train" not in split_names:
+        raise ValueError("首次构建清单必须包含 train。")
     roots.manifest_root.mkdir(parents=True, exist_ok=True)
 
-    split_candidates: dict[str, list[dict[str, Any]]] = {name: [] for name in SPLIT_NAMES}
-    split_identities: dict[str, list[dict[str, Any]]] = {name: [] for name in SPLIT_NAMES}
+    split_candidates: dict[str, list[dict[str, Any]]] = {name: [] for name in split_names}
+    split_identities: dict[str, list[dict[str, Any]]] = {name: [] for name in split_names}
     exclusions: list[dict[str, Any]] = []
     split_pdb_counts: dict[str, dict[str, int]] = {}
 
-    for split_name in SPLIT_NAMES:
+    for split_name in split_names:
         split_root = roots.stage1_root / split_name
         if not split_root.is_dir():
             raise FileNotFoundError(f"Stage1 划分目录不存在：{split_root}")
@@ -113,49 +157,143 @@ def build_manifest(
             "excluded": len(pdb_directories) - included_pdb,
         }
 
-    train_positive_object_keys = {
+    _annotate_seen(split_candidates, split_identities)
+    return _publish_manifest(
+        roots=roots,
+        coverage_threshold=coverage_threshold,
+        selection_seed=selection_seed,
+        split_candidates=split_candidates,
+        split_identities=split_identities,
+        exclusions=exclusions,
+        split_pdb_counts=split_pdb_counts,
+        created_at_utc=datetime.now(timezone.utc).isoformat(),
+    )
+
+
+def _extend_manifest(
+    roots: SourceRoots,
+    manifest: dict[str, Any],
+    coverage_threshold: float,
+    selection_seed: int,
+    missing_splits: tuple[str, ...],
+) -> Path:
+    """在锁内补建缺失划分，并保持既有划分候选与身份记录逐值不变。"""
+
+    split_candidates = {
+        split_name: load_jsonl(roots.manifest_root / files["candidates"])
+        for split_name, files in manifest["splits"].items()
+    }
+    split_identities = {
+        split_name: load_jsonl(roots.manifest_root / files["identities"])
+        for split_name, files in manifest["splits"].items()
+    }
+    exclusions = load_jsonl(roots.manifest_root / manifest["excluded_pdb"])
+    split_pdb_counts = dict(manifest["split_pdb_counts"])
+    for split_name in missing_splits:
+        split_candidates[split_name] = []
+        split_identities[split_name] = []
+        split_root = roots.stage1_root / split_name
+        if not split_root.is_dir():
+            raise FileNotFoundError(f"Stage1 划分目录不存在：{split_root}")
+        pdb_directories = sorted(path for path in split_root.iterdir() if path.is_dir())
+        included_pdb = 0
+        for pdb_directory in pdb_directories:
+            pdb_id = pdb_directory.name.lower()
+            exclusion = _allowed_exclusion(roots, split_name, pdb_id, pdb_directory)
+            if exclusion is not None:
+                exclusions.append(exclusion)
+                continue
+            candidates, identities = _scan_pdb(
+                roots=roots,
+                split_name=split_name,
+                pdb_id=pdb_id,
+                coverage_threshold=coverage_threshold,
+                selection_seed=selection_seed,
+            )
+            split_candidates[split_name].extend(candidates)
+            split_identities[split_name].extend(identities)
+            included_pdb += 1
+        split_pdb_counts[split_name] = {
+            "discovered": len(pdb_directories),
+            "included": included_pdb,
+            "excluded": len(pdb_directories) - included_pdb,
+        }
+    _annotate_seen(split_candidates, split_identities)
+    return _publish_manifest(
+        roots=roots,
+        coverage_threshold=coverage_threshold,
+        selection_seed=selection_seed,
+        split_candidates=split_candidates,
+        split_identities=split_identities,
+        exclusions=exclusions,
+        split_pdb_counts=split_pdb_counts,
+        created_at_utc=str(manifest["created_at_utc"]),
+    )
+
+
+def _annotate_seen(
+    split_candidates: dict[str, list[dict[str, Any]]],
+    split_identities: dict[str, list[dict[str, Any]]],
+) -> None:
+    """按语言模型与 ``(class_name,object_key)`` 标记 train 可监督正身份。"""
+
+    train_positive_keys = {
         family: {
-            candidate["matched_object_key"]
+            (candidate["class_name"], candidate["matched_object_key"])
             for candidate in split_candidates["train"]
-            if candidate["class_name"] == "small_molecule"
+            if candidate["class_name"] in FOREGROUND_CLASS_NAMES
             and candidate["matched_object_key"] is not None
             and candidate["language_target_available"][family]
         }
         for family in LANGUAGE_FAMILIES
     }
-    for split_name in SPLIT_NAMES:
+    for split_name in split_candidates:
         for identity in split_identities[split_name]:
+            identity_key = (identity["class_name"], identity["object_key"])
             identity["seen_in_train_by_language"] = {
-                family: identity["object_key"] in train_positive_object_keys[family]
+                family: identity_key in train_positive_keys[family]
                 for family in LANGUAGE_FAMILIES
             }
         for candidate in split_candidates[split_name]:
             object_key = candidate["matched_object_key"]
+            identity_key = (candidate["class_name"], object_key)
             candidate["identity_seen_in_train_by_language"] = {
                 family: (
-                    object_key in train_positive_object_keys[family]
+                    identity_key in train_positive_keys[family]
                     if object_key is not None
+                    and candidate["class_name"] in FOREGROUND_CLASS_NAMES
                     else None
                 )
                 for family in LANGUAGE_FAMILIES
             }
 
+
+def _publish_manifest(
+    roots: SourceRoots,
+    coverage_threshold: float,
+    selection_seed: int,
+    split_candidates: dict[str, list[dict[str, Any]]],
+    split_identities: dict[str, list[dict[str, Any]]],
+    exclusions: list[dict[str, Any]],
+    split_pdb_counts: dict[str, dict[str, int]],
+    created_at_utc: str,
+) -> Path:
+    """原子发布当前已物化划分的 JSONL、汇总和主清单。"""
+
     files: dict[str, dict[str, str]] = {}
     for split_name in SPLIT_NAMES:
+        if split_name not in split_candidates:
+            continue
         candidate_name = f"{split_name}_candidates.jsonl"
         identity_name = f"{split_name}_identities.jsonl"
         _atomic_write_jsonl(roots.manifest_root / candidate_name, split_candidates[split_name])
         _atomic_write_jsonl(roots.manifest_root / identity_name, split_identities[split_name])
-        files[split_name] = {
-            "candidates": candidate_name,
-            "identities": identity_name,
-        }
+        files[split_name] = {"candidates": candidate_name, "identities": identity_name}
     _atomic_write_jsonl(roots.manifest_root / "excluded_pdb.jsonl", exclusions)
-
-    summary = _summarize(split_candidates, split_identities, exclusions)
     manifest = {
         "schema_version": MANIFEST_SCHEMA_VERSION,
-        "created_at_utc": datetime.now(timezone.utc).isoformat(),
+        "created_at_utc": created_at_utc,
+        "updated_at_utc": datetime.now(timezone.utc).isoformat(),
         "data_root": str(roots.data_root),
         "stage1_root": str(roots.stage1_root),
         "output_root": str(roots.output_root),
@@ -166,14 +304,16 @@ def build_manifest(
             "用固定字节加权和与 selection_seed 决定循环起点，选择该位置的 occurrence。"
         ),
         "seen_identity_rule": (
-            "按语言模型分别判断；只有 object_key 在 train 候选中作为可监督的"
-            " small_molecule 正目标出现过，才标记为 seen。"
+            "按语言模型和 (class_name, object_key) 分别判断；只有该身份在 train 候选中"
+            "作为可监督前景正目标出现过，才标记为 seen。"
         ),
         "class_names": list(CLASS_NAMES),
+        "available_splits": [name for name in SPLIT_NAMES if name in files],
+        "deferred_splits": [name for name in SPLIT_NAMES if name not in files],
         "splits": files,
         "excluded_pdb": "excluded_pdb.jsonl",
         "split_pdb_counts": split_pdb_counts,
-        "summary": summary,
+        "summary": _summarize(split_candidates, split_identities, exclusions),
     }
     manifest_path = roots.manifest_root / "manifest.json"
     _atomic_write_json(manifest_path, manifest)
@@ -241,7 +381,7 @@ def _scan_pdb(
     coverage_threshold: float,
     selection_seed: int,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """扫描一个完整 PDB 的候选标签和小分子身份表示。"""
+    """扫描一个完整 PDB 的候选标签和五类非背景身份表示。"""
 
     occurrence_records = _read_occurrences(roots.data_root, pdb_id)
     occurrence_masks = _read_occurrence_masks(roots.data_root, pdb_id, occurrence_records)
@@ -252,7 +392,10 @@ def _scan_pdb(
         occurrence_records,
         selection_seed,
     )
-    identity_by_key = {identity["object_key"]: identity for identity in identities}
+    identity_by_key = {
+        (identity["class_name"], identity["object_key"]): identity
+        for identity in identities
+    }
 
     centered_path = roots.stage1_root / split_name / pdb_id / "centered/F1_centered.npz"
     candidates: list[dict[str, Any]] = []
@@ -268,7 +411,7 @@ def _scan_pdb(
             box_start = np.asarray(centered["box_start_zyx"][candidate_index], dtype=np.int64)
             global_voxels = local_voxels + box_start[None, :]
             target = assign_candidate_target(global_voxels, occurrence_masks, coverage_threshold)
-            identity = identity_by_key.get(target.matched_object_key)
+            identity = identity_by_key.get((target.class_name, target.matched_object_key))
             language_available = {
                 family: bool(
                     identity
@@ -360,16 +503,19 @@ def _build_identity_records(
     occurrence_records: Iterable[dict[str, Any]],
     selection_seed: int,
 ) -> list[dict[str, Any]]:
-    """按 object_key 去重小分子身份，并为每种语言模型固定选择一个有效 occurrence。"""
+    """按类别与 object_key 去重五类前景身份，并固定选择语言 occurrence。"""
 
-    grouped: dict[str, list[int]] = defaultdict(list)
+    grouped: dict[tuple[str, str], list[int]] = defaultdict(list)
     for record in occurrence_records:
-        if record["type_tag"] == "small_molecule":
-            grouped[str(record["object_key"])].append(int(record["candidate_id"]))
+        class_name = OCCURRENCE_TYPE_TO_CLASS[str(record["type_tag"])]
+        if class_name in FOREGROUND_CLASS_NAMES:
+            grouped[(class_name, str(record["object_key"]))].append(
+                int(record["candidate_id"])
+            )
 
     identities: list[dict[str, Any]] = []
-    for object_key in sorted(grouped):
-        occurrence_ids = sorted(grouped[object_key])
+    for class_name, object_key in sorted(grouped):
+        occurrence_ids = sorted(grouped[(class_name, object_key)])
         graph_relative_path = f"ligand_objects/{safe_object_filename(object_key)}.npz"
         graph_available = (roots.data_root / graph_relative_path).is_file()
         language = {
@@ -387,6 +533,8 @@ def _build_identity_records(
             {
                 "split": split_name,
                 "pdb_id": pdb_id,
+                "class_name": class_name,
+                "class_index": CLASS_TO_INDEX[class_name],
                 "object_key": object_key,
                 "occurrence_candidate_ids": occurrence_ids,
                 "graph_available": graph_available,
@@ -544,6 +692,8 @@ def _summarize(
 
     result: dict[str, Any] = {"splits": {}}
     for split_name in SPLIT_NAMES:
+        if split_name not in split_candidates:
+            continue
         candidates = split_candidates[split_name]
         identities = split_identities[split_name]
         language_available = {
@@ -584,7 +734,7 @@ def _validate_existing_manifest(
     roots: SourceRoots,
     coverage_threshold: float,
     selection_seed: int,
-) -> None:
+) -> dict[str, Any]:
     """拒绝复用来源根或监督参数不一致的既有正式清单。"""
 
     manifest = json.loads(path.read_text(encoding="utf-8"))
@@ -603,6 +753,26 @@ def _validate_existing_manifest(
     }
     if mismatches:
         raise ValueError(f"既有清单与当前请求不一致：{mismatches}")
+    splits = manifest.get("splits")
+    if not isinstance(splits, dict) or not all(
+        split_name in SPLIT_NAMES and isinstance(files, dict)
+        for split_name, files in splits.items()
+    ):
+        raise ValueError(f"{path}:splits 必须只含受支持划分的文件映射。")
+    return manifest
+
+
+def _validate_split_names(split_names: tuple[str, ...]) -> None:
+    """要求显式划分序列非空、不重复且只含 train/validation/calibration。"""
+
+    if (
+        not split_names
+        or len(set(split_names)) != len(split_names)
+        or not set(split_names).issubset(SPLIT_NAMES)
+    ):
+        raise ValueError(
+            f"split_names 必须是非空、不重复的 {SPLIT_NAMES} 子序列。"
+        )
 
 
 def _atomic_write_json(path: Path, value: dict[str, Any]) -> None:
@@ -642,6 +812,13 @@ def _parse_arguments(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--output-root", type=Path, required=True)
     parser.add_argument("--coverage-threshold", type=float, required=True)
     parser.add_argument("--selection-seed", type=int, required=True)
+    parser.add_argument(
+        "--splits",
+        nargs="+",
+        choices=SPLIT_NAMES,
+        required=True,
+        help="显式列出本次允许读取并物化的划分；不得预先加入 calibration。",
+    )
     return parser.parse_args(argv)
 
 
@@ -650,7 +827,12 @@ def main(argv: list[str] | None = None) -> int:
 
     arguments = _parse_arguments(sys.argv[1:] if argv is None else argv)
     roots = SourceRoots(arguments.data_root, arguments.stage1_root, arguments.output_root)
-    path = ensure_manifest(roots, arguments.coverage_threshold, arguments.selection_seed)
+    path = ensure_manifest(
+        roots,
+        arguments.coverage_threshold,
+        arguments.selection_seed,
+        tuple(arguments.splits),
+    )
     print(path)
     return 0
 

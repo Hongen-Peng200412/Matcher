@@ -14,7 +14,11 @@ from matcher.losses import IdentityLossVariant, LossWeights, MatcherLossBatch, c
 from matcher.manifest import build_manifest
 from matcher.model import CandidateEncoder, ClosedSetMatcher, MatcherModelConfig
 from matcher.model.config import AggregationName
-from matcher.model.fusion import CandidateConditionedAggregator, gather_voxel_features
+from matcher.model.fusion import (
+    CandidateConditionedAggregator,
+    gather_voxel_features,
+    normalize_candidate_manual_features,
+)
 from matcher.model.ligand_matcher import (
     GraphMessageLayer,
     IdentityEncoder,
@@ -32,6 +36,7 @@ def _small_config(aggregation: AggregationName = "mean_max") -> MatcherModelConf
 
     return MatcherModelConfig(
         aggregation=aggregation,
+        use_manual_features=True,
         model_dim=16,
         attention_heads=4,
         dropout=0.0,
@@ -48,13 +53,19 @@ def _batch(tmp_path, task_name: str) -> CandidateBatch:
     """从合成正式产物建立候选预训练或完整 Matcher 单样本批次。"""
 
     roots = build_synthetic_roots(tmp_path)
-    manifest_path = build_manifest(roots, coverage_threshold=0.30, selection_seed=3407)
+    manifest_path = build_manifest(
+        roots,
+        coverage_threshold=0.30,
+        selection_seed=3407,
+        split_names=("train", "validation"),
+    )
     dataset = CandidateDataset(
         roots=roots,
         manifest_path=manifest_path,
         split_name="train",
         task_name=task_name,
         language_family="molformer" if task_name == "full_matcher" else None,
+        identity_scope="small_molecule" if task_name == "full_matcher" else None,
         pp_top_k=4,
         cache_bytes_per_worker=64 * 1024**2,
     )
@@ -102,6 +113,7 @@ def test_closed_set_matcher_forward_and_loss_are_finite(tmp_path) -> None:
         batch,
         LossWeights(classification=1.0, ligand_area=0.1, binding_area=0.1, identity=1.0),
         identity_variant="oracle",
+        identity_scope="small_molecule",
         class_weights=None,
     )
     assert torch.isfinite(loss["total"])
@@ -168,6 +180,18 @@ def test_both_aggregators_accept_empty_modalities_without_nan(tmp_path) -> None:
         assert torch.isfinite(output["class_logits"]).all()
 
 
+def test_manual_feature_normalization_changes_only_token_counts() -> None:
+    """四组三元组只对计数执行 log1p，固化概率与空模态零值逐项保持。"""
+
+    raw = torch.tensor(
+        [[0.0, 0.0, 0.0, 3.0, 0.25, 0.75, 1.0, 0.4, 0.9, 7.0, 0.1, 1.0]]
+    )
+    normalized = normalize_candidate_manual_features(raw)
+    expected = raw.clone()
+    expected[:, (0, 3, 6, 9)] = torch.log1p(expected[:, (0, 3, 6, 9)])
+    assert torch.equal(normalized, expected)
+
+
 def test_identity_variants_gate_only_numerator_and_joint_reaches_class_probability() -> None:
     """三种身份损失都除以真实有效数，且只有 joint 把身份梯度传给 p_small。"""
 
@@ -175,6 +199,7 @@ def test_identity_variants_gate_only_numerator_and_joint_reaches_class_probabili
         "class_target": torch.tensor([4, 4, 0]),
         "identity_target": torch.tensor([0, 1, 0]),
         "identity_mask": torch.ones((3, 2), dtype=torch.bool),
+        "identity_class_index": torch.full((3, 2), 4, dtype=torch.long),
         "ligand_area_target": torch.zeros((3, 1, 1, 1), dtype=torch.bool),
         "binding_area_target": torch.zeros((3, 1, 1, 1), dtype=torch.bool),
     }
@@ -199,6 +224,7 @@ def test_identity_variants_gate_only_numerator_and_joint_reaches_class_probabili
             cast(MatcherLossBatch, base_batch),
             weights,
             identity_variant=variant,
+            identity_scope="small_molecule",
             class_weights=None,
         )
         gradient = torch.autograd.grad(result["total"], class_logits, retain_graph=True)[0]
@@ -212,6 +238,96 @@ def test_identity_variants_gate_only_numerator_and_joint_reaches_class_probabili
     # 初始 p_small=1/6，因此 detached 与 joint 数值相同，且都只是 oracle 分子的 1/6。
     assert abs(losses["detached"] - losses["joint"]) < 1e-7
     assert abs(losses["oracle"] / 6.0 - losses["joint"]) < 1e-7
+
+
+def test_five_class_identity_loss_uses_each_target_class_probability() -> None:
+    """五类身份门按真实身份类别取概率，背景与缺失目标均不进入身份分母。"""
+
+    class_logits = torch.tensor(
+        [
+            [0.0, 2.0, 0.0, 0.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0, 0.0, 0.0, 1.0],
+            [2.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        ],
+        requires_grad=True,
+    )
+    identity_logits = torch.tensor(
+        [[2.0, 0.0], [0.0, 2.0], [2.0, 0.0]],
+        requires_grad=True,
+    )
+    outputs = {
+        "class_logits": class_logits,
+        "identity_logits": identity_logits,
+        "ligand_area_logits": torch.zeros((3, 1, 1, 1), requires_grad=True),
+        "binding_area_logits": torch.zeros((3, 1, 1, 1), requires_grad=True),
+    }
+    batch = cast(
+        MatcherLossBatch,
+        {
+            "class_target": torch.tensor([1, 5, 0]),
+            "identity_target": torch.tensor([0, 1, -1]),
+            "identity_mask": torch.ones((3, 2), dtype=torch.bool),
+            "identity_class_index": torch.tensor([[1, 5], [1, 5], [1, 5]]),
+            "ligand_area_target": torch.zeros((3, 1, 1, 1), dtype=torch.bool),
+            "binding_area_target": torch.zeros((3, 1, 1, 1), dtype=torch.bool),
+        },
+    )
+    result = compute_matcher_loss(
+        outputs,
+        batch,
+        LossWeights(classification=0.0, ligand_area=0.0, binding_area=0.0, identity=1.0),
+        identity_variant="detached",
+        identity_scope="all_non_background",
+        class_weights=None,
+    )
+    per_candidate = torch.nn.functional.cross_entropy(
+        identity_logits[:2],
+        torch.tensor([0, 1]),
+        reduction="none",
+    )
+    probability = torch.softmax(class_logits, dim=-1)
+    expected = (
+        probability[0, 1].detach() * per_candidate[0]
+        + probability[1, 5].detach() * per_candidate[1]
+    ) / 2.0
+    assert result["identity_eligible_count"].item() == 2
+    assert torch.allclose(result["identity"], expected)
+    class_gradient = torch.autograd.grad(result["total"], class_logits, allow_unused=True)[0]
+    assert class_gradient is None or torch.count_nonzero(class_gradient) == 0
+
+
+def test_identity_manual_features_are_learnable_but_class_probability_is_detached() -> None:
+    """身份 MLP 读取手动统计与目标类概率，但身份路径不能反向更新六分类 logits。"""
+
+    torch.manual_seed(3407)
+    scorer = IdentityScorer(model_dim=16, dropout=0.0, use_manual_features=True).train()
+    candidate = torch.randn(2, 16, requires_grad=True)
+    representations = cast(
+        IdentityRepresentations,
+        {
+            "native": torch.randn(2, 3, 16, requires_grad=True),
+            "graph": torch.randn(2, 3, 16, requires_grad=True),
+            "inventory": torch.randn(2, 3, 16, requires_grad=True),
+        },
+    )
+    identity_mask = torch.ones((2, 3), dtype=torch.bool)
+    identity_class_index = torch.tensor([[1, 4, 5], [1, 4, 5]])
+    class_logits = torch.randn(2, 6, requires_grad=True)
+    manual_features = torch.rand(2, 12, requires_grad=True)
+    logits = scorer(
+        candidate,
+        representations,
+        identity_mask,
+        class_logits,
+        identity_class_index,
+        manual_features,
+    )
+    logits.sum().backward()
+    assert class_logits.grad is None or torch.count_nonzero(class_logits.grad) == 0
+    assert manual_features.grad is not None
+    assert torch.count_nonzero(manual_features.grad) > 0
+    assert candidate.grad is not None
+    assert torch.count_nonzero(candidate.grad) > 0
 
 
 def test_identity_loss_without_eligible_candidate_stays_finite_with_padded_logits() -> None:
@@ -230,6 +346,7 @@ def test_identity_loss_without_eligible_candidate_stays_finite_with_padded_logit
             "class_target": torch.tensor([0, 4]),
             "identity_target": torch.tensor([-1, -1]),
             "identity_mask": torch.ones((2, 3), dtype=torch.bool),
+            "identity_class_index": torch.full((2, 3), 4, dtype=torch.long),
             "ligand_area_target": torch.zeros((2, 1, 1, 1), dtype=torch.bool),
             "binding_area_target": torch.zeros((2, 1, 1, 1), dtype=torch.bool),
         },
@@ -239,6 +356,7 @@ def test_identity_loss_without_eligible_candidate_stays_finite_with_padded_logit
         batch,
         LossWeights(classification=1.0, ligand_area=0.1, binding_area=0.1, identity=1.0),
         identity_variant="joint",
+        identity_scope="small_molecule",
         class_weights=None,
     )
     assert torch.isfinite(result["identity"])
@@ -333,7 +451,7 @@ def test_identity_encoder_rejects_duplicate_graph_for_one_identity(tmp_path) -> 
 def test_identity_graph_and_inventory_scores_start_as_exact_zero_increments() -> None:
     """配体图和清单分支本身保持可学，但其打分出口门在初始化时严格为零。"""
 
-    scorer = IdentityScorer(model_dim=16, dropout=0.0).train()
+    scorer = IdentityScorer(model_dim=16, dropout=0.0, use_manual_features=False).train()
     candidate = torch.randn(2, 16)
     representations = cast(
         IdentityRepresentations,
@@ -344,8 +462,15 @@ def test_identity_graph_and_inventory_scores_start_as_exact_zero_increments() ->
         },
     )
     mask = torch.ones((2, 3), dtype=torch.bool)
-    native_only = scorer.native(candidate, representations["native"])
-    logits = scorer(candidate, representations, mask)
+    native_only = scorer.native(candidate, representations["native"], None, None)
+    logits = scorer(
+        candidate,
+        representations,
+        mask,
+        torch.zeros((2, 6)),
+        torch.full((2, 3), 4, dtype=torch.long),
+        torch.zeros((2, 12)),
+    )
     assert torch.equal(logits, native_only)
     logits.sum().backward()
     assert scorer.graph_gate.grad is not None
@@ -357,7 +482,7 @@ def test_identity_graph_and_inventory_scores_start_as_exact_zero_increments() ->
 def test_single_identity_inventory_score_stays_zero_after_gate_opens() -> None:
     """即使清单门已训练为非零，单身份样本仍没有可贡献的其他身份上下文。"""
 
-    scorer = IdentityScorer(model_dim=16, dropout=0.0).eval()
+    scorer = IdentityScorer(model_dim=16, dropout=0.0, use_manual_features=False).eval()
     scorer.inventory_gate.data.fill_(1.0)
     scorer.graph_gate.data.zero_()
     candidate = torch.randn(2, 16)
@@ -372,8 +497,15 @@ def test_single_identity_inventory_score_stays_zero_after_gate_opens() -> None:
     )
     mask = torch.ones((2, 1), dtype=torch.bool)
     with torch.no_grad():
-        logits = scorer(candidate, representations, mask)
-        native_only = scorer.native(candidate, native)
+        logits = scorer(
+            candidate,
+            representations,
+            mask,
+            torch.zeros((2, 6)),
+            torch.full((2, 1), 4, dtype=torch.long),
+            torch.zeros((2, 12)),
+        )
+        native_only = scorer.native(candidate, native, None, None)
     assert torch.equal(logits, native_only)
 
 
@@ -395,3 +527,7 @@ def test_model_config_and_voxel_gather_reject_invalid_contracts() -> None:
         gather_voxel_features(volume, indices, torch.tensor([[True]]))
     padded = gather_voxel_features(volume, indices, torch.tensor([[False]]))
     assert torch.count_nonzero(padded) == 0
+
+    legacy_values = _small_config().to_dict()
+    del legacy_values["use_manual_features"]
+    assert MatcherModelConfig.from_dict(legacy_values).use_manual_features is False

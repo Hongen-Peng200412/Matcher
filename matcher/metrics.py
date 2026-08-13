@@ -16,7 +16,13 @@ import numpy as np
 import torch
 
 from .contracts import CandidateMetadata
-from .schema import CLASS_NAMES, SMALL_MOLECULE_INDEX
+from .schema import (
+    CLASS_NAMES,
+    FOREGROUND_CLASS_INDICES,
+    FOREGROUND_CLASS_NAMES,
+    SMALL_MOLECULE_INDEX,
+    IdentityScope,
+)
 
 
 class EvaluationBatch(TypedDict):
@@ -27,6 +33,7 @@ class EvaluationBatch(TypedDict):
     ``binding_area_target`` 是 bool ``(B,Z,Y,X)`` 受体结合区域目标。
     ``identity_target`` 是 int64 ``(B,)``；``-1`` 表示当前语言模型没有可监督身份。
     ``identity_mask`` 是 bool ``(B,I)`` 有效身份槽；非负 identity_target 必须指向真值槽。
+    ``identity_class_index`` 是 int64 ``(B,I)``；有效槽是五类非背景下标，补零槽为 -1。
     ``metadata`` 长度为 ``B``；identity_seen_in_train 按当前语言模型记录训练正目标历史。
     """
 
@@ -35,6 +42,7 @@ class EvaluationBatch(TypedDict):
     binding_area_target: torch.Tensor
     identity_target: torch.Tensor
     identity_mask: torch.Tensor
+    identity_class_index: torch.Tensor
     metadata: list[CandidateMetadata]
 
 
@@ -45,12 +53,14 @@ class PerClassMetrics(TypedDict):
     ``recall`` 是该类真阳性除以该类真实数；零支持时为 NaN。
     ``f1`` 是有限 precision/recall 的调和平均；无法计算时为 0。
     ``support`` 是该类真实候选数。
+    ``predicted_count`` 是被六分类头预测为该类的候选数。
     """
 
     precision: float
     recall: float
     f1: float
     support: int
+    predicted_count: int
 
 
 class SixClassMetrics(TypedDict):
@@ -73,12 +83,12 @@ class SixClassMetrics(TypedDict):
 
 
 class IntrinsicIdentityMetrics(TypedDict):
-    """忽略六分类预测后的身份诊断。
+    """忽略六分类预测后的一个指定身份范围诊断。
 
-    ``top1`` 是全部可监督真实小分子的身份 Top-1 正确率。
-    ``topk`` 是全部可监督真实小分子的身份 Top-K 正确率。
+    ``top1`` 是该范围全部可监督真实候选的身份 Top-1 正确率。
+    ``topk`` 是该范围全部可监督真实候选的身份 Top-K 正确率。
     ``top_k`` 是本报告实际采用的最大名次 K。
-    ``eligible_count`` 是真实类别为 small_molecule 且 identity_target 非负的候选数。
+    ``eligible_count`` 是真实类别属于该范围且 identity_target 非负的候选数。
     """
 
     top1: float
@@ -88,7 +98,7 @@ class IntrinsicIdentityMetrics(TypedDict):
 
 
 class ConditionalIdentityMetrics(TypedDict):
-    """仅对六分类预测正确的可监督真实小分子计算身份 Top-K。
+    """仅对六分类预测正确且属于指定身份范围的可监督真实候选计算 Top-K。
 
     ``top1`` 是条件集合上的身份 Top-1 正确率。
     ``topk`` 是条件集合上的身份 Top-K 正确率。
@@ -115,22 +125,35 @@ class ConditionalIdentityMetrics(TypedDict):
 
 
 class EndToEndIdentityMetrics(TypedDict):
-    """同时要求六分类与身份正确的端到端指标。
+    """经当前报告规定的背景/前景门后评价最终身份 Top-1 的端到端指标。
 
-    ``precision`` 是正确类别且身份正确数除以预测为 small_molecule 的可评估候选数。
-    ``recall`` 是正确类别且身份正确数除以有身份目标的真实 small_molecule 数。
+    ``precision`` 是端到端身份正确数除以该范围的预测阳性数。
+    ``recall`` 是端到端身份正确数除以当前范围内有身份目标的真实候选数。
     ``f1`` 是有限 precision/recall 的调和平均；无法计算时为 0。
-    ``true_positive`` 是类别与身份都正确的候选数。
-    ``predicted_small_molecule`` 是有身份清单且被六分类预测为 small_molecule 的候选数。
-    ``actual_small_molecule`` 是有当前语言身份目标的真实 small_molecule 候选数。
+    ``true_positive`` 是通过当前前景门且最终身份正确的候选数。
+    ``predicted_positive`` 是通过当前前景门且最终身份落入本报告范围的候选数。
+    ``actual_positive`` 是当前范围内有语言与配体图身份目标的真实候选数。
     """
 
     precision: float
     recall: float
     f1: float
     true_positive: int
-    predicted_small_molecule: int
-    actual_small_molecule: int
+    predicted_positive: int
+    actual_positive: int
+
+
+class IdentityScopeMetrics(TypedDict):
+    """一个身份范围的固有、条件和端到端指标。
+
+    ``intrinsic`` 忽略六分类预测，只评价闭集身份排名。
+    ``conditional`` 仅在六分类预测等于真实类别时评价闭集身份排名。
+    ``end_to_end`` 经该报告规定的背景/前景门后评价最终身份 Top-1。
+    """
+
+    intrinsic: IntrinsicIdentityMetrics
+    conditional: IntrinsicIdentityMetrics
+    end_to_end: EndToEndIdentityMetrics
 
 
 class AreaMetrics(TypedDict):
@@ -154,7 +177,10 @@ class EvaluationReport(TypedDict):
     ``six_class`` 是全候选六分类报告。
     ``intrinsic_identity`` 是忽略六分类预测的身份诊断。
     ``conditional_identity`` 是以六分类判对为条件的身份报告。
-    ``end_to_end_identity`` 是类别与身份联合判定报告。
+    ``end_to_end_identity`` 是当前配置身份范围采用其背景/前景门后的最终身份报告。
+    ``small_molecule_identity`` 使用只含小分子身份的清单和严格 small_molecule 分类门，供第0批直接比较。
+    ``all_non_background_identity`` 在五类共享身份清单中计算总体指标；端到端只要求预测为任一前景类。
+    ``identity_per_class`` 在共享清单中按真实类别拆分固有/条件指标，端到端预测按最终身份类别归桶。
     ``area`` 是两个辅助区域的微平均 Dice。
     """
 
@@ -162,6 +188,9 @@ class EvaluationReport(TypedDict):
     intrinsic_identity: IntrinsicIdentityMetrics
     conditional_identity: ConditionalIdentityMetrics
     end_to_end_identity: EndToEndIdentityMetrics
+    small_molecule_identity: IdentityScopeMetrics
+    all_non_background_identity: IdentityScopeMetrics
+    identity_per_class: dict[str, IdentityScopeMetrics]
     area: AreaMetrics
 
 
@@ -178,6 +207,129 @@ def _require_finite(values: torch.Tensor, name: str) -> None:
         raise FloatingPointError(f"{name} 含 NaN 或 Inf。")
 
 
+@dataclass
+class _IdentityCounts:
+    """保存一个身份范围跨批次可加的排名与联合判定整数计数。"""
+
+    intrinsic_correct_at_1: int = 0
+    intrinsic_correct_at_k: int = 0
+    intrinsic_eligible: int = 0
+    conditional_correct_at_1: int = 0
+    conditional_correct_at_k: int = 0
+    conditional_eligible: int = 0
+    end_to_end_true_positive: int = 0
+    end_to_end_predicted_positive: int = 0
+    end_to_end_actual_positive: int = 0
+
+    def update(
+        self,
+        intrinsic_eligible: np.ndarray,
+        conditional_eligible: np.ndarray,
+        top1_correct: np.ndarray,
+        top_k_correct: np.ndarray,
+        end_to_end_correct: np.ndarray,
+        predicted_positive: np.ndarray,
+    ) -> None:
+        """把同一批次的排名、端到端真阳性和预测阳性布尔量累加到当前范围。"""
+
+        self.intrinsic_eligible += int(intrinsic_eligible.sum())
+        self.intrinsic_correct_at_1 += int((intrinsic_eligible & top1_correct).sum())
+        self.intrinsic_correct_at_k += int((intrinsic_eligible & top_k_correct).sum())
+        self.conditional_eligible += int(conditional_eligible.sum())
+        self.conditional_correct_at_1 += int((conditional_eligible & top1_correct).sum())
+        self.conditional_correct_at_k += int((conditional_eligible & top_k_correct).sum())
+        self.end_to_end_true_positive += int(end_to_end_correct.sum())
+        self.end_to_end_predicted_positive += int(predicted_positive.sum())
+        self.end_to_end_actual_positive += int(intrinsic_eligible.sum())
+
+    def compute(self, top_k: int) -> IdentityScopeMetrics:
+        """按当前整数分母返回一个可落盘身份范围报告。"""
+
+        precision = _safe_divide(
+            self.end_to_end_true_positive,
+            self.end_to_end_predicted_positive,
+        )
+        recall = _safe_divide(
+            self.end_to_end_true_positive,
+            self.end_to_end_actual_positive,
+        )
+        f1 = (
+            2.0 * precision * recall / (precision + recall)
+            if math.isfinite(precision)
+            and math.isfinite(recall)
+            and precision + recall > 0
+            else 0.0
+        )
+        return {
+            "intrinsic": {
+                "top1": _safe_divide(self.intrinsic_correct_at_1, self.intrinsic_eligible),
+                "topk": _safe_divide(self.intrinsic_correct_at_k, self.intrinsic_eligible),
+                "top_k": top_k,
+                "eligible_count": self.intrinsic_eligible,
+            },
+            "conditional": {
+                "top1": _safe_divide(
+                    self.conditional_correct_at_1,
+                    self.conditional_eligible,
+                ),
+                "topk": _safe_divide(
+                    self.conditional_correct_at_k,
+                    self.conditional_eligible,
+                ),
+                "top_k": top_k,
+                "eligible_count": self.conditional_eligible,
+            },
+            "end_to_end": {
+                "precision": precision,
+                "recall": recall,
+                "f1": f1,
+                "true_positive": self.end_to_end_true_positive,
+                "predicted_positive": self.end_to_end_predicted_positive,
+                "actual_positive": self.end_to_end_actual_positive,
+            },
+        }
+
+
+def _masked_identity_prediction(
+    scores: torch.Tensor,
+    slot_mask: torch.Tensor,
+    target: np.ndarray,
+    top_k: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """在指定身份槽内返回 Top-1 下标和目标是否进入 Top-K。"""
+
+    prediction = np.full(target.shape, -1, dtype=np.int64)
+    top_k_correct = np.zeros(target.shape, dtype=bool)
+    if scores.shape[1] == 0:
+        return prediction, top_k_correct
+    masked = scores.masked_fill(~slot_mask, torch.finfo(scores.dtype).min).detach().cpu()
+    prediction = masked.argmax(dim=-1).numpy()
+    count = min(top_k, masked.shape[1])
+    top_indices = masked.topk(count, dim=-1).indices.numpy()
+    top_k_correct = np.any(top_indices == target[:, None], axis=1)
+    has_slot = slot_mask.any(dim=1).detach().cpu().numpy()
+    prediction[~has_slot] = -1
+    top_k_correct[~has_slot] = False
+    return prediction, top_k_correct
+
+
+def _scope_masks(
+    class_prediction: np.ndarray,
+    class_target: np.ndarray,
+    target: np.ndarray,
+    slot_options: np.ndarray,
+    allowed_classes: tuple[int, ...],
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """返回固有分母、精确子类条件分母、前景门与可评估身份槽掩码。"""
+
+    true_in_scope = np.isin(class_target, allowed_classes)
+    predicted_in_scope = np.isin(class_prediction, allowed_classes)
+    intrinsic = true_in_scope & (target >= 0)
+    conditional = intrinsic & (class_prediction == class_target)
+    end_to_end_scope = slot_options & ~(true_in_scope & (target < 0))
+    return intrinsic, conditional, predicted_in_scope, end_to_end_scope
+
+
 # ================================================================================================
 
 
@@ -186,32 +338,31 @@ class EvaluationAccumulator:
     """把多个物理批次合并为不依赖批次切分的 ``EvaluationReport`` 计数。
 
     ``class_confusion`` 是 ``(6,6)`` int64 混淆矩阵，第一轴真实类、第二轴预测类。
-    ``intrinsic_*`` 累积全部可监督真实小分子的 Top-1、Top-K 和分母。
-    ``conditional_*`` 累积六分类判对的可监督真实小分子 Top-1、Top-K 和分母。
+    ``identity_scope`` 决定旧三项顶层身份字段和 validation 选模使用哪一范围。
+    ``small_identity/all_identity/per_class_identity`` 分别保存兼容小分子、五类总体和分类计数。
     ``seen_*`` 与 ``unseen_*`` 按当前语言模型的训练正目标历史拆分条件身份计数。
-    ``end_to_end_*`` 累积联合类别—身份真阳性、预测阳性和真实阳性。
+    ``end_to_end_*`` 累积当前报告前景门后的身份真阳性、预测阳性和真实阳性。
     ``ligand_*`` 与 ``binding_*`` 累积区域交集、预测体素数和真实体素数。
     ``top_k`` 是正整数最大名次，默认 5 只用于可独立构造的零状态累加器。
     """
 
+    identity_scope: IdentityScope | None
     class_confusion: np.ndarray = field(
         default_factory=lambda: np.zeros((len(CLASS_NAMES), len(CLASS_NAMES)), dtype=np.int64)
     )
-    intrinsic_correct_at_1: int = 0
-    intrinsic_correct_at_k: int = 0
-    intrinsic_eligible: int = 0
-    conditional_correct_at_1: int = 0
-    conditional_correct_at_k: int = 0
-    conditional_eligible: int = 0
+    small_identity: _IdentityCounts = field(default_factory=_IdentityCounts)
+    all_identity: _IdentityCounts = field(default_factory=_IdentityCounts)
+    per_class_identity: dict[int, _IdentityCounts] = field(
+        default_factory=lambda: {
+            class_index: _IdentityCounts() for class_index in FOREGROUND_CLASS_INDICES
+        }
+    )
     seen_correct_at_1: int = 0
     seen_correct_at_k: int = 0
     seen_eligible: int = 0
     unseen_correct_at_1: int = 0
     unseen_correct_at_k: int = 0
     unseen_eligible: int = 0
-    end_to_end_true_positive: int = 0
-    end_to_end_predicted_positive: int = 0
-    end_to_end_actual_positive: int = 0
     ligand_intersection: int = 0
     ligand_predicted: int = 0
     ligand_actual: int = 0
@@ -225,6 +376,8 @@ class EvaluationAccumulator:
 
         if self.top_k <= 0:
             raise ValueError("top_k 必须为正整数。")
+        if self.identity_scope not in (None, "small_molecule", "all_non_background"):
+            raise ValueError("identity_scope 必须为 None、small_molecule 或 all_non_background。")
         expected = (len(CLASS_NAMES), len(CLASS_NAMES))
         if self.class_confusion.shape != expected:
             raise ValueError(f"class_confusion 必须为 {expected}。")
@@ -282,7 +435,7 @@ class EvaluationAccumulator:
         class_prediction: np.ndarray,
         batch: EvaluationBatch,
     ) -> None:
-        """更新固有身份、以六分类判对为条件的 Top-K 与端到端精确率/召回率。"""
+        """更新固有身份、精确子类条件 Top-K 与背景/前景门后的端到端指标。"""
 
         if identity_logits.ndim != 2 or identity_logits.shape != batch["identity_mask"].shape:
             raise ValueError("identity_logits 和 identity_mask 必须是同形 (B,I) 张量。")
@@ -303,55 +456,150 @@ class EvaluationAccumulator:
             batch["identity_mask"][target_available, target_tensor[target_available]]
         ):
             raise ValueError("非负 identity_target 必须指向 identity_mask 的真值槽。")
+        identity_class_index = batch["identity_class_index"]
+        if identity_class_index.dtype != torch.long or identity_class_index.shape != (
+            identity_logits.shape
+        ):
+            raise ValueError("identity_class_index 必须是与身份轴对齐的 int64 (B,I) 张量。")
+        if torch.any(identity_class_index[batch["identity_mask"]] <= 0) or torch.any(
+            identity_class_index[batch["identity_mask"]] >= len(CLASS_NAMES)
+        ):
+            raise ValueError("有效身份必须属于五类非背景类别。")
+        if torch.any(identity_class_index[~batch["identity_mask"]] != -1):
+            raise ValueError("补零身份的 identity_class_index 必须为 -1。")
+        if torch.any(target_available) and not torch.equal(
+            identity_class_index[target_available, target_tensor[target_available]],
+            batch["class_target"][target_available],
+        ):
+            raise ValueError("identity_target 的身份类别必须等于候选真实类别。")
         target = batch["identity_target"].detach().cpu().numpy()
         class_target = batch["class_target"].detach().cpu().numpy()
-        intrinsic_eligible = (class_target == SMALL_MOLECULE_INDEX) & (target >= 0)
-        conditional_eligible = intrinsic_eligible & (
-            class_prediction == SMALL_MOLECULE_INDEX
+        full_prediction, full_top_k = _masked_identity_prediction(
+            identity_logits,
+            batch["identity_mask"],
+            target,
+            self.top_k,
         )
-        identity_prediction = np.full(target.shape, -1, dtype=np.int64)
-        top_k_correct = np.zeros(target.shape, dtype=bool)
-        if identity_logits.shape[1] > 0:
-            scores = identity_logits.masked_fill(
-                ~batch["identity_mask"],
-                torch.finfo(identity_logits.dtype).min,
-            ).detach().cpu()
-            identity_prediction = scores.argmax(dim=-1).numpy()
-            count = min(self.top_k, scores.shape[1])
-            top_indices = scores.topk(count, dim=-1).indices.numpy()
-            top_k_correct = np.any(top_indices == target[:, None], axis=1)
-        top1_correct = identity_prediction == target
-        self.intrinsic_eligible += int(intrinsic_eligible.sum())
-        self.intrinsic_correct_at_1 += int((intrinsic_eligible & top1_correct).sum())
-        self.intrinsic_correct_at_k += int((intrinsic_eligible & top_k_correct).sum())
-        self.conditional_eligible += int(conditional_eligible.sum())
-        self.conditional_correct_at_1 += int((conditional_eligible & top1_correct).sum())
-        self.conditional_correct_at_k += int((conditional_eligible & top_k_correct).sum())
+        full_top1 = full_prediction == target
+        small_slot_mask = batch["identity_mask"] & (
+            identity_class_index == SMALL_MOLECULE_INDEX
+        )
+        small_prediction, small_top_k = _masked_identity_prediction(
+            identity_logits,
+            small_slot_mask,
+            target,
+            self.top_k,
+        )
+        small_top1 = small_prediction == target
+
+        small_slot_options = small_slot_mask.any(dim=1).detach().cpu().numpy()
+        small_masks = _scope_masks(
+            class_prediction,
+            class_target,
+            target,
+            small_slot_options,
+            (SMALL_MOLECULE_INDEX,),
+        )
+        small_predicted_positive = small_masks[2] & small_masks[3]
+        small_end_to_end_correct = small_masks[0] & small_predicted_positive & small_top1
+        self.small_identity.update(
+            *small_masks[:2],
+            small_top1,
+            small_top_k,
+            small_end_to_end_correct,
+            small_predicted_positive,
+        )
+
+        full_slot_options = batch["identity_mask"].any(dim=1).detach().cpu().numpy()
+        all_masks = _scope_masks(
+            class_prediction,
+            class_target,
+            target,
+            full_slot_options,
+            FOREGROUND_CLASS_INDICES,
+        )
+        all_predicted_positive = all_masks[2] & all_masks[3]
+        all_end_to_end_correct = all_masks[0] & all_predicted_positive & full_top1
+        self.all_identity.update(
+            *all_masks[:2],
+            full_top1,
+            full_top_k,
+            all_end_to_end_correct,
+            all_predicted_positive,
+        )
+
+        identity_class_values = identity_class_index.detach().cpu().numpy()
+        predicted_identity_class = np.full(target.shape, -1, dtype=np.int64)
+        valid_prediction = full_prediction >= 0
+        if np.any(valid_prediction):
+            row_indices = np.arange(target.shape[0])[valid_prediction]
+            predicted_identity_class[valid_prediction] = identity_class_values[
+                row_indices,
+                full_prediction[valid_prediction],
+            ]
+        for class_index in FOREGROUND_CLASS_INDICES:
+            class_slot_options = (
+                batch["identity_mask"] & (identity_class_index == class_index)
+            ).any(dim=1).detach().cpu().numpy()
+            class_masks = _scope_masks(
+                class_prediction,
+                class_target,
+                target,
+                class_slot_options,
+                (class_index,),
+            )
+            class_predicted_positive = (
+                all_masks[2]
+                & all_masks[3]
+                & (predicted_identity_class == class_index)
+            )
+            class_end_to_end_correct = (
+                class_masks[0] & class_predicted_positive & full_top1
+            )
+            self.per_class_identity[class_index].update(
+                *class_masks[:2],
+                full_top1,
+                full_top_k,
+                class_end_to_end_correct,
+                class_predicted_positive,
+            )
+
+        configured_counts = (
+            self.small_identity
+            if self.identity_scope in (None, "small_molecule")
+            else self.all_identity
+        )
+        configured_conditional = (
+            small_masks[1]
+            if self.identity_scope in (None, "small_molecule")
+            else all_masks[1]
+        )
+        configured_top1 = (
+            small_top1
+            if self.identity_scope in (None, "small_molecule")
+            else full_top1
+        )
+        configured_top_k = (
+            small_top_k
+            if self.identity_scope in (None, "small_molecule")
+            else full_top_k
+        )
 
         for index, metadata in enumerate(batch["metadata"]):
-            if not conditional_eligible[index]:
+            if not configured_conditional[index]:
                 continue
             if type(metadata["identity_seen_in_train"]) is not bool:
                 raise ValueError("条件身份样本的 identity_seen_in_train 必须是布尔值。")
             if metadata["identity_seen_in_train"] is True:
                 self.seen_eligible += 1
-                self.seen_correct_at_1 += int(top1_correct[index])
-                self.seen_correct_at_k += int(top_k_correct[index])
+                self.seen_correct_at_1 += int(configured_top1[index])
+                self.seen_correct_at_k += int(configured_top_k[index])
             elif metadata["identity_seen_in_train"] is False:
                 self.unseen_eligible += 1
-                self.unseen_correct_at_1 += int(top1_correct[index])
-                self.unseen_correct_at_k += int(top_k_correct[index])
-
-        identity_options = batch["identity_mask"].any(dim=1).detach().cpu().numpy()
-        unavailable_true_small = (class_target == SMALL_MOLECULE_INDEX) & (target < 0)
-        end_to_end_scope = identity_options & ~unavailable_true_small
-        predicted_small = (class_prediction == SMALL_MOLECULE_INDEX) & end_to_end_scope
-        actual_small = intrinsic_eligible
-        # 真实小分子缺当前 LM 目标时不进身份指标；其它候选的 small-molecule 误报计入端到端假阳性。
-        correct_end_to_end = predicted_small & intrinsic_eligible & top1_correct
-        self.end_to_end_true_positive += int(correct_end_to_end.sum())
-        self.end_to_end_predicted_positive += int(predicted_small.sum())
-        self.end_to_end_actual_positive += int(actual_small.sum())
+                self.unseen_correct_at_1 += int(configured_top1[index])
+                self.unseen_correct_at_k += int(configured_top_k[index])
+        if configured_counts.conditional_eligible != self.seen_eligible + self.unseen_eligible:
+            raise ValueError("条件身份样本必须完整划分为 seen 或 unseen。")
 
     def _update_area(
         self,
@@ -406,27 +654,39 @@ class EvaluationAccumulator:
                 "recall": recall,
                 "f1": f1,
                 "support": int(support[index]),
+                "predicted_count": int(predicted[index]),
             }
         accuracy = _safe_divide(float(true_positive.sum()), float(self.class_confusion.sum()))
-        end_precision = _safe_divide(
-            self.end_to_end_true_positive,
-            self.end_to_end_predicted_positive,
-        )
-        end_recall = _safe_divide(
-            self.end_to_end_true_positive,
-            self.end_to_end_actual_positive,
-        )
-        end_f1 = (
-            2.0 * end_precision * end_recall / (end_precision + end_recall)
-            if math.isfinite(end_precision)
-            and math.isfinite(end_recall)
-            and end_precision + end_recall > 0
-            else 0.0
-        )
         supported_macro_f1 = float(np.mean(class_f1)) if class_f1 else math.nan
         all_classes_macro_f1 = float(
             np.mean([class_metrics[name]["f1"] for name in CLASS_NAMES])
         )
+        small_report = self.small_identity.compute(self.top_k)
+        all_report = self.all_identity.compute(self.top_k)
+        configured_report = (
+            small_report
+            if self.identity_scope in (None, "small_molecule")
+            else all_report
+        )
+        configured_intrinsic = configured_report["intrinsic"]
+        configured_conditional = configured_report["conditional"]
+        configured_end_to_end = configured_report["end_to_end"]
+        conditional_with_history: ConditionalIdentityMetrics = {
+            **configured_conditional,
+            "seen_top1": _safe_divide(self.seen_correct_at_1, self.seen_eligible),
+            "seen_topk": _safe_divide(self.seen_correct_at_k, self.seen_eligible),
+            "seen_count": self.seen_eligible,
+            "unseen_top1": _safe_divide(self.unseen_correct_at_1, self.unseen_eligible),
+            "unseen_topk": _safe_divide(self.unseen_correct_at_k, self.unseen_eligible),
+            "unseen_count": self.unseen_eligible,
+        }
+        per_class_identity = {
+            class_name: self.per_class_identity[class_index].compute(self.top_k)
+            for class_index, class_name in zip(
+                FOREGROUND_CLASS_INDICES,
+                FOREGROUND_CLASS_NAMES,
+            )
+        }
         return {
             "six_class": {
                 "accuracy": accuracy,
@@ -436,47 +696,12 @@ class EvaluationAccumulator:
                 "per_class": class_metrics,
                 "confusion_matrix": self.class_confusion.tolist(),
             },
-            "intrinsic_identity": {
-                "top1": _safe_divide(self.intrinsic_correct_at_1, self.intrinsic_eligible),
-                "topk": _safe_divide(
-                    self.intrinsic_correct_at_k,
-                    self.intrinsic_eligible,
-                ),
-                "top_k": self.top_k,
-                "eligible_count": self.intrinsic_eligible,
-            },
-            "conditional_identity": {
-                "top1": _safe_divide(
-                    self.conditional_correct_at_1,
-                    self.conditional_eligible,
-                ),
-                "topk": _safe_divide(
-                    self.conditional_correct_at_k,
-                    self.conditional_eligible,
-                ),
-                "top_k": self.top_k,
-                "eligible_count": self.conditional_eligible,
-                "seen_top1": _safe_divide(self.seen_correct_at_1, self.seen_eligible),
-                "seen_topk": _safe_divide(
-                    self.seen_correct_at_k,
-                    self.seen_eligible,
-                ),
-                "seen_count": self.seen_eligible,
-                "unseen_top1": _safe_divide(self.unseen_correct_at_1, self.unseen_eligible),
-                "unseen_topk": _safe_divide(
-                    self.unseen_correct_at_k,
-                    self.unseen_eligible,
-                ),
-                "unseen_count": self.unseen_eligible,
-            },
-            "end_to_end_identity": {
-                "precision": end_precision,
-                "recall": end_recall,
-                "f1": end_f1,
-                "true_positive": self.end_to_end_true_positive,
-                "predicted_small_molecule": self.end_to_end_predicted_positive,
-                "actual_small_molecule": self.end_to_end_actual_positive,
-            },
+            "intrinsic_identity": configured_intrinsic,
+            "conditional_identity": conditional_with_history,
+            "end_to_end_identity": configured_end_to_end,
+            "small_molecule_identity": small_report,
+            "all_non_background_identity": all_report,
+            "identity_per_class": per_class_identity,
             "area": {
                 "ligand_micro_dice": _safe_divide(
                     2 * self.ligand_intersection,

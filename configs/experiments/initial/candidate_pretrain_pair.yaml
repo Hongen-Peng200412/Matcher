@@ -35,8 +35,10 @@ stages:
     task_name: candidate_pretrain
     language_family: null  # null 表示候选六分类不读取任何配体语言表示。
     identity_variant: null  # null 表示该阶段不计算身份损失。
+    identity_scope: null  # 候选预训练没有身份监督范围。
     model:
       aggregation: mean_max
+      use_manual_features: false  # 复现第0批不含候选级手动统计的结构。
       model_dim: 256
       attention_heads: 8
       dropout: 0.10
@@ -71,8 +73,10 @@ stages:
     task_name: candidate_pretrain
     language_family: null
     identity_variant: null
+    identity_scope: null
     model:
       aggregation: candidate_cross_attention
+      use_manual_features: false
       model_dim: 256
       attention_heads: 8
       dropout: 0.10

@@ -17,6 +17,7 @@ from typing import Protocol, TypeAlias, TypedDict, cast
 
 from .experiment_config import StageConfig, TrackingConfig
 from .json_artifacts import write_json
+from .schema import CLASS_NAMES, FOREGROUND_CLASS_NAMES
 
 
 MetricValue: TypeAlias = float | int | bool | None
@@ -29,7 +30,7 @@ class TrackingMetadata(TypedDict):
     ``mode`` 是 W&B 运行模式，本轮固定为 ``online``。
     ``entity`` 是拥有在线项目的 W&B 账户或团队。
     ``project`` 是收纳本轮曲线的 W&B 项目名称。
-    ``group`` 是用于比较七个首轮任务的 W&B 分组名称。
+    ``group`` 是用于比较同一实验批次内任务的 W&B 分组名称。
     ``run_id`` 是 W&B 分配的不可变在线运行标识。
     ``run_name`` 由训练阶段名和计划运行目录名组成。
     ``run_url`` 是用户可直接打开的 HTTPS 曲线地址。
@@ -105,23 +106,51 @@ class _WandbModule(Protocol):
         """创建一个必须在线且不复用既有标识的阶段运行。"""
 
 
+_IDENTITY_REPORT_PREFIXES = (
+    "identity_configured",
+    "identity_small_molecule",
+    "identity_all_non_background",
+    *(f"identity_{name}" for name in FOREGROUND_CLASS_NAMES),
+)
 _NULLABLE_METRIC_SUPPORT: dict[str, str] = {
-    "validation/intrinsic_identity_top1": "validation/intrinsic_identity_eligible_count",
-    "validation/intrinsic_identity_topk": "validation/intrinsic_identity_eligible_count",
-    "validation/conditional_identity_top1": "validation/conditional_identity_eligible_count",
-    "validation/conditional_identity_topk": "validation/conditional_identity_eligible_count",
-    "validation/conditional_seen_top1": "validation/conditional_seen_count",
-    "validation/conditional_seen_topk": "validation/conditional_seen_count",
-    "validation/conditional_unseen_top1": "validation/conditional_unseen_count",
-    "validation/conditional_unseen_topk": "validation/conditional_unseen_count",
-    "validation/end_to_end_identity_precision": (
-        "validation/end_to_end_predicted_small_molecule_count"
+    "identity_configured/conditional/seen/top1": (
+        "identity_configured/conditional/seen/count"
     ),
-    "validation/end_to_end_identity_recall": (
-        "validation/end_to_end_actual_small_molecule_count"
+    "identity_configured/conditional/seen/topk": (
+        "identity_configured/conditional/seen/count"
     ),
-    "validation/ligand_micro_dice": "validation/ligand_dice_denominator",
-    "validation/binding_micro_dice": "validation/binding_dice_denominator",
+    "identity_configured/conditional/unseen/top1": (
+        "identity_configured/conditional/unseen/count"
+    ),
+    "identity_configured/conditional/unseen/topk": (
+        "identity_configured/conditional/unseen/count"
+    ),
+    "area/ligand/micro_dice": "area/ligand/dice_denominator",
+    "area/binding/micro_dice": "area/binding/dice_denominator",
+    **{
+        f"classification_per_class/{name}/precision": (
+            f"classification_per_class/{name}/predicted_count"
+        )
+        for name in CLASS_NAMES
+    },
+    **{
+        f"classification_per_class/{name}/recall": (
+            f"classification_per_class/{name}/support"
+        )
+        for name in CLASS_NAMES
+    },
+    **{
+        f"{prefix}/{metric}": f"{prefix}/{support}"
+        for prefix in _IDENTITY_REPORT_PREFIXES
+        for metric, support in (
+            ("intrinsic/top1", "intrinsic/eligible_count"),
+            ("intrinsic/topk", "intrinsic/eligible_count"),
+            ("conditional/top1", "conditional/eligible_count"),
+            ("conditional/topk", "conditional/eligible_count"),
+            ("end_to_end/precision", "end_to_end/predicted_positive_count"),
+            ("end_to_end/recall", "end_to_end/actual_positive_count"),
+        )
+    },
 }
 
 
@@ -224,7 +253,7 @@ def start_wandb_tracking(
 ) -> WandbTracker:
     """建立阶段级 W&B online run，并写出 ``stage_directory/tracking.json``。
 
-    run 名称由阶段名和 allocation 的运行目录名组成；同一首轮实验使用配置中的 group。
+    run 名称由阶段名和 allocation 的运行目录名组成；同一批次的可比任务使用配置中的 group。
     本入口只从现有环境或 ``~/.netrc`` 读取认证，不接收或落盘 API key。W&B 不可导入、
     未登录、无法在线初始化或没有返回 HTTPS URL 时立即失败，不切换为 offline。产物完整保存
     ``TrackingMetadata`` 的十个字段；初始化后任一字段、横轴或落盘检查失败都会结束该 run。
@@ -243,6 +272,7 @@ def start_wandb_tracking(
         stage.model.aggregation,
         stage.language_family or "no_language_family",
         stage.identity_variant or "no_identity_variant",
+        stage.identity_scope or "no_identity_scope",
     ]
     try:
         run = wandb_module.init(
@@ -278,11 +308,37 @@ def start_wandb_tracking(
         if not isinstance(raw_version, str) or not raw_version:
             raise RuntimeError("W&B SDK 没有提供非空字符串版本号。")
         run.define_metric("global_step")
-        run.define_metric("train/step/*", step_metric="global_step")
+        for section in (
+            "loss",
+            "gradient",
+            "gate",
+            "learning_rate",
+            "performance",
+            "memory",
+            "statistics",
+        ):
+            run.define_metric(f"{section}/train_step/*", step_metric="global_step")
         run.define_metric("epoch")
-        run.define_metric("train/epoch/*", step_metric="epoch")
-        run.define_metric("validation/*", step_metric="epoch")
-        run.define_metric("selection/*", step_metric="epoch")
+        epoch_patterns = (
+            "loss/train_epoch/*",
+            "loss/validation/*",
+            "gradient/train_epoch/*",
+            "gate/train_epoch/*",
+            "learning_rate/train_epoch/*",
+            "performance/train_epoch/*",
+            "performance/validation/*",
+            "memory/train_epoch/*",
+            "statistics/train_epoch/*",
+            "statistics/validation/*",
+            "classification_summary/*",
+            "classification_per_class/*",
+            "classification_confusion/*",
+            *(f"{prefix}/*" for prefix in _IDENTITY_REPORT_PREFIXES),
+            "area/*",
+            "selection/*",
+        )
+        for pattern in epoch_patterns:
+            run.define_metric(pattern, step_metric="epoch")
         tracker = WandbTracker(
             run_id=raw_run_id,
             run_url=raw_run_url,

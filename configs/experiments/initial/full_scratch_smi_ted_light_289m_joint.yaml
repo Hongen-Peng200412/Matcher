@@ -34,8 +34,10 @@ stages:
     task_name: full_matcher
     language_family: smi_ted_289m
     identity_variant: joint
+    identity_scope: small_molecule
     model:
       aggregation: mean_max
+      use_manual_features: false
       model_dim: 256
       attention_heads: 8
       dropout: 0.10

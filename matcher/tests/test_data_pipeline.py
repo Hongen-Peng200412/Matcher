@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 from typing import cast
 
@@ -17,7 +18,7 @@ from matcher.contracts import CandidateItem
 from matcher.geometry import crop_center_48, hard_scatter_receptor, keep_local_48
 from matcher.labels import OccurrenceMask, assign_candidate_target
 from matcher.ligand_graph import LigandGraphStore
-from matcher.manifest import build_manifest, load_jsonl, require_manifest
+from matcher.manifest import build_manifest, ensure_manifest, load_jsonl, require_manifest
 from matcher.precompute import precompute_inputs
 from matcher.pp_input import _build_pp_tokens
 from matcher.schema import SourceRoots
@@ -31,7 +32,12 @@ def test_read_only_manifest_entry_never_builds_missing_files(tmp_path: Path) -> 
     roots = build_synthetic_roots(tmp_path)
     assert not roots.manifest_root.exists()
     with pytest.raises(FileNotFoundError, match="禁止在只读评估入口重建"):
-        require_manifest(roots, coverage_threshold=0.30, selection_seed=3407)
+        require_manifest(
+            roots,
+            coverage_threshold=0.30,
+            selection_seed=3407,
+            required_splits=("calibration",),
+        )
     assert not roots.manifest_root.exists()
 
 
@@ -70,7 +76,12 @@ def test_manifest_and_dataset_keep_pdb_but_drop_missing_smi_occurrence(tmp_path)
     """SMI-TED 单 occurrence 缺失不排除 PDB，并改选同身份的有效表示。"""
 
     roots = build_synthetic_roots(tmp_path)
-    manifest_path = build_manifest(roots, coverage_threshold=0.30, selection_seed=3407)
+    manifest_path = build_manifest(
+        roots,
+        coverage_threshold=0.30,
+        selection_seed=3407,
+        split_names=("train", "validation"),
+    )
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     assert manifest["split_pdb_counts"]["train"] == {
         "discovered": 1,
@@ -78,7 +89,9 @@ def test_manifest_and_dataset_keep_pdb_but_drop_missing_smi_occurrence(tmp_path)
         "excluded": 0,
     }
     exclusions = load_jsonl(manifest_path.parent / "excluded_pdb.jsonl")
-    assert {item["reason"] for item in exclusions} == {"blob_exceed", "missing_required_product"}
+    assert {item["reason"] for item in exclusions} == {"blob_exceed"}
+    assert manifest["available_splits"] == ["train", "validation"]
+    assert manifest["deferred_splits"] == ["calibration"]
     identities = load_jsonl(manifest_path.parent / "train_identities.jsonl")
     candidates = load_jsonl(manifest_path.parent / "train_candidates.jsonl")
     smi = identities[0]["language"]["smi_ted_289m"]
@@ -100,11 +113,15 @@ def test_manifest_and_dataset_keep_pdb_but_drop_missing_smi_occurrence(tmp_path)
         split_name="train",
         task_name="full_matcher",
         language_family="smi_ted_289m",
+        identity_scope="small_molecule",
         pp_top_k=4,
     )
     item = dataset[0]
     assert item["class_target"] == 4
     assert item["full_candidate_voxel_count"] == 2
+    assert item["candidate_manual_features"].tolist() == pytest.approx(
+        [1.0, 0.8, 0.8, 2.0, 0.5, 0.9, 1.0, 0.9, 0.9, 4.0, 0.25, 1.0]
+    )
     assert item["v_tokens"].shape == (1, 52)
     assert item["p_tokens"].shape == (2, 116)
     assert item["a_tokens"].shape == (1, 229)
@@ -121,6 +138,7 @@ def test_manifest_and_dataset_keep_pdb_but_drop_missing_smi_occurrence(tmp_path)
     batch = collate_candidates([cast(CandidateItem, item)])
     assert batch["voxel_input"].shape == (1, 105, 48, 48, 48)
     assert batch["identity_mask"].tolist() == [[True]]
+    assert batch["identity_class_index"].tolist() == [[4]]
     assert batch["graph_edge_index"].shape == (2, 2)
     assert batch["graph_edge_features"][:, -1].tolist() == pytest.approx([0.15, 0.15])
     sampler = ShuffledBatchSampler(
@@ -134,11 +152,135 @@ def test_manifest_and_dataset_keep_pdb_but_drop_missing_smi_occurrence(tmp_path)
     assert list(sampler) == [[0]]
 
 
+def test_manifest_v3_scope_distinguishes_small_from_multiple_foreground_classes(tmp_path) -> None:
+    """合成 ion 与 small_molecule 后，两种身份范围读取不同身份轴。"""
+
+    roots = build_synthetic_roots(tmp_path)
+    occurrence_path = roots.data_root / "parse/1abc/occurrences.jsonl"
+    occurrences = load_jsonl(occurrence_path)
+    occurrences.append(
+        {
+            "pdb_id": "1abc",
+            "candidate_id": 2,
+            "object_key": "ION:ZN",
+            "type_tag": "ion",
+        }
+    )
+    occurrence_path.write_text(
+        "".join(json.dumps(item) + "\n" for item in occurrences),
+        encoding="utf-8",
+    )
+    ligand_area_path = roots.data_root / "density/1abc/ligand_area.npz"
+    with np.load(ligand_area_path, allow_pickle=False) as archive:
+        masks = {name: np.asarray(archive[name]).copy() for name in archive.files}
+    masks["mask_2"] = np.asarray([[79, 79, 79]], dtype=np.int32)
+    np.savez(ligand_area_path, **masks)
+    with np.load(
+        roots.data_root / "ligand_objects/CCD_LIG.npz",
+        allow_pickle=False,
+    ) as archive:
+        ligand_object = {name: np.asarray(archive[name]).copy() for name in archive.files}
+    ligand_object["name"] = np.asarray("ION:ZN")
+    np.savez(roots.data_root / "ligand_objects/ION_ZN.npz", **ligand_object)
+    for family in ("molformer", "smi_ted_289m"):
+        reference_path = roots.language_root / f"{family}/1abc/candidate_1.npz"
+        with np.load(reference_path, allow_pickle=False) as archive:
+            language = {name: np.asarray(archive[name]).copy() for name in archive.files}
+        language["candidate_id"] = np.asarray(2, dtype=np.int32)
+        language["object_key"] = np.asarray("ION:ZN")
+        np.savez(reference_path.parent / "candidate_2.npz", **language)
+
+    manifest_path = build_manifest(
+        roots,
+        coverage_threshold=0.30,
+        selection_seed=3407,
+        split_names=("train", "validation"),
+    )
+    identities = load_jsonl(manifest_path.parent / "train_identities.jsonl")
+    assert [(item["class_name"], item["object_key"]) for item in identities] == [
+        ("ion", "ION:ZN"),
+        ("small_molecule", "CCD:LIG"),
+    ]
+    all_foreground = CandidateDataset(
+        roots=roots,
+        manifest_path=manifest_path,
+        split_name="train",
+        task_name="full_matcher",
+        language_family="smi_ted_289m",
+        identity_scope="all_non_background",
+        pp_top_k=4,
+    )[0]
+    assert all_foreground["identity_class_index"].tolist() == [1, 4]
+    assert all_foreground["identity_object_keys"] == ["ION:ZN", "CCD:LIG"]
+    assert all_foreground["identity_target"] == 1
+
+    small_only = CandidateDataset(
+        roots=roots,
+        manifest_path=manifest_path,
+        split_name="train",
+        task_name="full_matcher",
+        language_family="smi_ted_289m",
+        identity_scope="small_molecule",
+        pp_top_k=4,
+    )[0]
+    assert small_only["identity_class_index"].tolist() == [4]
+    assert small_only["identity_target"] == 0
+
+
+def test_manifest_explicitly_extends_calibration_without_rewriting_train_semantics(
+    tmp_path,
+) -> None:
+    """准备入口只在显式请求后补建 calibration，且既有 train 记录逐字节不变。"""
+
+    roots = build_synthetic_roots(tmp_path)
+    shutil.copytree(
+        roots.stage1_root / "train/1abc",
+        roots.stage1_root / "calibration/1abc",
+    )
+    manifest_path = ensure_manifest(
+        roots,
+        coverage_threshold=0.30,
+        selection_seed=3407,
+        required_splits=("train", "validation"),
+    )
+    train_candidates_path = manifest_path.parent / "train_candidates.jsonl"
+    train_before = train_candidates_path.read_bytes()
+    with pytest.raises(FileNotFoundError, match="尚未物化"):
+        require_manifest(
+            roots,
+            coverage_threshold=0.30,
+            selection_seed=3407,
+            required_splits=("calibration",),
+        )
+
+    ensure_manifest(
+        roots,
+        coverage_threshold=0.30,
+        selection_seed=3407,
+        required_splits=("calibration",),
+    )
+    assert train_candidates_path.read_bytes() == train_before
+    require_manifest(
+        roots,
+        coverage_threshold=0.30,
+        selection_seed=3407,
+        required_splits=("calibration",),
+    )
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert manifest["available_splits"] == ["train", "validation", "calibration"]
+    assert manifest["deferred_splits"] == []
+
+
 def test_dataset_accepts_float32_box_origin_recomputation_but_rejects_real_shift(tmp_path) -> None:
     """候选原点允许冻结产物的一个 float32 间隔误差，但必须拒绝毫埃级真实错位。"""
 
     roots = build_synthetic_roots(tmp_path)
-    manifest_path = build_manifest(roots, coverage_threshold=0.30, selection_seed=3407)
+    manifest_path = build_manifest(
+        roots,
+        coverage_threshold=0.30,
+        selection_seed=3407,
+        split_names=("train", "validation"),
+    )
     centered_path = roots.stage1_root / "train/1abc/centered/F1_centered.npz"
     probability_path = roots.stage1_root / "train/1abc/probability/probability_map.npz"
     with np.load(centered_path, allow_pickle=False) as archive:
@@ -159,6 +301,7 @@ def test_dataset_accepts_float32_box_origin_recomputation_but_rejects_real_shift
         split_name="train",
         task_name="candidate_pretrain",
         language_family=None,
+        identity_scope=None,
         pp_top_k=4,
     )
     assert accepted[0]["class_target"] == 4
@@ -171,6 +314,7 @@ def test_dataset_accepts_float32_box_origin_recomputation_but_rejects_real_shift
         split_name="train",
         task_name="candidate_pretrain",
         language_family=None,
+        identity_scope=None,
         pp_top_k=4,
     )
     with pytest.raises(ValueError, match="最大绝对误差"):
@@ -183,13 +327,19 @@ def test_pp_cache_removes_runtime_probability_map_dependency(
     """PP 缓存命中后逐值复用首次构建结果，且不再读取完整概率图。"""
 
     roots = build_synthetic_roots(tmp_path)
-    manifest_path = build_manifest(roots, coverage_threshold=0.30, selection_seed=3407)
+    manifest_path = build_manifest(
+        roots,
+        coverage_threshold=0.30,
+        selection_seed=3407,
+        split_names=("train", "validation"),
+    )
     dataset = CandidateDataset(
         roots=roots,
         manifest_path=manifest_path,
         split_name="train",
         task_name="candidate_pretrain",
         language_family=None,
+        identity_scope=None,
         pp_top_k=4,
         cache_bytes_per_worker=64 * 1024**2,
     )
@@ -213,6 +363,7 @@ def test_pp_cache_removes_runtime_probability_map_dependency(
         split_name="train",
         task_name="candidate_pretrain",
         language_family=None,
+        identity_scope=None,
         pp_top_k=4,
         cache_bytes_per_worker=64 * 1024**2,
     )[0]
@@ -250,7 +401,12 @@ def test_precompute_entry_requires_explicit_products_and_builds_pp(tmp_path) -> 
     """正式预计算入口拒绝含糊参数，并能按 PDB 物化显式选择的 PP 缓存。"""
 
     roots = build_synthetic_roots(tmp_path)
-    manifest_path = build_manifest(roots, coverage_threshold=0.30, selection_seed=3407)
+    manifest_path = build_manifest(
+        roots,
+        coverage_threshold=0.30,
+        selection_seed=3407,
+        split_names=("train", "validation"),
+    )
     with pytest.raises(ValueError, match="非空且不重复"):
         precompute_inputs(roots, manifest_path, ("train",), 1, (), None)
     with pytest.raises(ValueError, match="必须提供正整数"):
@@ -272,7 +428,12 @@ def test_seen_identity_requires_train_positive_for_current_language_family(tmp_p
         / "smi_ted_289m/1abc/candidate_1.npz"
     )
     missing_smi.unlink()
-    manifest_path = build_manifest(roots, coverage_threshold=0.30, selection_seed=3407)
+    manifest_path = build_manifest(
+        roots,
+        coverage_threshold=0.30,
+        selection_seed=3407,
+        split_names=("train", "validation"),
+    )
     candidate = load_jsonl(manifest_path.parent / "train_candidates.jsonl")[0]
     assert candidate["language_target_available"] == {
         "molformer": True,

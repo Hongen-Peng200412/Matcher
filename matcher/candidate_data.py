@@ -19,6 +19,7 @@ from .pp_input import PpCandidateInput, PpInputStore
 from .schema import (
     CLASS_NAMES,
     A_TOKEN_DIM,
+    CANDIDATE_MANUAL_FEATURE_DIM,
     FULL_CONTEXT_HALF_EXTENT_VOXELS,
     LANGUAGE_EMBEDDING_DIM,
     LANGUAGE_FAMILIES,
@@ -28,6 +29,8 @@ from .schema import (
     P_TOKEN_DIM,
     SourceRoots,
     V_TOKEN_DIM,
+    IdentityScope,
+    identity_scope_class_indices,
 )
 from .voxel_input import VoxelInputStore
 
@@ -37,7 +40,7 @@ _BOX_ORIGIN_ABSOLUTE_TOLERANCE_ANGSTROM = 5e-5
 
 
 class CandidateDataset(Dataset[CandidateItem]):
-    """按候选粒度读取六分类样本，并按需附加 PDB 内小分子身份清单。
+    """按候选粒度读取六分类样本，并按需附加 PDB 内指定范围的身份清单。
 
     ``cache_bytes_per_worker`` 是每个 DataLoader 工作进程自己的总缓存上限，
     默认 16 GiB，不会预先分配。预算覆盖 PDB 级 F1-centered/辅助标签、尚未
@@ -52,6 +55,7 @@ class CandidateDataset(Dataset[CandidateItem]):
         split_name: str,
         task_name: str,
         language_family: str | None,
+        identity_scope: IdentityScope | None,
         pp_top_k: int,
         cache_bytes_per_worker: int = 16 * 1024**3,
     ) -> None:
@@ -59,6 +63,10 @@ class CandidateDataset(Dataset[CandidateItem]):
             raise ValueError(f"task_name 必须属于 {TASK_NAMES}，实际为 {task_name!r}。")
         if task_name == "full_matcher" and language_family is None:
             raise ValueError("full_matcher 必须明确指定 language_family。")
+        if task_name == "full_matcher" and identity_scope is None:
+            raise ValueError("full_matcher 必须明确指定 identity_scope。")
+        if task_name == "candidate_pretrain" and identity_scope is not None:
+            raise ValueError("candidate_pretrain 的 identity_scope 必须为 None。")
         if language_family is not None and language_family not in LANGUAGE_FAMILIES:
             raise ValueError(
                 f"language_family 必须属于 {LANGUAGE_FAMILIES} 或为 None，"
@@ -79,6 +87,7 @@ class CandidateDataset(Dataset[CandidateItem]):
         self.split_name = split_name
         self.task_name = task_name
         self.language_family = language_family
+        self.identity_scope = identity_scope
         self.pp_top_k = pp_top_k
         self.cache_bytes_per_worker = int(cache_bytes_per_worker)
         self.records = load_jsonl(manifest_path.parent / split_files["candidates"])
@@ -87,7 +96,9 @@ class CandidateDataset(Dataset[CandidateItem]):
         for identity in identity_records:
             self.identities_by_pdb[str(identity["pdb_id"])].append(identity)
         for identities in self.identities_by_pdb.values():
-            identities.sort(key=lambda item: str(item["object_key"]))
+            identities.sort(
+                key=lambda item: (int(item["class_index"]), str(item["object_key"]))
+            )
 
         budgets = _split_cache_budget(self.cache_bytes_per_worker)
         source_cache_bytes = budgets["source"]
@@ -159,12 +170,25 @@ class CandidateDataset(Dataset[CandidateItem]):
             "ligand_area_target": ligand_target,
             "binding_area_target": binding_target,
             "full_candidate_voxel_count": int(record["full_candidate_voxel_count"]),
+            "candidate_manual_features": _candidate_manual_features(
+                a_tokens,
+                p_tokens,
+                v_tokens,
+                pp_input["tokens"],
+            ),
         }
         if self.task_name == "full_matcher":
-            item.update(self._load_identity_inputs(pdb_id, record["matched_object_key"]))
+            item.update(
+                self._load_identity_inputs(
+                    pdb_id,
+                    int(record["class_index"]),
+                    record["matched_object_key"],
+                )
+            )
         else:
             item.update(
                 identity_object_keys=[],
+                identity_class_index=np.empty(0, dtype=np.int64),
                 language_embeddings=np.empty((0, LANGUAGE_EMBEDDING_DIM), dtype=np.float32),
                 ligand_graphs=[],
                 identity_target=-1,
@@ -215,25 +239,32 @@ class CandidateDataset(Dataset[CandidateItem]):
     def _load_identity_inputs(
         self,
         pdb_id: str,
+        matched_class_index: int,
         matched_object_key: str | None,
     ) -> dict[str, Any]:
-        """读取当前语言模型和配体图都可用的去重小分子身份。"""
+        """读取当前范围内语言表示和配体图都可用的去重前景身份。"""
 
-        if self.language_family is None:
-            raise AssertionError("full_matcher 的 language_family 不应为空。")
-        cache_key = (pdb_id, self.language_family)
+        if self.language_family is None or self.identity_scope is None:
+            raise AssertionError("full_matcher 的语言模型和身份范围不应为空。")
+        cache_key = (pdb_id, f"{self.language_family}:{self.identity_scope}")
         cached = self._identity_cache.get(cache_key)
         if cached is not None:
-            target = (
-                cached["identity_object_keys"].index(matched_object_key)
-                if matched_object_key in cached["identity_object_keys"]
-                else -1
+            target = _identity_target_index(
+                cached["identity_object_keys"],
+                cached["identity_class_index"],
+                matched_class_index,
+                matched_object_key,
             )
             return {**cached, "identity_target": target}
         object_keys: list[str] = []
         embeddings: list[np.ndarray] = []
+        class_indices: list[int] = []
         graphs = []
+        allowed_classes = set(identity_scope_class_indices(self.identity_scope))
         for identity in self.identities_by_pdb.get(pdb_id, []):
+            class_index = int(identity["class_index"])
+            if class_index not in allowed_classes:
+                continue
             language = identity["language"][self.language_family]
             if not identity["graph_available"] or not language["available"]:
                 continue
@@ -246,6 +277,7 @@ class CandidateDataset(Dataset[CandidateItem]):
                 raise ValueError(f"{path}:embedding 必须为有限 ({LANGUAGE_EMBEDDING_DIM},)。")
             object_keys.append(object_key)
             embeddings.append(embedding)
+            class_indices.append(class_index)
             graphs.append(self.graph_store.load(object_key))
         embedding_array = (
             np.stack(embeddings, axis=0)
@@ -255,10 +287,16 @@ class CandidateDataset(Dataset[CandidateItem]):
         cached = {
             "identity_object_keys": object_keys,
             "language_embeddings": embedding_array,
+            "identity_class_index": np.asarray(class_indices, dtype=np.int64),
             "ligand_graphs": graphs,
         }
         self._identity_cache.put(cache_key, cached)
-        target = object_keys.index(matched_object_key) if matched_object_key in object_keys else -1
+        target = _identity_target_index(
+            object_keys,
+            cached["identity_class_index"],
+            matched_class_index,
+            matched_object_key,
+        )
         return {**cached, "identity_target": target}
 
     def __getstate__(self) -> dict[str, Any]:
@@ -269,6 +307,57 @@ class CandidateDataset(Dataset[CandidateItem]):
         state["_artifact_cache"] = ByteBudgetLru(budgets["artifact"])
         state["_identity_cache"] = ByteBudgetLru(budgets["identity"])
         return state
+
+
+def _candidate_manual_features(
+    a_tokens: np.ndarray,
+    p_tokens: np.ndarray,
+    v_tokens: np.ndarray,
+    pp_tokens: np.ndarray,
+) -> np.ndarray:
+    """返回 A/P/V/PP 的实体数、固化 Stage1 概率均值和最大值。"""
+
+    result: list[float] = []
+    for name, tokens, probability_column in (
+        ("A", a_tokens, -4),
+        ("P", p_tokens, -4),
+        ("V", v_tokens, -4),
+        ("PP", pp_tokens, 0),
+    ):
+        if tokens.ndim != 2:
+            raise ValueError(f"{name} token 必须是二维数组。")
+        count = int(tokens.shape[0])
+        if count == 0:
+            result.extend((0.0, 0.0, 0.0))
+            continue
+        probability = np.asarray(tokens[:, probability_column], dtype=np.float32)
+        if not np.isfinite(probability).all():
+            raise ValueError(f"{name} 的 Stage1 固化概率含 NaN 或 Inf。")
+        result.extend((float(count), float(probability.mean()), float(probability.max())))
+    features = np.asarray(result, dtype=np.float32)
+    if features.shape != (CANDIDATE_MANUAL_FEATURE_DIM,):
+        raise RuntimeError("候选手动特征宽度与 schema 常量不一致。")
+    return features
+
+
+def _identity_target_index(
+    object_keys: list[str],
+    class_indices: np.ndarray,
+    matched_class_index: int,
+    matched_object_key: str | None,
+) -> int:
+    """按类别与 object_key 唯一定位真实身份；不可用时返回 -1。"""
+
+    if matched_object_key is None:
+        return -1
+    matches = [
+        index
+        for index, (class_index, object_key) in enumerate(zip(class_indices, object_keys))
+        if int(class_index) == matched_class_index and object_key == matched_object_key
+    ]
+    if len(matches) > 1:
+        raise ValueError("同一 PDB 身份清单含重复 (class_index, object_key)。")
+    return matches[0] if matches else -1
 
 
 _CENTERED_FIELDS = (

@@ -4,9 +4,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 
-MANIFEST_SCHEMA_VERSION = 2
+MANIFEST_SCHEMA_VERSION = 3
 VOXEL_CACHE_SCHEMA_VERSION = 1
 PP_CACHE_SCHEMA_VERSION = 1
 
@@ -20,6 +21,10 @@ CLASS_NAMES = (
 )
 CLASS_TO_INDEX = {name: index for index, name in enumerate(CLASS_NAMES)}
 SMALL_MOLECULE_INDEX = CLASS_TO_INDEX["small_molecule"]
+FOREGROUND_CLASS_NAMES = CLASS_NAMES[1:]
+FOREGROUND_CLASS_INDICES = tuple(CLASS_TO_INDEX[name] for name in FOREGROUND_CLASS_NAMES)
+IdentityScope = Literal["small_molecule", "all_non_background"]
+IDENTITY_SCOPES = ("small_molecule", "all_non_background")
 OCCURRENCE_TYPE_TO_CLASS = {
     "ion": "ion",
     "nucleotide_like": "nucleotide_like",
@@ -46,8 +51,24 @@ A_TOKEN_DIM = 229
 P_TOKEN_DIM = 116
 V_TOKEN_DIM = 52
 PP_TOKEN_DIM = 4
+CANDIDATE_MANUAL_FEATURE_NAMES = tuple(
+    f"{modality}_{statistic}"
+    for modality in ("a", "p", "v", "pp")
+    for statistic in ("count", "probability_mean", "probability_max")
+)
+CANDIDATE_MANUAL_FEATURE_DIM = len(CANDIDATE_MANUAL_FEATURE_NAMES)
 FULL_CONTEXT_HALF_EXTENT_VOXELS = STAGE1_BOX_SIZE / 2.0
 LOCAL_CONTEXT_HALF_EXTENT_VOXELS = LOCAL_BOX_SIZE / 2.0
+
+
+def identity_scope_class_indices(scope: IdentityScope) -> tuple[int, ...]:
+    """返回身份监督范围包含的六分类下标。"""
+
+    if scope == "small_molecule":
+        return (SMALL_MOLECULE_INDEX,)
+    if scope == "all_non_background":
+        return FOREGROUND_CLASS_INDICES
+    raise ValueError(f"不支持 identity_scope={scope!r}。")
 
 
 @dataclass(frozen=True)

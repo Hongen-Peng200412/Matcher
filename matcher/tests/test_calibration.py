@@ -137,7 +137,7 @@ def test_run_calibration_writes_evidence_and_rejects_second_output(
         "deterministic_algorithms": False,
         "float32_matmul_precision": "high",
     }
-    accumulator = EvaluationAccumulator(top_k=5)
+    accumulator = EvaluationAccumulator(identity_scope=None, top_k=5)
     accumulator.update(
         {
             "class_logits": torch.tensor([[10.0, -1.0, -1.0, -1.0, -1.0, -1.0]]),
@@ -153,6 +153,7 @@ def test_run_calibration_writes_evidence_and_rejects_second_output(
                 "ligand_area_target": torch.zeros((1, 1, 1, 1), dtype=torch.bool),
                 "binding_area_target": torch.zeros((1, 1, 1, 1), dtype=torch.bool),
                 "identity_mask": torch.zeros((1, 1), dtype=torch.bool),
+                "identity_class_index": torch.full((1, 1), -1, dtype=torch.long),
                 "metadata": [
                     {
                         "split": "calibration",

@@ -205,10 +205,72 @@ Matcher 的正式任务只从 `/home/penghongen/My_Project/Matcher` 冻结 relea
 
 - `sh/build_manifest.sh`：只构建或核验版本化监督清单，不遍历候选体素缓存。
 - `sh/precompute_data.sh`：先构建或复用清单，再按 `--products voxel pp` 显式选择 105 通道体素缓存、PP token 缓存或两者；选择 `pp` 时必须同时给出 `--pp-top-k`。
-- `sh/train_experiment.sh`：读取 `configs/experiments/initial/*.yaml`，顺序执行一个或多个训练阶段。
+- `sh/train_experiment.sh`：读取调用方通过 `--plan` 指定的正式 YAML，顺序执行其中一个或多个训练阶段。
 - `sh/evaluate_calibration.sh`：核对已选定阶段的 `BEST.pt`、`resolved.json`、阶段 `summary.json` 与运行 `run.json`，要求现存冻结清单且不重建，只评估 calibration。
 
 `build_manifest.sh` 与 `precompute_data.sh` 的清单参数必须显式提供 `data-root/stage1-root/output-root/coverage-threshold/selection-seed`。`precompute_data.sh` 还必须显式提供 `--products`；仅当选择 `pp` 时提供正整数 `--pp-top-k`。`train_experiment.sh` 只接收 `--plan`，其它科学与训练参数都由 YAML 唯一声明。`evaluate_calibration.sh` 必须显式提供 `--plan/--stage/--checkpoint/--output`。它核对 checkpoint 最佳轮次、阶段完成摘要、模型与训练配置，以及训练时 `data_root/stage1_root/output_root/coverage_threshold/selection_seed/pp_top_k`；数据清单缺失时直接失败，不在保留评估中重建。
+
+### 版本化监督清单字段
+
+清单位于 `data.output_root/manifests/closed_set_v<schema>/`。`manifest.json` 的顶层字段如下：
+
+| 字段 | 类型与语义 |
+| --- | --- |
+| `schema_version` | 整数；任何字段或监督语义变化都必须提升版本。 |
+| `created_at_utc` | 首次构建清单的带时区 ISO 8601 时间；扩展划分时保持不变。 |
+| `updated_at_utc` | 最近一次原子发布的带时区 ISO 8601 时间。 |
+| `data_root` | A–G、语言表示和配体图的只读根。 |
+| `stage1_root` | Stage1 Find_0 产物的只读根。 |
+| `output_root` | Matcher 清单和缓存的可写根。 |
+| `coverage_threshold` | 候选与 occurrence 双向覆盖率共同采用的阈值。 |
+| `selection_seed` | 同一身份存在多个有效 occurrence 时的确定性选择种子。 |
+| `language_selection_rule` | occurrence 排序、循环起点和固定选择规则的中文说明。 |
+| `seen_identity_rule` | 按语言模型与 `(class_name,object_key)` 判定 train seen 的中文说明。 |
+| `class_names` | 固定六分类顺序，必须是 `background/ion/nucleotide_like/peptide_like/small_molecule/sugar`。 |
+| `available_splits` | 已原子物化的划分名称列表。 |
+| `deferred_splits` | 尚未物化的划分名称列表。 |
+| `splits` | 每个已物化划分到 `candidates` 和 `identities` JSONL 文件名的映射。 |
+| `excluded_pdb` | 整 PDB 排除记录 JSONL 的文件名。 |
+| `split_pdb_counts` | 每个划分的 `discovered/included/excluded` PDB 数。 |
+| `summary` | 每划分候选类别数、身份数、语言可用数、多 SMILES 数、seen 数及排除原因计数。 |
+
+每个 `<split>_candidates.jsonl` 对应一个 Stage1 候选，字段如下：
+
+| 字段 | 类型与语义 |
+| --- | --- |
+| `split` | 候选所属划分。 |
+| `pdb_id` | 小写 PDB 标识。 |
+| `candidate_index` | 该 PDB 的从 0 开始连续候选编号。 |
+| `source_tree_id` | Stage1 固化候选来源树编号。 |
+| `source_node_id` | Stage1 固化候选来源节点编号。 |
+| `source_threshold_grid_index` | Stage1 固化阈值网格编号。 |
+| `full_candidate_voxel_count` | 未裁剪完整全局 V 组件的唯一体素数。 |
+| `class_name` | 六分类字符串。 |
+| `class_index` | `class_names` 中的整数下标。 |
+| `matched_candidate_id` | 命中的真实 occurrence 编号；背景未命中时为 `null`。 |
+| `matched_object_key` | 命中身份的 object_key；背景未命中时为 `null`。 |
+| `candidate_coverage` | 交集占完整候选组件的比例；未命中时为 0。 |
+| `occurrence_coverage` | 交集占真实 occurrence 的比例；未命中时为 0。 |
+| `overlap_score` | 两侧覆盖率几何平均；未命中时为 0。 |
+| `language_target_available` | 按语言家族记录“身份图和所选语言表示同时可用”的布尔值。 |
+| `identity_seen_in_train_by_language` | 按语言家族记录前景正身份是否曾作为 train 可监督目标；背景或没有前景身份时为 `null`。 |
+
+每个 `<split>_identities.jsonl` 对应一个 PDB 内 `(class_name,object_key)` 五类前景身份，字段如下：
+
+| 字段 | 类型与语义 |
+| --- | --- |
+| `split` | 身份所属划分。 |
+| `pdb_id` | 小写 PDB 标识。 |
+| `class_name` | 五类非背景类别字符串。 |
+| `class_index` | 六分类中的整数下标，取值为 1–5。 |
+| `object_key` | PDB 内与类别共同定义去重身份的非空字符串。 |
+| `occurrence_candidate_ids` | 聚合到该身份的升序 occurrence 编号列表。 |
+| `graph_available` | 对应配体图归档是否存在。 |
+| `graph_relative_path` | 相对 `data_root` 的配体图归档路径。 |
+| `language` | `molformer` 与 `smi_ted_289m` 两个语言家族的选择证据。 |
+| `seen_in_train_by_language` | 按语言家族记录该 `(class_name,object_key)` 是否在 train 有可监督正目标。 |
+
+`language.<family>` 的 `available` 表示是否至少有一个有效归档；`selected_candidate_id/selected_relative_path` 在不可用时为 `null`；`valid_candidate_ids` 保存全部有效 occurrence；`failed_occurrences` 逐项保存缺文件或归档无效原因；`distinct_model_smiles` 保存有效归档中去重后的模型输入字符串。`excluded_pdb.jsonl` 至少保存 `split/pdb_id/reason`；`reason=missing_required_product` 时另含 `missing_paths`。身份范围或语言缺失只令候选身份目标不可用，不写入整 PDB 排除记录。
 
 校准入口分别记录本次 YAML 与训练 release 中原 YAML 的路径和 SHA-256，但不要求两个 YAML 字节相同：训练完成后可以显式调整 validation 工作进程数、预取量和单工作进程缓存等 I/O 资源。模型、训练超参数和上段六个科学数据字段仍必须逐项相同；因此 I/O 调整不会被误报成科学方案变化，也不能借 I/O 调整更换监督清单。
 
@@ -296,7 +358,7 @@ Matcher 的正式任务只从 `/home/penghongen/My_Project/Matcher` 冻结 relea
 | `loss.classification` | 六分类损失。 |
 | `loss.ligand_area` | 候选配体区域损失。 |
 | `loss.binding_area` | 受体结合区域损失。 |
-| `loss.identity` | 有效小分子身份目标上的闭集身份损失。 |
+| `loss.identity` | 配置身份范围内有效身份目标上的闭集身份损失。 |
 | `metrics.six_class.accuracy` | 全部候选的六分类正确率。 |
 | `metrics.six_class.macro_f1` | 兼容字段，等于 `macro_f1_supported_classes`。 |
 | `metrics.six_class.macro_f1_supported_classes` | 只平均真实候选数大于零类别的 F1。 |
@@ -306,29 +368,32 @@ Matcher 的正式任务只从 `/home/penghongen/My_Project/Matcher` 冻结 relea
 | `metrics.intrinsic_identity.top1` | 忽略六分类预测后的身份 Top-1。 |
 | `metrics.intrinsic_identity.topk` | 忽略六分类预测后的身份 Top-K。 |
 | `metrics.intrinsic_identity.top_k` | 报告采用的最大名次 K。 |
-| `metrics.intrinsic_identity.eligible_count` | 真实小分子且身份目标有效的候选数。 |
-| `metrics.conditional_identity.top1` | 六分类预测为正确小分子条件下的身份 Top-1。 |
+| `metrics.intrinsic_identity.eligible_count` | 真实类别属于配置身份范围且身份目标有效的候选数。 |
+| `metrics.conditional_identity.top1` | 六分类精确判对真实子类条件下的身份 Top-1。 |
 | `metrics.conditional_identity.topk` | 同一条件集合上的身份 Top-K。 |
 | `metrics.conditional_identity.top_k` | 报告采用的最大名次 K。 |
-| `metrics.conditional_identity.eligible_count` | 六分类判对且身份目标有效的真实小分子数。 |
+| `metrics.conditional_identity.eligible_count` | 六分类精确判对且身份目标有效的配置范围候选数。 |
 | `metrics.conditional_identity.seen_top1` | 当前语言模型 seen 子集 Top-1。 |
 | `metrics.conditional_identity.seen_topk` | 当前语言模型 seen 子集 Top-K。 |
 | `metrics.conditional_identity.seen_count` | 当前语言模型 seen 子集候选数。 |
 | `metrics.conditional_identity.unseen_top1` | 当前语言模型 unseen 子集 Top-1。 |
 | `metrics.conditional_identity.unseen_topk` | 当前语言模型 unseen 子集 Top-K。 |
 | `metrics.conditional_identity.unseen_count` | 当前语言模型 unseen 子集候选数。 |
-| `metrics.end_to_end_identity.precision` | 类别和身份都正确数除以预测为小分子的可评估候选数。 |
-| `metrics.end_to_end_identity.recall` | 类别和身份都正确数除以有身份目标的真实小分子数。 |
+| `metrics.end_to_end_identity.precision` | 通过配置范围前景门且身份正确数除以预测阳性数。 |
+| `metrics.end_to_end_identity.recall` | 通过配置范围前景门且身份正确数除以有身份目标的真实阳性数。 |
 | `metrics.end_to_end_identity.f1` | 上述 precision 与 recall 的调和平均。 |
-| `metrics.end_to_end_identity.true_positive` | 类别和身份都正确的候选数。 |
-| `metrics.end_to_end_identity.predicted_small_molecule` | 有身份清单且预测为小分子的候选数。 |
-| `metrics.end_to_end_identity.actual_small_molecule` | 有当前语言身份目标的真实小分子数。 |
+| `metrics.end_to_end_identity.true_positive` | 通过配置范围前景门且最终身份正确的候选数。 |
+| `metrics.end_to_end_identity.predicted_positive` | 通过配置范围前景门且最终身份落入该范围的候选数。 |
+| `metrics.end_to_end_identity.actual_positive` | 配置范围内有当前语言身份目标的真实候选数。 |
+| `metrics.small_molecule_identity` | 小分子子清单的 intrinsic/conditional/end_to_end；端到端使用严格 `small_molecule` 六分类门。 |
+| `metrics.all_non_background_identity` | 五类共享清单的 intrinsic/conditional/end_to_end；端到端只要求预测为任一前景类。 |
+| `metrics.identity_per_class` | 五类逐类报告；端到端预测阳性按最终 Top-1 身份类别归桶。 |
 | `metrics.area.ligand_micro_dice` | 跨候选、跨体素汇总的配体区域 Dice。 |
 | `metrics.area.binding_micro_dice` | 跨候选、跨体素汇总的结合区域 Dice。 |
 | `metrics.area.ligand_dice_denominator` | 配体区域预测与真实体素数之和。 |
 | `metrics.area.binding_dice_denominator` | 结合区域预测与真实体素数之和。 |
 | `sample_count` | 实际评估候选数，必须等于 `runtime.candidate_count`。 |
-| `identity_eligible_count` | 有当前语言身份目标的真实小分子数。 |
+| `identity_eligible_count` | 配置身份范围内有当前语言身份目标的真实候选数。 |
 | `elapsed_seconds` | 完整评估墙钟秒数。 |
 | `samples_per_second` | `sample_count / elapsed_seconds`。 |
 

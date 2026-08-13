@@ -11,9 +11,14 @@ from collections.abc import Mapping
 
 import torch
 from torch import nn
-from torch.nn import functional as F
 
-from ..schema import A_TOKEN_DIM, P_TOKEN_DIM, PP_TOKEN_DIM, V_TOKEN_DIM
+from ..schema import (
+    A_TOKEN_DIM,
+    CANDIDATE_MANUAL_FEATURE_DIM,
+    P_TOKEN_DIM,
+    PP_TOKEN_DIM,
+    V_TOKEN_DIM,
+)
 
 
 MODALITY_INPUT_DIMS = {
@@ -82,6 +87,24 @@ def _masked_mean_max(tokens: torch.Tensor, mask: torch.Tensor) -> tuple[torch.Te
     maximum = tokens.masked_fill(~mask[..., None], torch.finfo(tokens.dtype).min).amax(dim=1)
     maximum = torch.where(mask.any(dim=1, keepdim=True), maximum, torch.zeros_like(maximum))
     return mean, maximum
+
+
+def normalize_candidate_manual_features(features: torch.Tensor) -> torch.Tensor:
+    """对 ``(B,12)`` 手动特征仅执行 ``log1p(count)``，保留固化概率原值。"""
+
+    if features.ndim != 2 or features.shape[1] != CANDIDATE_MANUAL_FEATURE_DIM:
+        raise ValueError(
+            "candidate_manual_features 必须为"
+            f" (B,{CANDIDATE_MANUAL_FEATURE_DIM})。"
+        )
+    if not torch.isfinite(features).all() or torch.any(features < 0):
+        raise ValueError("候选手动特征必须是有限非负数。")
+    grouped = features.reshape(features.shape[0], -1, 3)
+    normalized = torch.cat(
+        (torch.log1p(grouped[..., :1]), grouped[..., 1:]),
+        dim=-1,
+    )
+    return normalized.reshape_as(features)
 
 
 # ================================================================================================
@@ -179,14 +202,16 @@ class CandidateCrossAttention(nn.Module):
 
 
 class MeanMaxAggregator(nn.Module):
-    """对四模态取掩码均值/最大值。构造参数为模型宽度和 dropout；前向输入 ``(B,D_m)`` 候选摘要与 A/P/V/PP token/掩码映射，输出 ``(B,D_m)`` 候选表示。"""
+    """对四模态取掩码均值/最大值。构造参数为模型宽度、dropout 和手动特征开关；每个模态的三项统计紧邻该模态摘要进入融合层，前向输出 ``(B,D_m)``。"""
 
-    def __init__(self, model_dim: int, dropout: float) -> None:
+    def __init__(self, model_dim: int, dropout: float, include_manual: bool) -> None:
         super().__init__()
-        # 一个候选摘要加四种模态的 mean/max，共九个同宽向量。
+        self.include_manual = include_manual
+        # 一个候选摘要、四种模态的 mean/max，以及可选的四组三维统计。
+        fusion_width = model_dim * 9 + (CANDIDATE_MANUAL_FEATURE_DIM if include_manual else 0)
         self.fusion = nn.Sequential(
-            nn.LayerNorm(model_dim * 9),
-            nn.Linear(model_dim * 9, model_dim * 2),
+            nn.LayerNorm(fusion_width),
+            nn.Linear(fusion_width, model_dim * 2),
             nn.GELU(),
             nn.Dropout(dropout),
             nn.Linear(model_dim * 2, model_dim),
@@ -197,22 +222,42 @@ class MeanMaxAggregator(nn.Module):
         self,
         candidate_summary: torch.Tensor,
         modalities: Mapping[str, tuple[torch.Tensor, torch.Tensor]],
+        manual_features: torch.Tensor | None,
     ) -> torch.Tensor:
-        """按 A、P、V、PP 固定顺序返回候选级融合表示。"""
+        """按候选、各模态 mean/max/三项统计的固定顺序返回融合表示。"""
 
         summaries = [candidate_summary]
-        for name in ("a", "p", "v", "pp"):
+        grouped_manual = None
+        if self.include_manual:
+            if manual_features is None or manual_features.shape != (
+                candidate_summary.shape[0],
+                CANDIDATE_MANUAL_FEATURE_DIM,
+            ):
+                raise ValueError("启用手动特征时必须提供与候选轴对齐的 (B,12) 统计。")
+            grouped_manual = manual_features.reshape(candidate_summary.shape[0], 4, 3)
+        elif manual_features is not None:
+            raise ValueError("未启用手动特征时 manual_features 必须为 None。")
+        for modality_index, name in enumerate(("a", "p", "v", "pp")):
             tokens, mask = modalities[name]
             mean, maximum = _masked_mean_max(tokens, mask)
             summaries.extend((mean, maximum))
+            if grouped_manual is not None:
+                summaries.append(grouped_manual[:, modality_index, :])
         return self.fusion(torch.cat(summaries, dim=-1))
 
 
 class CandidateConditionedAggregator(nn.Module):
-    """用候选摘要分别查询四模态。构造参数为模型宽度、头数和 dropout；前向输入 ``(B,D_m)`` 候选摘要与 A/P/V/PP token/掩码映射，输出 ``(B,D_m)`` 候选表示。"""
+    """用候选摘要分别查询四模态。构造参数为模型宽度、头数、dropout 和手动特征开关；每个模态的三项统计紧邻该模态增量进入融合层，前向输出 ``(B,D_m)``。"""
 
-    def __init__(self, model_dim: int, head_count: int, dropout: float) -> None:
+    def __init__(
+        self,
+        model_dim: int,
+        head_count: int,
+        dropout: float,
+        include_manual: bool,
+    ) -> None:
         super().__init__()
+        self.include_manual = include_manual
         self.branches = nn.ModuleDict(
             {
                 name: CandidateCrossAttention(
@@ -224,9 +269,10 @@ class CandidateConditionedAggregator(nn.Module):
                 for name in ("a", "p", "v", "pp")
             }
         )
+        fusion_width = model_dim * 5 + (CANDIDATE_MANUAL_FEATURE_DIM if include_manual else 0)
         self.fusion = nn.Sequential(
-            nn.LayerNorm(model_dim * 5),
-            nn.Linear(model_dim * 5, model_dim * 2),
+            nn.LayerNorm(fusion_width),
+            nn.Linear(fusion_width, model_dim * 2),
             nn.GELU(),
             nn.Dropout(dropout),
             nn.Linear(model_dim * 2, model_dim),
@@ -237,11 +283,24 @@ class CandidateConditionedAggregator(nn.Module):
         self,
         candidate_summary: torch.Tensor,
         modalities: Mapping[str, tuple[torch.Tensor, torch.Tensor]],
+        manual_features: torch.Tensor | None,
     ) -> torch.Tensor:
-        """返回候选摘要和 A/P/V/PP 四个独立交叉注意力增量的融合。"""
+        """返回候选以及各模态注意力增量/三项统计的有序融合。"""
 
-        increments = []
-        for name in ("a", "p", "v", "pp"):
+        grouped_manual = None
+        if self.include_manual:
+            if manual_features is None or manual_features.shape != (
+                candidate_summary.shape[0],
+                CANDIDATE_MANUAL_FEATURE_DIM,
+            ):
+                raise ValueError("启用手动特征时必须提供与候选轴对齐的 (B,12) 统计。")
+            grouped_manual = manual_features.reshape(candidate_summary.shape[0], 4, 3)
+        elif manual_features is not None:
+            raise ValueError("未启用手动特征时 manual_features 必须为 None。")
+        summaries = [candidate_summary]
+        for modality_index, name in enumerate(("a", "p", "v", "pp")):
             tokens, mask = modalities[name]
-            increments.append(self.branches[name](candidate_summary, tokens, mask))
-        return self.fusion(torch.cat((candidate_summary, *increments), dim=-1))
+            summaries.append(self.branches[name](candidate_summary, tokens, mask))
+            if grouped_manual is not None:
+                summaries.append(grouped_manual[:, modality_index, :])
+        return self.fusion(torch.cat(summaries, dim=-1))

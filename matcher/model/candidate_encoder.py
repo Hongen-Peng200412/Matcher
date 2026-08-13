@@ -16,6 +16,7 @@ from .fusion import (
     MODALITY_INPUT_DIMS,
     TokenProjector,
     gather_voxel_features,
+    normalize_candidate_manual_features,
 )
 from .raunet import RaUnetBackbone
 
@@ -84,12 +85,17 @@ class CandidateEncoder(nn.Module):
             }
         )
         if config.aggregation == "mean_max":
-            self.aggregator: nn.Module = MeanMaxAggregator(config.model_dim, config.dropout)
+            self.aggregator: nn.Module = MeanMaxAggregator(
+                config.model_dim,
+                config.dropout,
+                config.use_manual_features,
+            )
         else:
             self.aggregator = CandidateConditionedAggregator(
                 config.model_dim,
                 config.attention_heads,
                 config.dropout,
+                config.use_manual_features,
             )
         self.class_head = nn.Sequential(
             nn.Linear(config.model_dim, config.model_dim),
@@ -131,7 +137,16 @@ class CandidateEncoder(nn.Module):
             "pp": (pp_projected, batch["pp_mask"]),
         }
 
-        candidate_embedding = self.aggregator(candidate_summary, modalities)
+        normalized_manual = None
+        if self.config.use_manual_features:
+            normalized_manual = normalize_candidate_manual_features(
+                batch["candidate_manual_features"]
+            )
+        candidate_embedding = self.aggregator(
+            candidate_summary,
+            modalities,
+            normalized_manual,
+        )
         return {
             "candidate_embedding": candidate_embedding,
             "class_logits": self.class_head(candidate_embedding),

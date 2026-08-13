@@ -1,8 +1,8 @@
 # Matcher 首轮实验配置
 
-本目录的七个 YAML 与已排队的七个单卡 Slurm 任务一一对应。所有业务产物只能写入 `/storage/penghongen/tmp/Matcher/`；训练和模型选择只读取 train 与 validation，不读取 calibration。
+本目录保存第 0 批七项单卡实验的稳定配置。所有业务产物只能写入 `/storage/penghongen/tmp/Matcher/`；训练和模型选择只读取 train 与 validation，不读取 calibration。实际 Job、release、W&B 和结果以 `文档/记录/` 的实验账本为准。
 
-每个尚未启动的训练阶段都在 `pencounkdual-111/AdaLigand-Matcher` 建立独立 W&B online run，并归入 `matcher-initial-round1` 比较组。认证读取服务器进程环境或现有 `~/.netrc`，配置和项目产物都不保存 API key。`log_every_global_steps=1` 表示每个含 32 个候选的 global batch 完成一次参数更新后记录损失、梯度、学习率、吞吐和显存；完整 validation、选模分数、统计分母及身份/区域指标按 epoch 记录。在线初始化失败会终止对应 launch，不会静默产生离线 run。
+每个训练阶段都在 `pencounkdual-111/AdaLigand-Matcher` 建立独立 W&B online run，并归入 `matcher-initial-round1` 比较组。认证读取服务器进程环境或现有 `~/.netrc`，配置和项目产物都不保存 API key。`log_every_global_steps=1` 表示每个含 32 个候选的 global batch 完成一次参数更新后记录损失、梯度、学习率、吞吐和显存；完整 validation、选模分数、统计分母及身份/区域指标按 epoch 记录。在线初始化失败会终止对应 launch，不会静默产生离线 run。
 
 | 配置 | GPU | 物理批量 | 梯度累积 | 任务 |
 |---|---:|---:|---:|---|
@@ -41,6 +41,8 @@
 
 `model.aggregation` 只允许 `mean_max` 或 `candidate_cross_attention`。`raunet_planes` 依次是 `(enc0, enc1, enc2, enc3, bottleneck, dec3, dec2, dec1, dec0)`。`gradient_checkpointing=true` 仅表示训练时激活重计算，不改变前向科学语义。
 
+`identity_scope=null` 表示候选预训练没有身份损失；`identity_scope=small_molecule` 表示完整 Matcher 只在真实小分子且身份目标有效的候选上计算身份损失。`model.use_manual_features=false` 固定第 0 批结构，不向候选摘要或身份打分 MLP 拼接第 1 批新增的手动统计。旧 checkpoint 若没有该模型字段，加载时只迁移为 `false`，不会静默启用新分支。
+
 `physical_batch_size × gradient_accumulation` 必须严格等于 `global_batch_size=32`。`maximum_epochs=null` 表示不设 epoch 上限；任务也不设 Slurm 或程序墙钟上限。`patience_bad_epochs=2` 表示连续两个完整 validation epoch 没有改善后结束训练。
 
-`identity_variant` 仅完整 Matcher 使用：`oracle` 以真实 small-molecule 掩码加权身份损失，`detached` 再乘不回传的 `p_small`，`joint` 乘会回传的 `p_small`。三者都以同一 global batch 的真实有效小分子数作分母。
+`identity_variant` 仅完整 Matcher 使用。令 `c(L)` 为真实身份 `L` 的六分类类别，`p_G=softmax(class_logits)[c(L)]`：`oracle` 的身份系数为 1，`detached` 使用不回传的 `p_G`，`joint` 使用会向六分类头回传的 `p_G`。本目录配置均为 `identity_scope=small_molecule`，所以这里的 `c(L)` 恒为 `small_molecule`，与第 0 批的 `p_small` 完全相同；三者都以同一 global batch 的真实有效小分子数作分母。

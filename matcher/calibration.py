@@ -41,7 +41,7 @@ from .experiment_config import (
 from .json_artifacts import write_json
 from .locking import exclusive_file_lock
 from .manifest import require_manifest
-from .model import CandidateEncoder, ClosedSetMatcher
+from .model import CandidateEncoder, ClosedSetMatcher, MatcherModelConfig
 from .numeric import NumericBackendRecord, configure_random_seeds_and_numeric_backend
 from .training import EvaluationResult, evaluate_model
 
@@ -374,7 +374,28 @@ def _validate_checkpoint_for_stage(
     expected_stage_json = json.loads(
         json.dumps(expected_stage, ensure_ascii=False, allow_nan=False)
     )
-    if resolved.get("stage") != expected_stage_json:
+    resolved_stage_value = resolved.get("stage")
+    if not isinstance(resolved_stage_value, Mapping):
+        raise ValueError("resolved.json.stage 必须是映射。")
+    resolved_stage = {str(key): value for key, value in resolved_stage_value.items()}
+    resolved_model_value = resolved_stage.get("model")
+    if not isinstance(resolved_model_value, Mapping) or not all(
+        isinstance(key, str) for key in resolved_model_value
+    ):
+        raise ValueError("resolved.json.stage.model 必须是字符串键映射。")
+    normalized_resolved_model = MatcherModelConfig.from_dict(
+        {str(key): value for key, value in resolved_model_value.items()}
+    ).to_dict()
+    resolved_stage["model"] = json.loads(
+        json.dumps(normalized_resolved_model, ensure_ascii=False, allow_nan=False)
+    )
+    if "identity_scope" not in resolved_stage:
+        task_name = resolved_stage.get("task_name")
+        if task_name == "full_matcher":
+            resolved_stage["identity_scope"] = "small_molecule"
+        elif task_name == "candidate_pretrain":
+            resolved_stage["identity_scope"] = None
+    if resolved_stage != expected_stage_json:
         raise ValueError("resolved.json.stage 与所选 YAML 阶段不一致。")
     resolved_data = resolved.get("data")
     if not isinstance(resolved_data, Mapping):
@@ -394,7 +415,9 @@ def _validate_checkpoint_for_stage(
     }
     if data_mismatches:
         raise ValueError(f"resolved.json.data 科学字段与 calibration 计划不一致：{data_mismatches}")
-    model_config = checkpoint_mappings["model_config"]
+    model_config = MatcherModelConfig.from_dict(
+        checkpoint_mappings["model_config"]
+    ).to_dict()
     training_config = checkpoint_mappings["training_config"]
     if model_config != stage.model.to_dict():
         raise ValueError("checkpoint.model_config 与所选 YAML 阶段不一致。")
@@ -616,6 +639,7 @@ def run_calibration(
         plan.data.roots,
         plan.data.coverage_threshold,
         plan.data.selection_seed,
+        ("calibration",),
     )
     data_evidence = _calibration_data_evidence(manifest_path)
     claim_path = validate_matcher_output_path(
@@ -677,6 +701,7 @@ def run_calibration(
             split_name="calibration",
             task_name=stage.task_name,
             language_family=stage.language_family,
+            identity_scope=stage.identity_scope,
             pp_top_k=plan.data.pp_top_k,
             cache_bytes_per_worker=int(plan.data.cache_gib_per_worker * 1024**3),
         )

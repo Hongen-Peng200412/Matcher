@@ -17,7 +17,12 @@ from torch.utils.data import DataLoader, Sampler
 
 from .candidate_data import CandidateDataset
 from .contracts import CandidateBatch, CandidateItem
-from .schema import LANGUAGE_EMBEDDING_DIM, PP_TOKEN_DIM, V_TOKEN_DIM
+from .schema import (
+    CANDIDATE_MANUAL_FEATURE_DIM,
+    LANGUAGE_EMBEDDING_DIM,
+    PP_TOKEN_DIM,
+    V_TOKEN_DIM,
+)
 
 
 DATALOADER_MULTIPROCESSING_CONTEXT = "spawn"
@@ -55,6 +60,7 @@ def _collate_identities(items: list[CandidateItem]) -> dict[str, Any]:
         dtype=torch.float32,
     )
     identity_mask = torch.zeros((batch_size, identity_count), dtype=torch.bool)
+    identity_class_index = torch.full((batch_size, identity_count), -1, dtype=torch.long)
     identity_object_keys: list[list[str]] = []
 
     elements: list[torch.Tensor] = []
@@ -73,11 +79,12 @@ def _collate_identities(items: list[CandidateItem]) -> dict[str, Any]:
         object_keys = list(item["identity_object_keys"])
         graphs = list(item["ligand_graphs"])
         embeddings = np.asarray(item["language_embeddings"], dtype=np.float32)
+        class_indices = np.asarray(item["identity_class_index"], dtype=np.int64)
         if len(object_keys) != len(graphs) or embeddings.shape != (
             len(object_keys),
             LANGUAGE_EMBEDDING_DIM,
-        ):
-            raise ValueError("身份名称、语言表示和配体图数量不一致。")
+        ) or class_indices.shape != (len(object_keys),):
+            raise ValueError("身份名称、类别、语言表示和配体图数量不一致。")
         target = int(item["identity_target"])
         if target < -1 or target >= len(object_keys):
             raise ValueError(
@@ -87,6 +94,9 @@ def _collate_identities(items: list[CandidateItem]) -> dict[str, Any]:
         if object_keys:
             language[sample_index, : len(object_keys)] = torch.from_numpy(embeddings)
             identity_mask[sample_index, : len(object_keys)] = True
+            identity_class_index[sample_index, : len(object_keys)] = torch.from_numpy(
+                class_indices
+            )
         for identity_index, graph in enumerate(graphs):
             node_count = int(graph.element.shape[0])
             elements.append(torch.from_numpy(graph.element))
@@ -113,6 +123,7 @@ def _collate_identities(items: list[CandidateItem]) -> dict[str, Any]:
     return {
         "language_embeddings": language,
         "identity_mask": identity_mask,
+        "identity_class_index": identity_class_index,
         "identity_target": torch.tensor(
             [item["identity_target"] for item in items],
             dtype=torch.long,
@@ -291,7 +302,18 @@ def collate_candidates(items: list[CandidateItem]) -> CandidateBatch:
             [item["full_candidate_voxel_count"] for item in items],
             dtype=torch.long,
         ),
+        "candidate_manual_features": torch.from_numpy(
+            np.stack([item["candidate_manual_features"] for item in items])
+        ).float(),
     }
+    if batch["candidate_manual_features"].shape != (
+        len(items),
+        CANDIDATE_MANUAL_FEATURE_DIM,
+    ):
+        raise ValueError(
+            "candidate_manual_features 必须为"
+            f" (B,{CANDIDATE_MANUAL_FEATURE_DIM})。"
+        )
     batch["a_tokens"], batch["a_mask"] = _pad_float_sequences(
         [item["a_tokens"] for item in items]
     )

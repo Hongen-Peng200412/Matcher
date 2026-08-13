@@ -20,7 +20,7 @@ import yaml  # type: ignore[import-untyped]
 
 from .losses import IdentityLossVariant, LossWeights
 from .model import MatcherModelConfig
-from .schema import LANGUAGE_FAMILIES, SourceRoots
+from .schema import IDENTITY_SCOPES, LANGUAGE_FAMILIES, IdentityScope, SourceRoots
 
 
 TaskName = Literal["candidate_pretrain", "full_matcher"]
@@ -62,8 +62,8 @@ class TrackingConfig:
     ``provider`` 当前只允许 Weights & Biases（W&B）。
     ``mode`` 固定为 online；初始化失败时不得静默降级为离线运行。
     ``entity`` 是已有登录凭据可写入的 W&B 账户或团队。
-    ``project`` 是七个首轮实验共享的 W&B 项目。
-    ``group`` 把同一轮 Matcher 实验的多个阶段放入一个比较组。
+    ``project`` 是当前实验批次写入的 W&B 项目。
+    ``group`` 把同一批次中需要头对头比较的阶段放入一个比较组。
     ``log_every_global_steps`` 是训练曲线写入间隔，单位为参数更新次数。
     ``init_timeout_seconds`` 是 W&B 在线初始化的墙钟超时秒数。
     """
@@ -84,11 +84,11 @@ class TrainingConfig:
     ``seed`` 控制候选洗牌、模型初始化和训练随机源，且不超过 NumPy 接受的最大种子。
     ``physical_batch_size`` 是一次前向的候选数。
     ``gradient_accumulation`` 是一次参数更新包含的物理批次数。
-    ``global_batch_size`` 必须等于前两项乘积，首轮正式实验固定为 32。
+    ``global_batch_size`` 必须等于前两项乘积；各正式 YAML 显式冻结其数值。
     ``learning_rate`` 是 AdamW 初始学习率。
     ``weight_decay`` 是 AdamW 解耦权重衰减系数。
     ``maximum_epochs`` 是可选轮数上限；None 表示不设上限。
-    ``patience_bad_epochs`` 是连续完整 validation 无严格改善的停止轮数，固定为 2。
+    ``patience_bad_epochs`` 是连续完整 validation 无严格改善的停止轮数。
     ``precision`` 是 bf16、fp16 或 fp32 自动混合精度模式。
     ``gradient_clip_norm`` 是每个 global batch 的全模型 L2 梯度裁剪阈值。
     ``class_weights`` 是六分类权重；None 表示交叉熵不额外加权。
@@ -117,6 +117,7 @@ class StageConfig:
     ``task_name`` 选择 candidate_pretrain 或 full_matcher。
     ``language_family`` 选择当前配体语言表示；候选预训练必须为 None。
     ``identity_variant`` 选择 oracle、detached 或 joint；候选预训练必须为 None。
+    ``identity_scope`` 选择只监督 small_molecule 或全部五类非背景身份；候选预训练必须为 None。
     ``model`` 是已完成跨字段验证的 MatcherModelConfig。
     ``training`` 是本阶段完整 TrainingConfig。
     ``initialize_candidate_from`` 是绝对 checkpoint 或此前 stage:name:BEST|LAST；None 表示从零。
@@ -126,6 +127,7 @@ class StageConfig:
     task_name: TaskName
     language_family: LanguageFamily | None
     identity_variant: IdentityLossVariant | None
+    identity_scope: IdentityScope | None
     model: MatcherModelConfig
     training: TrainingConfig
     initialize_candidate_from: str | None
@@ -159,6 +161,7 @@ def _parse_stage(values: dict[str, Any]) -> StageConfig:
             "task_name",
             "language_family",
             "identity_variant",
+            "identity_scope",
             "model",
             "training",
             "initialize_candidate_from",
@@ -168,21 +171,30 @@ def _parse_stage(values: dict[str, Any]) -> StageConfig:
     raw_task_name = values["task_name"]
     raw_language_family = values["language_family"]
     raw_identity_variant = values["identity_variant"]
+    raw_identity_scope = values["identity_scope"]
     if raw_task_name not in ("candidate_pretrain", "full_matcher"):
         raise ValueError(f"不支持 task_name={raw_task_name!r}。")
     task_name = cast(TaskName, raw_task_name)
     if task_name == "candidate_pretrain":
-        if raw_language_family is not None or raw_identity_variant is not None:
-            raise ValueError("candidate_pretrain 不得配置语言模型或身份损失。")
+        if (
+            raw_language_family is not None
+            or raw_identity_variant is not None
+            or raw_identity_scope is not None
+        ):
+            raise ValueError("candidate_pretrain 不得配置语言模型、身份损失或身份范围。")
         language_family = None
         identity_variant = None
+        identity_scope = None
     else:
         if raw_language_family not in LANGUAGE_FAMILIES:
             raise ValueError(f"full_matcher 的 language_family 必须属于 {LANGUAGE_FAMILIES}。")
         if raw_identity_variant not in ("oracle", "detached", "joint"):
             raise ValueError("full_matcher 必须选择 oracle/detached/joint。")
+        if raw_identity_scope not in IDENTITY_SCOPES:
+            raise ValueError(f"full_matcher 的 identity_scope 必须属于 {IDENTITY_SCOPES}。")
         language_family = cast(LanguageFamily, raw_language_family)
         identity_variant = cast(IdentityLossVariant, raw_identity_variant)
+        identity_scope = cast(IdentityScope, raw_identity_scope)
     model = MatcherModelConfig.from_dict(_mapping(values["model"], "stage.model"))
     training_values = _mapping(values["training"], "stage.training")
     expected_training = {
@@ -279,6 +291,7 @@ def _parse_stage(values: dict[str, Any]) -> StageConfig:
         task_name=task_name,
         language_family=language_family,
         identity_variant=identity_variant,
+        identity_scope=identity_scope,
         model=model,
         training=training,
         initialize_candidate_from=initialize_candidate_from,

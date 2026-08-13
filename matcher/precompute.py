@@ -133,16 +133,18 @@ def main(argv: list[str] | None = None) -> int:
 
     arguments = _parse_arguments(sys.argv[1:] if argv is None else argv)
     roots = SourceRoots(arguments.data_root, arguments.stage1_root, arguments.output_root)
+    split_names = tuple(arguments.splits)
     manifest_path = ensure_manifest(
         roots,
         arguments.coverage_threshold,
         arguments.selection_seed,
+        split_names,
     )
     products = cast(tuple[PrecomputeProduct, ...], tuple(arguments.products))
     precompute_inputs(
         roots,
         manifest_path,
-        tuple(arguments.splits),
+        split_names,
         arguments.workers,
         products,
         arguments.pp_top_k,

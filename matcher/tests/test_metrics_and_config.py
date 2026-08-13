@@ -14,7 +14,7 @@ import torch
 import yaml  # type: ignore[import-untyped]
 from torch import nn
 
-from matcher import experiment, training as training_module
+from matcher import experiment, tracking as tracking_module, training as training_module
 from matcher.batching import collate_candidates
 from matcher.calibration import (
     CalibrationCheckpointEvidence,
@@ -39,7 +39,7 @@ from matcher.experiment_config import (
 from matcher.json_artifacts import append_jsonl, write_json
 from matcher.losses import LossOutput, LossWeights, MatcherLossBatch, compute_matcher_loss
 from matcher.metrics import EvaluationAccumulator, EvaluationBatch, selection_score
-from matcher.schema import SMALL_MOLECULE_INDEX
+from matcher.schema import CLASS_TO_INDEX, SMALL_MOLECULE_INDEX
 from matcher.training import (
     _LossStatistics,
     StageSummary,
@@ -71,6 +71,7 @@ def test_identity_metrics_exclude_candidates_without_current_language_representa
             "ligand_area_target": torch.zeros((3, 1, 1, 1), dtype=torch.bool),
             "binding_area_target": torch.zeros((3, 1, 1, 1), dtype=torch.bool),
             "identity_mask": torch.tensor([[True, True], [True, True], [True, True]]),
+            "identity_class_index": torch.full((3, 2), 4, dtype=torch.long),
             "metadata": [
                 {
                     "split": "validation",
@@ -97,7 +98,7 @@ def test_identity_metrics_exclude_candidates_without_current_language_representa
         },
     )
 
-    accumulator = EvaluationAccumulator(top_k=5)
+    accumulator = EvaluationAccumulator(identity_scope="small_molecule", top_k=5)
     accumulator.update(outputs, batch)
     metrics = accumulator.compute()
 
@@ -108,8 +109,8 @@ def test_identity_metrics_exclude_candidates_without_current_language_representa
     assert metrics["conditional_identity"]["eligible_count"] == 1
     assert metrics["conditional_identity"]["top1"] == 1.0
     assert metrics["end_to_end_identity"]["true_positive"] == 1
-    assert metrics["end_to_end_identity"]["predicted_small_molecule"] == 1
-    assert metrics["end_to_end_identity"]["actual_small_molecule"] == 1
+    assert metrics["end_to_end_identity"]["predicted_positive"] == 1
+    assert metrics["end_to_end_identity"]["actual_positive"] == 1
 
 
 def test_end_to_end_identity_counts_background_small_molecule_prediction_as_false_positive() -> None:
@@ -129,6 +130,7 @@ def test_end_to_end_identity_counts_background_small_molecule_prediction_as_fals
             "class_target": torch.tensor([SMALL_MOLECULE_INDEX, 0]),
             "identity_target": torch.tensor([0, -1]),
             "identity_mask": torch.tensor([[True, True], [True, True]]),
+            "identity_class_index": torch.full((2, 2), 4, dtype=torch.long),
             "ligand_area_target": torch.zeros((2, 1, 1, 1), dtype=torch.bool),
             "binding_area_target": torch.zeros((2, 1, 1, 1), dtype=torch.bool),
             "metadata": [
@@ -149,12 +151,12 @@ def test_end_to_end_identity_counts_background_small_molecule_prediction_as_fals
             ],
         },
     )
-    accumulator = EvaluationAccumulator(top_k=5)
+    accumulator = EvaluationAccumulator(identity_scope="small_molecule", top_k=5)
     accumulator.update(outputs, batch)
     end_to_end = accumulator.compute()["end_to_end_identity"]
     assert end_to_end["true_positive"] == 1
-    assert end_to_end["predicted_small_molecule"] == 2
-    assert end_to_end["actual_small_molecule"] == 1
+    assert end_to_end["predicted_positive"] == 2
+    assert end_to_end["actual_positive"] == 1
     assert end_to_end["precision"] == 0.5
     assert end_to_end["recall"] == 1.0
 
@@ -177,6 +179,7 @@ def test_conditional_identity_requires_correct_six_class_prediction() -> None:
             "class_target": torch.tensor([SMALL_MOLECULE_INDEX, SMALL_MOLECULE_INDEX]),
             "identity_target": torch.tensor([0, 0]),
             "identity_mask": torch.ones((2, 2), dtype=torch.bool),
+            "identity_class_index": torch.full((2, 2), 4, dtype=torch.long),
             "ligand_area_target": torch.zeros((2, 1, 1, 1), dtype=torch.bool),
             "binding_area_target": torch.zeros((2, 1, 1, 1), dtype=torch.bool),
             "metadata": [
@@ -197,7 +200,7 @@ def test_conditional_identity_requires_correct_six_class_prediction() -> None:
             ],
         },
     )
-    accumulator = EvaluationAccumulator(top_k=2)
+    accumulator = EvaluationAccumulator(identity_scope="small_molecule", top_k=2)
     accumulator.update(outputs, batch)
     metrics = accumulator.compute()
     assert metrics["intrinsic_identity"]["top1"] == 0.5
@@ -208,6 +211,197 @@ def test_conditional_identity_requires_correct_six_class_prediction() -> None:
     assert metrics["conditional_identity"]["eligible_count"] == 1
     assert metrics["conditional_identity"]["seen_count"] == 0
     assert metrics["conditional_identity"]["unseen_count"] == 1
+
+
+def test_five_class_identity_metrics_keep_small_compatibility_and_per_class_counts() -> None:
+    """五类总体按共享清单排名，小分子兼容指标只在旧小分子身份子清单中排名。"""
+
+    ion = CLASS_TO_INDEX["ion"]
+    sugar = CLASS_TO_INDEX["sugar"]
+    class_target = torch.tensor([ion, SMALL_MOLECULE_INDEX, sugar, 0])
+    class_logits = torch.full((4, 6), -10.0)
+    class_logits[torch.arange(4), class_target] = 10.0
+    outputs = {
+        "class_logits": class_logits,
+        # 第二个候选在五类共享清单中误选 ion；只屏蔽到小分子槽后则正确。
+        "identity_logits": torch.tensor(
+            [[9.0, 1.0, 0.0], [9.0, 5.0, 0.0], [0.0, 1.0, 9.0], [0.0, 0.0, 0.0]]
+        ),
+        "ligand_area_logits": torch.full((4, 1, 1, 1), -1.0),
+        "binding_area_logits": torch.full((4, 1, 1, 1), -1.0),
+    }
+    batch = cast(
+        EvaluationBatch,
+        {
+            "class_target": class_target,
+            "identity_target": torch.tensor([0, 1, 2, -1]),
+            "identity_mask": torch.ones((4, 3), dtype=torch.bool),
+            "identity_class_index": torch.tensor(
+                [[ion, SMALL_MOLECULE_INDEX, sugar]] * 4
+            ),
+            "ligand_area_target": torch.zeros((4, 1, 1, 1), dtype=torch.bool),
+            "binding_area_target": torch.zeros((4, 1, 1, 1), dtype=torch.bool),
+            "metadata": [
+                {
+                    "split": "validation",
+                    "pdb_id": f"pdb-{index}",
+                    "candidate_index": 0,
+                    "matched_object_key": None if index == 3 else f"identity-{index}",
+                    "identity_seen_in_train": None if index == 3 else index != 2,
+                }
+                for index in range(4)
+            ],
+        },
+    )
+    accumulator = EvaluationAccumulator(identity_scope="all_non_background", top_k=2)
+    accumulator.update(outputs, batch)
+    report = accumulator.compute()
+
+    assert report["intrinsic_identity"]["eligible_count"] == 3
+    assert report["intrinsic_identity"]["top1"] == pytest.approx(2.0 / 3.0)
+    assert report["small_molecule_identity"]["intrinsic"] == {
+        "top1": 1.0,
+        "topk": 1.0,
+        "top_k": 2,
+        "eligible_count": 1,
+    }
+    assert report["all_non_background_identity"]["intrinsic"]["top1"] == pytest.approx(
+        2.0 / 3.0
+    )
+    assert report["identity_per_class"]["ion"]["intrinsic"]["eligible_count"] == 1
+    assert report["identity_per_class"]["ion"]["intrinsic"]["top1"] == 1.0
+    assert report["identity_per_class"]["small_molecule"]["intrinsic"]["top1"] == 0.0
+    assert report["identity_per_class"]["sugar"]["intrinsic"]["top1"] == 1.0
+    assert report["identity_per_class"]["nucleotide_like"]["intrinsic"][
+        "eligible_count"
+    ] == 0
+    assert report["conditional_identity"]["seen_count"] == 2
+    assert report["conditional_identity"]["unseen_count"] == 1
+
+    evaluation = cast(
+        training_module.EvaluationResult,
+        {
+            "loss": {
+                "total": 1.0,
+                "classification": 0.5,
+                "ligand_area": 0.2,
+                "binding_area": 0.2,
+                "identity": 0.1,
+            },
+            "metrics": report,
+            "sample_count": 4,
+            "identity_eligible_count": 3,
+            "elapsed_seconds": 2.0,
+            "samples_per_second": 2.0,
+        },
+    )
+    wandb_metrics = training_module._evaluation_wandb_metrics(
+        evaluation,
+        "all_non_background",
+    )
+    normalized = tracking_module._normalize_metrics(wandb_metrics)
+
+    assert normalized["classification_summary/macro_f1"] == report["six_class"][
+        "macro_f1"
+    ]
+    assert normalized[
+        "identity_small_molecule/intrinsic/eligible_count"
+    ] == 1
+    assert normalized[
+        "identity_all_non_background/intrinsic/eligible_count"
+    ] == 3
+    assert normalized[
+        "identity_nucleotide_like/intrinsic/top1"
+    ] is None
+    assert normalized[
+        "classification_per_class/nucleotide_like/recall"
+    ] is None
+    assert normalized["classification_confusion/ion/ion"] == 1
+    assert "validation/macro_f1" not in normalized
+    candidate_only_metrics = training_module._evaluation_wandb_metrics(evaluation, None)
+    assert not any(name.startswith("identity_") for name in candidate_only_metrics)
+
+
+def test_all_foreground_end_to_end_treats_subclass_as_an_auxiliary_label() -> None:
+    """五类端到端只以背景/前景为门，逐类预测由最终身份所属类别归桶。"""
+
+    ion = CLASS_TO_INDEX["ion"]
+    sugar = CLASS_TO_INDEX["sugar"]
+    class_target = torch.tensor(
+        [ion, SMALL_MOLECULE_INDEX, sugar, ion, 0, sugar]
+    )
+    class_prediction = torch.tensor(
+        [sugar, ion, 0, sugar, ion, ion]
+    )
+    class_logits = torch.full((6, 6), -10.0)
+    class_logits[torch.arange(6), class_prediction] = 10.0
+    outputs = {
+        "class_logits": class_logits,
+        # 身份槽依次是 ion、small_molecule、sugar；第0/1个跨子类预测仍命中真实身份。
+        "identity_logits": torch.tensor(
+            [
+                [9.0, 0.0, 0.0],
+                [0.0, 9.0, 0.0],
+                [0.0, 0.0, 9.0],
+                [0.0, 0.0, 9.0],
+                [0.0, 9.0, 0.0],
+                [9.0, 0.0, 0.0],
+            ]
+        ),
+        "ligand_area_logits": torch.full((6, 1, 1, 1), -1.0),
+        "binding_area_logits": torch.full((6, 1, 1, 1), -1.0),
+    }
+    batch = cast(
+        EvaluationBatch,
+        {
+            "class_target": class_target,
+            "identity_target": torch.tensor([0, 1, 2, 0, -1, -1]),
+            "identity_mask": torch.ones((6, 3), dtype=torch.bool),
+            "identity_class_index": torch.tensor(
+                [[ion, SMALL_MOLECULE_INDEX, sugar]] * 6
+            ),
+            "ligand_area_target": torch.zeros((6, 1, 1, 1), dtype=torch.bool),
+            "binding_area_target": torch.zeros((6, 1, 1, 1), dtype=torch.bool),
+            "metadata": [
+                {
+                    "split": "validation",
+                    "pdb_id": f"pdb-{index}",
+                    "candidate_index": 0,
+                    "matched_object_key": None if target < 0 else f"identity-{index}",
+                    "identity_seen_in_train": None if target < 0 else True,
+                }
+                for index, target in enumerate([0, 1, 2, 0, -1, -1])
+            ],
+        },
+    )
+    accumulator = EvaluationAccumulator(identity_scope="all_non_background", top_k=2)
+    accumulator.update(outputs, batch)
+    report = accumulator.compute()
+    overall = report["all_non_background_identity"]["end_to_end"]
+    per_class = report["identity_per_class"]
+
+    assert report["conditional_identity"]["eligible_count"] == 0
+    assert overall == {
+        "precision": 0.5,
+        "recall": 0.5,
+        "f1": 0.5,
+        "true_positive": 2,
+        "predicted_positive": 4,
+        "actual_positive": 4,
+    }
+    assert report["small_molecule_identity"]["end_to_end"]["true_positive"] == 0
+    assert per_class["ion"]["end_to_end"]["true_positive"] == 1
+    assert per_class["small_molecule"]["end_to_end"]["true_positive"] == 1
+    assert per_class["sugar"]["end_to_end"]["true_positive"] == 0
+    assert sum(
+        metrics["end_to_end"]["true_positive"] for metrics in per_class.values()
+    ) == overall["true_positive"]
+    assert sum(
+        metrics["end_to_end"]["predicted_positive"] for metrics in per_class.values()
+    ) == overall["predicted_positive"]
+    assert sum(
+        metrics["end_to_end"]["actual_positive"] for metrics in per_class.values()
+    ) == overall["actual_positive"]
 
 
 def test_evaluator_and_loss_statistics_reject_nonfinite_values() -> None:
@@ -224,6 +418,7 @@ def test_evaluator_and_loss_statistics_reject_nonfinite_values() -> None:
             "class_target": torch.tensor([0]),
             "identity_target": torch.tensor([-1]),
             "identity_mask": torch.empty((1, 0), dtype=torch.bool),
+            "identity_class_index": torch.empty((1, 0), dtype=torch.long),
             "ligand_area_target": torch.zeros((1, 1, 1, 1), dtype=torch.bool),
             "binding_area_target": torch.zeros((1, 1, 1, 1), dtype=torch.bool),
             "metadata": [
@@ -238,7 +433,7 @@ def test_evaluator_and_loss_statistics_reject_nonfinite_values() -> None:
         },
     )
     with pytest.raises(FloatingPointError, match="class_logits"):
-        EvaluationAccumulator().update(outputs, batch)
+        EvaluationAccumulator(identity_scope=None).update(outputs, batch)
 
     losses = cast(
         LossOutput,
@@ -275,6 +470,7 @@ def test_evaluator_rejects_task_outputs_with_misaligned_batch_axes() -> None:
             "class_target": torch.tensor([0, 0]),
             "identity_target": torch.tensor([-1, -1]),
             "identity_mask": torch.empty((2, 0), dtype=torch.bool),
+            "identity_class_index": torch.empty((2, 0), dtype=torch.long),
             "ligand_area_target": torch.zeros((1, 1, 1, 1), dtype=torch.bool),
             "binding_area_target": torch.zeros((2, 1, 1, 1), dtype=torch.bool),
             "metadata": metadata,
@@ -286,7 +482,10 @@ def test_evaluator_rejects_task_outputs_with_misaligned_batch_axes() -> None:
         "binding_area_logits": torch.zeros((2, 1, 1, 1)),
     }
     with pytest.raises(ValueError, match="ligand.*class_logits"):
-        EvaluationAccumulator().update(area_mismatch_outputs, area_mismatch_batch)
+        EvaluationAccumulator(identity_scope=None).update(
+            area_mismatch_outputs,
+            area_mismatch_batch,
+        )
 
     identity_mismatch_batch = cast(
         EvaluationBatch,
@@ -294,6 +493,7 @@ def test_evaluator_rejects_task_outputs_with_misaligned_batch_axes() -> None:
             "class_target": torch.tensor([0, 0]),
             "identity_target": torch.tensor([-1]),
             "identity_mask": torch.zeros((1, 1), dtype=torch.bool),
+            "identity_class_index": torch.full((1, 1), -1, dtype=torch.long),
             "ligand_area_target": torch.zeros((2, 1, 1, 1), dtype=torch.bool),
             "binding_area_target": torch.zeros((2, 1, 1, 1), dtype=torch.bool),
             "metadata": metadata,
@@ -306,7 +506,10 @@ def test_evaluator_rejects_task_outputs_with_misaligned_batch_axes() -> None:
         "binding_area_logits": torch.zeros((2, 1, 1, 1)),
     }
     with pytest.raises(ValueError, match="identity_logits.*class_logits"):
-        EvaluationAccumulator().update(identity_mismatch_outputs, identity_mismatch_batch)
+        EvaluationAccumulator(identity_scope="small_molecule").update(
+            identity_mismatch_outputs,
+            identity_mismatch_batch,
+        )
 
 
 def test_selection_score_uses_only_validation_report_components() -> None:
@@ -370,6 +573,41 @@ def test_all_initial_experiment_plans_preserve_resource_and_stopping_contracts()
             assert stage.training.physical_batch_size == 8
             assert stage.training.gradient_accumulation == 4
             assert plan.data.cache_gib_per_worker == 16.0
+
+
+def test_all_batch1_plans_freeze_five_class_manual_feature_comparison() -> None:
+    """第1批三个 YAML 只改变身份损失和硬件微批，保持同一科学对照。"""
+
+    config_root = Path(__file__).parents[2] / "configs" / "experiments" / "batch1"
+    paths = sorted(config_root.glob("*.yaml"))
+    assert len(paths) == 3
+    plans = [load_experiment_plan(path) for path in paths]
+    assert {plan.stages[0].identity_variant for plan in plans} == {
+        "oracle",
+        "detached",
+        "joint",
+    }
+    for plan in plans:
+        assert plan.output_root.is_relative_to(Path("/storage/penghongen/tmp/Matcher"))
+        assert plan.tracking.project == "AdaLigand-Matcher-Batch1"
+        assert plan.tracking.group == "matcher-batch1-five-class-manual-features"
+        assert plan.data.train_num_workers == 4
+        assert plan.data.validation_num_workers == 4
+        stage = plan.stages[0]
+        assert stage.task_name == "full_matcher"
+        assert stage.language_family == "smi_ted_289m"
+        assert stage.identity_scope == "all_non_background"
+        assert stage.model.aggregation == "mean_max"
+        assert stage.model.use_manual_features is True
+        assert stage.training.global_batch_size == 32
+        assert stage.training.maximum_epochs is None
+        assert stage.training.patience_bad_epochs == 2
+        expected_physical = 8 if stage.identity_variant == "joint" else 16
+        expected_accumulation = 4 if stage.identity_variant == "joint" else 2
+        expected_cache = 16.0 if stage.identity_variant == "joint" else 32.0
+        assert stage.training.physical_batch_size == expected_physical
+        assert stage.training.gradient_accumulation == expected_accumulation
+        assert plan.data.cache_gib_per_worker == expected_cache
 
 
 def test_experiment_config_rejects_output_escape_and_relative_initialization(
@@ -904,6 +1142,11 @@ def test_accumulated_joint_loss_matches_one_global_batch_with_uneven_identity_co
                 "class_target": class_target[start:end],
                 "identity_target": identity_target[start:end],
                 "identity_mask": torch.ones((end - start, 3), dtype=torch.bool),
+                "identity_class_index": torch.full(
+                    (end - start, 3),
+                    4,
+                    dtype=torch.long,
+                ),
                 "ligand_area_target": area_target[start:end],
                 "binding_area_target": area_target[start:end],
             },
@@ -913,6 +1156,7 @@ def test_accumulated_joint_loss_matches_one_global_batch_with_uneven_identity_co
             batch,
             weights,
             identity_variant="joint",
+            identity_scope="small_molecule",
             class_weights=None,
         )
 

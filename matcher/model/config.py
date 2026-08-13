@@ -11,9 +11,23 @@ AggregationName = Literal["mean_max", "candidate_cross_attention"]
 
 @dataclass(frozen=True)
 class MatcherModelConfig:
-    """模型配置：``aggregation`` 是 ``mean_max/candidate_cross_attention``；``model_dim/attention_heads/dropout`` 是共同宽度、头数和丢弃率；``voxel_feature_channels`` 是 RAUNet 输出宽度；``raunet_planes`` 顺序为 ``(enc0,enc1,enc2,enc3,bottleneck,dec3,dec2,dec1,dec0)``；``recycle_iterations`` 是回收轮数；``gradient_checkpointing`` 决定训练时是否激活重计算；``bottleneck_attention_layers/graph_layers`` 是瓶颈注意力与配体图消息层数。"""
+    """保存候选编码器和身份匹配器的完整结构参数。
+
+    ``aggregation`` 选择 ``mean_max`` 或 ``candidate_cross_attention``。
+    ``use_manual_features`` 控制候选聚合是否拼接四模态固化统计，并控制身份打分是否再拼接同一统计与每个身份槽所属类别的六分类概率。
+    ``model_dim`` 是候选、token 和身份表示的共同宽度。
+    ``attention_heads`` 是所有多头注意力的头数。
+    ``dropout`` 是候选、图和身份分支共同采用的丢弃率。
+    ``voxel_feature_channels`` 是 RAUNet 输出通道数。
+    ``raunet_planes`` 依次为 ``(enc0,enc1,enc2,enc3,bottleneck,dec3,dec2,dec1,dec0)``。
+    ``recycle_iterations`` 是 RAUNet 回收轮数。
+    ``gradient_checkpointing`` 控制训练时是否以重计算换显存。
+    ``bottleneck_attention_layers`` 是 RAUNet 瓶颈注意力层数。
+    ``graph_layers`` 是配体图消息传递层数。
+    """
 
     aggregation: AggregationName
+    use_manual_features: bool
     model_dim: int
     attention_heads: int
     dropout: float
@@ -29,6 +43,8 @@ class MatcherModelConfig:
 
         if self.aggregation not in ("mean_max", "candidate_cross_attention"):
             raise ValueError(f"不支持 aggregation={self.aggregation!r}。")
+        if type(self.use_manual_features) is not bool:
+            raise TypeError("use_manual_features 必须是布尔值。")
         integer_fields = {
             "model_dim": self.model_dim,
             "attention_heads": self.attention_heads,
@@ -69,9 +85,15 @@ class MatcherModelConfig:
 
     @classmethod
     def from_dict(cls, values: dict[str, Any]) -> "MatcherModelConfig":
-        """从配置字典恢复模型参数，并把 RAUNet 通道列表冻结为元组。"""
+        """从配置字典恢复模型参数，并显式迁移首批 checkpoint。
+
+        首批 checkpoint 尚无 ``use_manual_features`` 字段，其唯一既有语义是不读取
+        手动特征，因此缺失该字段时固定迁移为 ``False``；其它缺失字段仍由构造器拒绝。
+        """
 
         normalized = dict(values)
+        if "use_manual_features" not in normalized:
+            normalized["use_manual_features"] = False
         if "raunet_planes" in normalized:
             raw_planes = normalized["raunet_planes"]
             if not isinstance(raw_planes, (list, tuple)):
