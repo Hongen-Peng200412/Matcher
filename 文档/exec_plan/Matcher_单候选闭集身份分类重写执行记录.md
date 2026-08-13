@@ -595,6 +595,40 @@ python -m pytest matcher/tests/test_calibration.py -q
 
 因此，本轮在读取 calibration 前唯一选定 Job `340895` 的 SMI-TED Light 289M detached BEST：`/storage/penghongen/tmp/Matcher/experiments/full_scratch_smi_ted_light_289m_detached/train_experiment_job340895_20260813T121932_a1/full_scratch_smi_ted_light_289m_detached/BEST.pt`。它比第二名高 `0.0041969818`；该差距只来自单随机种子 validation 比较，且缺少用户暂时跳过的 SMI-TED Light 289M joint，因此最终报告必须保留“首轮方案选择、非方差估计”的限制，不能把小差距解释成稳定的损失优劣结论。一次性 calibration 只用于报告这个预先选定 checkpoint，不再参与换模型、调参或选模。
 
+## Calibration 禁读边界更新与竞态处置
+
+在后续批次尚未提出前，本代理曾依据“六个已授权运行均已结束且 validation 唯一选出第一名”的旧边界，准备复用 Job `340895` 做一次性评估。放行前核对该 allocation 为 `RUNNING`、`16 CPU + 1 A800`，只有 `try_lock_340895 + after_lock_340895`；checkpoint SHA-256 为 `c4ad33ce5b91e83c5e408b4d214114fc3abdffa66b49401264860649149d73cb`，目标结果与 claim 目录均为空。动态命令 SHA-256 为 `0fce31f463a03121d5e9d0fb1de79a42faf2bbee2db77bbfdf2976b775785255`，完整内容如下：
+
+```bash
+plan_relative=configs/experiments/initial/full_scratch_smi_ted_light_289m_detached.yaml
+stage_name=full_scratch_smi_ted_light_289m_detached
+checkpoint=/storage/penghongen/tmp/Matcher/experiments/full_scratch_smi_ted_light_289m_detached/train_experiment_job340895_20260813T121932_a1/full_scratch_smi_ted_light_289m_detached/BEST.pt
+output=/storage/penghongen/tmp/Matcher/calibration/round1_smi_ted_light_289m_detached_job340895_epoch9.json
+
+bash "${TASK_PROJECT_ROOT}/训练与运行/sh/precompute_data.sh" \
+  --data-root /storage/penghongen/AdaLigand/Ori_Data \
+  --stage1-root /storage/penghongen/AdaLigand_stage1_inference/Find_0-CPC1-ligand_PRAUC_0.675477/artifacts/Find_0 \
+  --output-root /storage/penghongen/tmp/Matcher \
+  --coverage-threshold 0.30 \
+  --selection-seed 3407 \
+  --splits calibration \
+  --workers 16 \
+  --products voxel pp \
+  --pp-top-k 1024
+
+exec bash "${TASK_PROJECT_ROOT}/训练与运行/sh/evaluate_calibration.sh" \
+  --plan "${plan_relative}" \
+  --stage "${stage_name}" \
+  --checkpoint "${checkpoint}" \
+  --output "${output}"
+```
+
+01:54:38（登录节点时钟）只删除 `try_lock_340895`；allocation runner 建立 release `/home/penghongen/Feedback/Matcher/releases/Matcher_5952c2c41169/Matcher` 与 launch `/home/penghongen/Feedback/Matcher/launches/340895/train_experiment_job340895_20260814T015240_a2` 后开始特征预计算。用户随即建立新的严格边界：第 0 批和后续全部开发、选择、头对头比较只使用 validation；后续批次全部结束且用户明确确认最终方案前，不得实际读取 calibration，是否执行最终一次评估也由用户另行确认。该新边界覆盖前述“已选出第一名后即可评估”的旧时序。
+
+收到指令后立即停止。02:02:04 创建且只创建 `/home/penghongen/Feedback/Matcher/allocations/340895/kill_lock_340895`；监控器终止本次预计算进程组，attempt 2 以退出码 `137` 结束，并在 02:02:39 前重新建立 `try_lock_340895`。`after_lock_340895`、第 0 批 checkpoint 与训练日志均未改变。终止发生在 `CALIBRATION_PRECOMPUTE_COMPLETED` 和 `CALIBRATION_EVALUATION_STARTED` 之前，因此模型评估没有启动，calibration claim 和结果 JSON 从未创建。
+
+并发预计算被终止前已经读取并物化了部分 calibration 派生输入，这是发生在新指令到达前、但仍必须如实记录的边界触碰。最终盘上有 `3294/3363` 个 schema v1 体素 `.npy` 和 `83/86` 个 PP `.npz`，大小分别为 `76,502,003,456` 与 `72,552,964` bytes；另有 `3295/83` 个空锁文件，没有遗留临时原子写入文件。这些派生缓存没有指标、预测或 checkpoint 选择信息。本代理不擅自删除它们；从此刻起不再打开 calibration 清单、派生缓存或底层特征，直到用户在全部批次结束后明确授权。
+
 ## 验证命令
 
 ```powershell
