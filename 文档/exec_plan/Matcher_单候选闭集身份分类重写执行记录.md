@@ -254,6 +254,24 @@ tee /storage/penghongen/tmp/Matcher/diagnostics/job340894_checkpoint_20260813/pr
 
 因此 A800 正式宽度、BF16、物理批量 16、梯度累积 2 和 global batch 32 已在真实训练数据上完成首个优化器更新。首步后的只读采样显示 A800 为 `38847 MiB/100%`，训练进程和 16 个 DataLoader worker 均继续运行；`after_lock_340894` 未删除。此前两次失败保留在同一 allocation 的历史日志中，但第三次 launch 使用独立产物目录，不会把旧异常误作当前训练状态。
 
+第三次执行随后于 09:33:48 在 DataLoader worker 6 加载后续候选时退出，`try_lock_340894` 自动重建，A800 回到 `2 MiB/0%`，`after_lock_340894` 继续保留。失败样本的 F1-centered `box_origin=[333.54345703125,25.145553588867188,279.2139892578125]`，而 probability map 的 float32 原点、体素尺寸与整数起点重算得到 `[333.5434875488281,25.145553588867188,279.2139892578125]`；最大绝对差为 `3.0517578125e-05 Å`，超过旧的 `2e-5 Å` 固定容差。该次执行至少完成了已记录的首个更新；后续精确更新数没有 checkpoint 或逐步记录可恢复，因此不作推断。
+
+为区分 float32 重算误差与真实几何错位，使用下面的冻结探针审计 train、validation 和 calibration 全部 `24,170` 个候选：
+
+- 脚本：`/storage/penghongen/tmp/Matcher/diagnostics/job340894_box_origin_20260813/audit_box_origin_tolerance.py`；
+- 脚本 SHA-256：`7665eedafb36cf0d06b6309a158bbb0796afa0d004ab795a68ffcf5d46752287`；
+- 日志：`/storage/penghongen/tmp/Matcher/diagnostics/job340894_box_origin_20260813/audit_box_origin_tolerance.log`。
+
+```bash
+srun --jobid=340894 --overlap --ntasks=1 --cpus-per-task=4 bash -lc '
+source /home/penghongen/anaconda3/etc/profile.d/conda.sh &&
+conda activate Pocket_Plus_centos7_cu121_allgpu &&
+python /storage/penghongen/tmp/Matcher/diagnostics/job340894_box_origin_20260813/audit_box_origin_tolerance.py 2>&1 |
+tee /storage/penghongen/tmp/Matcher/diagnostics/job340894_box_origin_20260813/audit_box_origin_tolerance.log'
+```
+
+审计结果是：体素尺寸逐元素不一致数为 0；超过 `2e-5 Å` 的候选为 20 个；全体最大误差仍为 `3.0517578125e-05 Å`；超过 `5e-5 Å` 的候选为 0。临时修复据此只把绝对容差从 `2e-5 Å` 调到 `5e-5 Å`，保持 `rtol=0` 与体素尺寸逐元素相等检查，并在错误中报告最大差；新增回归接受真实的一格 float32 间隔，同时拒绝约 `1e-3 Å` 的额外错位。该容差仍比一个 1.5 Å 体素小 30,000 倍，不改变 A/P/V/PP 的轴、原点或裁剪边界。
+
 ## 验证命令
 
 ```powershell

@@ -33,6 +33,7 @@ from .voxel_input import VoxelInputStore
 
 
 TASK_NAMES = ("candidate_pretrain", "full_matcher")
+_BOX_ORIGIN_ABSOLUTE_TOLERANCE_ANGSTROM = 5e-5
 
 
 class CandidateDataset(Dataset[CandidateItem]):
@@ -317,18 +318,47 @@ def _validate_candidate_geometry(
     artifacts: dict[str, Any],
     candidate_index: int,
 ) -> None:
-    """核对 F1-centered 和概率图保存的候选框空间字段。"""
+    """核对 F1-centered 和概率图保存的候选框空间字段。
+
+    先要求 ``F1_centered.npz:voxel_size_world`` 与
+    ``probability_map.npz:voxel_size_xyz`` 逐元素相等，再比较保存的
+    ``box_origin_world`` 与由 ``origin_xyz``、``box_start_zyx`` 和体素尺寸
+    重算的候选框原点。float32 重算绝对误差允许不超过 ``5e-5 Å``。
+    """
 
     voxel_size = np.asarray(centered["voxel_size_world"][candidate_index], dtype=np.float32)
     box_origin = np.asarray(centered["box_origin_world"][candidate_index], dtype=np.float32)
     box_start = np.asarray(centered["box_start_zyx"][candidate_index], dtype=np.float32)
-    expected_origin = artifacts["probability_origin"] + box_start[[2, 1, 0]] * voxel_size
-    if not np.array_equal(voxel_size, artifacts["probability_voxel_size"]):
+    probability_origin = np.asarray(artifacts["probability_origin"], dtype=np.float32)
+    probability_voxel_size = np.asarray(
+        artifacts["probability_voxel_size"],
+        dtype=np.float32,
+    )
+    named_vectors = {
+        "F1-centered voxel_size_world": voxel_size,
+        "F1-centered box_origin_world": box_origin,
+        "F1-centered box_start_zyx": box_start,
+        "probability_map origin_xyz": probability_origin,
+        "probability_map voxel_size_xyz": probability_voxel_size,
+    }
+    for field_name, vector in named_vectors.items():
+        if vector.shape != (3,) or not np.isfinite(vector).all():
+            raise ValueError(f"{field_name} 必须是有限 (3,) 空间字段。")
+    expected_origin = probability_origin + box_start[[2, 1, 0]] * voxel_size
+    if not np.array_equal(voxel_size, probability_voxel_size):
         raise ValueError("F1-centered 与 probability_map 的 voxel_size 不一致。")
-    if not np.allclose(box_origin, expected_origin, rtol=0.0, atol=2e-5):
+    maximum_absolute_error = float(np.max(np.abs(box_origin - expected_origin)))
+    if not np.allclose(
+        box_origin,
+        expected_origin,
+        rtol=0.0,
+        atol=_BOX_ORIGIN_ABSOLUTE_TOLERANCE_ANGSTROM,
+    ):
         raise ValueError(
             f"F1-centered box_origin={box_origin.tolist()} 与离散起点推导值"
-            f" {expected_origin.tolist()} 不一致。"
+            f" {expected_origin.tolist()} 不一致；最大绝对误差为"
+            f" {maximum_absolute_error:.9g} Å，允许上限为"
+            f" {_BOX_ORIGIN_ABSOLUTE_TOLERANCE_ANGSTROM:.9g} Å。"
         )
 
 

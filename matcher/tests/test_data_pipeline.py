@@ -121,6 +121,49 @@ def test_manifest_and_dataset_keep_pdb_but_drop_missing_smi_occurrence(tmp_path)
     assert list(sampler) == [[0]]
 
 
+def test_dataset_accepts_float32_box_origin_recomputation_but_rejects_real_shift(tmp_path) -> None:
+    """候选原点允许冻结产物的一个 float32 间隔误差，但必须拒绝毫埃级真实错位。"""
+
+    roots = build_synthetic_roots(tmp_path)
+    manifest_path = build_manifest(roots, coverage_threshold=0.30, selection_seed=3407)
+    centered_path = roots.stage1_root / "train/1abc/centered/F1_centered.npz"
+    probability_path = roots.stage1_root / "train/1abc/probability/probability_map.npz"
+    with np.load(centered_path, allow_pickle=False) as archive:
+        centered = {name: np.asarray(archive[name]).copy() for name in archive.files}
+    with np.load(probability_path, allow_pickle=False) as archive:
+        probability = {name: np.asarray(archive[name]).copy() for name in archive.files}
+    lower_origin = np.float32(333.54345703125)
+    adjacent_origin = np.nextafter(lower_origin, np.float32(np.inf))
+    assert adjacent_origin - lower_origin == np.float32(3.0517578125e-5)
+    centered["box_origin_world"][0, 0] = lower_origin
+    probability["origin_xyz"][0] = adjacent_origin
+    np.savez(centered_path, **centered)
+    np.savez(probability_path, **probability)
+
+    accepted = CandidateDataset(
+        roots=roots,
+        manifest_path=manifest_path,
+        split_name="train",
+        task_name="candidate_pretrain",
+        language_family=None,
+        pp_top_k=4,
+    )
+    assert accepted[0]["class_target"] == 4
+
+    centered["box_origin_world"][0, 0] += np.float32(1e-3)
+    np.savez(centered_path, **centered)
+    rejected = CandidateDataset(
+        roots=roots,
+        manifest_path=manifest_path,
+        split_name="train",
+        task_name="candidate_pretrain",
+        language_family=None,
+        pp_top_k=4,
+    )
+    with pytest.raises(ValueError, match="最大绝对误差"):
+        rejected[0]
+
+
 def test_seen_identity_requires_train_positive_for_current_language_family(tmp_path) -> None:
     """某语言模型没有可监督正目标时，同一 object_key 在该语言下必须标为 unseen。"""
 
