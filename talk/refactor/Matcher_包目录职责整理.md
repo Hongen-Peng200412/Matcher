@@ -101,3 +101,5 @@ matcher/
 本次整理没有修改配置值、数据和缓存路径、模型或损失计算、指标、随机状态、批次顺序、checkpoint/JSON schema 或 calibration 禁读边界。运行中的六个受管 Job 继续读取各自既有内容寻址 release；本次本地整理没有访问或修改这些 release、动态命令、Slurm 作业和任何锁。独立科学正确性与严格技术表达复核均为 PASS，阻断项为零。
 
 实现端点为 `codex/matcher-package-layout@6176122`；学习历史按“职责清单→运行模块与入口→测试导入→文档证据”重建到 `Learn/matcher-package-layout@8d6ba38`。两个端点的树摘要均为 `dd86b658cab8d0401248726563ff504b662a2c56`，逐文件内容完全一致；`Learn/CUMULATIVE` 已快进到学习端点。
+
+2026-08-14 18:22 已把整理后的累计端点安全同步到 `/home/penghongen/My_Project/Matcher`。同步不使用 `--delete`；清理脚本先验证 36 个正式模块导入、19 份实验 YAML、compileall 和四个命令入口，再只删除 `matcher/` 顶层 23 个已经移动的旧 Python 副本，最后重复相同门禁并通过。该动作不修改 `/home/penghongen/Feedback/Matcher/releases/`、`/storage/penghongen/tmp/Matcher/experiments/`、动态命令、Slurm Job 或任何锁。
