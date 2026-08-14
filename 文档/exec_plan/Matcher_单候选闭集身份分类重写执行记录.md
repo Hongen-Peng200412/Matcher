@@ -987,3 +987,19 @@ Git 忽略目录中的 `tmp/batch5_launch/activate_batch5_gate.sh` 经科学正�
 首个 global batch 32 已完成参数更新：总损失 `3.6084863407`，四项未加权损失 classification/ligand area/binding area/identity 为 `1.7836914062/1.7509000003/1.6756209433/1.4821428401`；裁剪前梯度范数 `42.3180923462`，数据等待 `6.7542922919 s`，计算 `24.3319061401 s`，吞吐 `1.0293957323 candidate/s`，身份有效候选数 7，显存峰值 allocated/reserved 为 `14,195,046,400/19,667,091,456` bytes。第一次更新后的 graph/inventory 门值为 `0.0200999994/0.0200999975`。首次完整 validation 与 `identity_contribution/validation/*` 尚未产生；在这组证据出现前不并行铺开第二个门值、裁剪阈值或学习率任务。
 
 同次事件式读取正式运行摘要与 BEST epoch `history.jsonl`，补齐了此前仍写成“训练中”的三项。第 3 批增强注意力 oracle/detached 分别在 BEST/last epoch `11/13` 与 `7/9` 自然早停，selection score 为 `0.6921287290/0.6900402677`；相对第 2 批同损失 mean/max 为 `-0.856%/+0.518%`。结合 joint 的 `-1.801%` 和增强六分类近似持平结果，第 3 批四项没有跨任务稳定收益，后续不优先采用增强注意力。第 4 批候选预训练初始化 detached 在 BEST/last epoch `3/5` 自然早停，selection score `0.6871224546`，相对第 2 批从零 detached 高 `0.093%`；其它核心指标方向混合，等待 oracle 与 joint 后再作批次结论。三个训练命令均正常写出运行根 `summary.json` 并由 runner 恢复对应 `try_lock`，各自 `after_lock` 保留。
+
+### 第 5 批门控因子矩阵与梯度裁剪对照
+
+2026-08-15 约 01:30 的事件式只读复核确认，双门 `0.02/0.02` oracle 已完成 epoch 0–3 四次完整 validation，selection score 依次为 `0.6388081598/0.6435844626/0.6483033074/0.6773211521`，四轮均严格改善。epoch 3 的 graph/inventory/合计增量相对语言基线中心化 L2 比例为 `0.2174344/0.0457968/0.2068664`。这些比例是排序尺度而非有符号收益；它们支持把 graph 与 inventory 分支拆开比较，但不能直接判定任一分支有利。
+
+同次复核确认第 4 批 joint 已于 2026-08-15 00:26:27 自然早停，BEST/last epoch `7/9`、global step `4470`、selection score `0.6960616522`，Job `340894` 自然恢复 `try_lock` 且保留 `after_lock`。相对第 2 批从零 joint，分类与主要身份指标变化 `+0.080%–+6.278%`，ligand Dice `-5.556%`，binding Dice `+112.491%`；等待 oracle 收口后再作第 4 批总体判断。
+
+2026-08-15 01:56:57 的后续只读事件确认第 4 批 oracle 也在 BEST/last epoch `7/9` 自然早停，selection score `0.6976087078`，Job `340897` 恢复 `try_lock` 且保留 `after_lock`。相对第 2 批从零 oracle，分类与身份指标均在 `-0.624%–+0.126%` 内近似持平，ligand/binding Dice 下降 `9.962%/18.706%`。结合 detached 的方向混合与 joint 的总体有利结果，第 4 批不支持把候选预训练初始化作为跨损失默认改进。
+
+用户明确要求进一步比较门初值并允许增加近似不裁剪对照。独立科学审查与新增自然空闲事件据此锁定五项新任务：A100 Job `340893` 的 graph-only `0.02/0.0`、A100 Job `340898` 的 inventory-only `0.0/0.02`、A100 Job `340897` 的双门 `0.1/0.1`、A800 Job `340894` 的 `clip5` 和 A800 Job `340895` 的 `clip200`。前两项与第 2 批零门 `00`、当前双门 `11` 组成 `0.02` 下的完整 2×2 因子矩阵；双门 `0.1` 另检验同硬件初始化尺度。后两项使用相同 A800 物理批量 `16×2=32`，彼此构成主要直接对照。阈值 `200` 高于历史最高裁剪前范数 `182.85`；只有实际触发率不超过 `0.1%` 时才称近似不裁剪，并必须报告总更新数、触发数、最大范数和最小缩放系数。
+
+本轮不提交 `LR=2e-4`：现有双门任务尚在连续改善，ReduceLROnPlateau 已会在坏验证轮后降低学习率，同时改变裁剪与学习率会削弱归因。mean/max 与 candidate-conditioned attention 两种摘要向量的拼接也按用户要求等待其它代码和实验收口后再评估。
+
+用户新增联合身份 `(object_key, PreparedLigand.smiles)` 契约。当前门与裁剪矩阵继续冻结 `closed_set_v3`，避免改变身份槽、监督数和指标分母后失去与第 2 批的直接可比性；联合身份另升 schema/release，并先建立新契约零门 oracle 基线。仅使用 train/validation：若没有同 PDB 身份拆分，除 schema 与文件摘要外，Dataset 张量、固定权重前向输出和完整评估必须精确一致；若存在拆分，所有未受影响 PDB 仍以单 PDB 或 singleton batch 精确一致，受影响 PDB 逐项报告槽、SMILES、occurrence、target 与监督数变化。calibration 不参与该审计。
+
+本节点只完成本地配置、测试和三层记录。五个目标 Job 的现有动态命令、`try_lock` 与 `after_lock` 尚未修改；正式 release、远端门禁和受保护激活必须等待双线 Git 与两项独立审查收口。全部触发后六个受管 allocation 都有具名任务，仍不创建 heartbeat。
