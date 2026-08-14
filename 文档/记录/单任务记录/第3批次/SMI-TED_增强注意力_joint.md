@@ -6,6 +6,7 @@
 - 预定资源：一张自然空闲的受管 A100，最多 16 CPU；物理批量 8、梯度累积 4、global batch 32。
 - W&B：project `AdaLigand-Matcher-Batch3`，group `matcher-batch3-full-enhanced-cross-attention`。
 - 个性化变量：身份损失乘以保留分类梯度的真实身份类别概率；A/P/V/PP 各自使用零初始化实体偏置 MLP。
-- 状态：代码、配置、pytest、mypy、compileall、pyflakes、YAML 解析、shell 语法、diff-check 机械检查以及科学正确性、严格技术表达两项独立审查均已通过；第 2 批五项也已全部提交。当前等待实现提交与安全发布，没有 Slurm Job、release、launch 或 W&B run，不虚构提交命令与结果。
+- 实现端点：`495e7de54dca88ab3464fe0a667dcce5a540ef72`；预冻结 release：`/home/penghongen/Feedback/Matcher/releases/Matcher_d15132948a18/Matcher`，内容摘要 `d15132948a1885bae9a2019ac55175503c5c15459f043145147fe4a6d3598f89`。
+- 状态：代码、配置、机械检查、两项独立复审、提交、安全同步、远端哈希与配置门禁均已通过；第 2 批五项也已全部提交。当前等待一张受管 A100 自然空闲，没有本任务的 Slurm Job、launch 或 W&B run，不虚构提交命令与结果。
 
 实际提交时必须在本文件追加完整 `submit_task.sh` 命令、动态运行命令、release、Slurm Job、W&B run ID/URL、首步验收、validation 结果和分析。

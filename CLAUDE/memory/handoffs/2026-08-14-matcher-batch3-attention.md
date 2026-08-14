@@ -4,7 +4,7 @@ Date: 2026-08-14
 
 ## Current State
 
-活动 Goal 仍是 Matcher 第 1–5 批开发与六卡调度。当前分支为 `codex/matcher-closed-set-rewrite`，进入第 3 批开发前的 HEAD 是 `c045a13`；工作树含尚未提交的第 3 批注意力偏置、四份配置、测试和三层账本。
+活动 Goal 仍是 Matcher 第 1–5 批开发与六卡调度。当前分支为 `codex/matcher-closed-set-rewrite`；第 3 批实现端点是 `495e7de54dca88ab3464fe0a667dcce5a540ef72`，已经安全同步并预冻结为 release `Matcher_d15132948a18`。
 
 六个受管 allocation `340893/340894/340895/340897/340898/340899` 都在运行。Job `340893` 运行第 1 批 joint；Job `340897/340898/340899` 运行第 2 批 oracle/detached/joint；Job `340894/340895` 已按顺序接续第 2 批 mean/max 与未增强候选条件注意力候选预训练。不得删除任何 `after_lock`、释放 allocation 或触碰用户另行提交的任务。第 2 批五个非重复任务已经全部提交，后续自然空闲 GPU 才能进入第 3 批。
 
@@ -20,6 +20,7 @@ calibration 可以有不参与判断的准备产物，但全部批次结束且�
 - `MatcherModelConfig` 新增正式必填开关 `use_candidate_token_attention_bias`。第 0–2 批 YAML 显式为 false，第 3 批为 true；历史恢复入口把缺字段迁移为 false。
 - W&B 在 `gradient/train_step/*postclip_norm` 记录全局梯度裁剪后的偏置末层权重梯度范数，在 `attention_bias/train_step/*poststep_norm` 记录同次更新后的末层权重范数；整批无有效 token 的模态省略两项，末层 `bias` 不记录。
 - 四份第 3 批 YAML、四份单任务记录与批次记录已经建立。首个冻结候选为 pytest 86 项通过，科学终审为 PASS，严格技术表达终审发现五组阻断。集中修订后的最终快照为 pytest 93 项通过、mypy 38 个源文件零问题、compileall、pyflakes、19 份 YAML 正式解析、49 个 shell 的 `bash -n` 和 diff-check 通过；科学正确性与严格技术表达两项独立复审最终均为 PASS。
+- 第 3 批实现与账本已提交为 `495e7de54dca88ab3464fe0a667dcce5a540ef72`。安全同步后，服务器项目根与 release `Matcher_d15132948a18` 的热点文件逐项 SHA-256 均与本地一致，四份配置在正式 Conda 环境解析通过；release 内容摘要为 `d15132948a1885bae9a2019ac55175503c5c15459f043145147fe4a6d3598f89`。
 
 ## Decisions
 
@@ -32,13 +33,13 @@ calibration 可以有不参与判断的准备产物，但全部批次结束且�
 ## Open Questions
 
 - 第 4/5 批任务矩阵等待前三批 validation 结果。
-- 第 3 批修订快照的机械检查与两项独立复审均已通过；实现提交和安全同步完成前仍不能发布或提交 GPU。
+- 第 3 批已达到发布条件；尚未出现本批 Job、launch 或 W&B run，需等待受管 GPU 自然空闲后再按优先级绑定。
 
 ## Next Actions
 
-1. 提交第 3 批实现与账本，并按双线 Git 规则保留实现端点；未提交工作树不得直接同步到服务器。
-2. 安全同步提交端点，建立内容寻址 release，并在自然空闲 GPU 出现时按第 3 批 oracle/detached/joint/增强六分类的既定优先顺序接续。
-3. 继续低频监控第 1 批 joint 与第 2 批五项；只在完整 validation、失败或自然收口时更新账本，不中断任务。
+1. 在自然空闲 GPU 出现时，以 release `Matcher_d15132948a18` 按第 3 批 oracle/detached/joint/增强六分类的既定优先顺序接续；每次先核对 allocation、锁和目标目录。
+2. 继续低频监控第 1 批 joint 与第 2 批五项；只在完整 validation、失败或自然收口时更新账本，不中断任务。
+3. 实际接续后把完整动态命令、Job、release、launch、W&B run 和首步验收回填到单任务、批次、总记录与 ExecPlan。
 4. 不得读取 calibration 做模型推理或指标计算；最终一次评估仍需用户另行明确确认。
 
 ## Files To Reopen

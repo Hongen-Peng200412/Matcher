@@ -812,3 +812,29 @@ W&B online 在 `gradient/train_step/{a|p|v|pp}_attention_bias_final_weight_postc
 ```
 
 脚本先原子安装 Job `340894` 的 mean/max 与 Job `340895` 的未增强候选条件注意力命令，动态命令 SHA-256 分别为 `590e4af8133826d0aac0088814dfcc42c6936e00c21763743b5843f28138d1a2` 与 `295046288c5f67fa12aa289073bf8b1fcde0bde76db706d`，再于 09:31:09 一次删除两把 `try_lock`；两个 `after_lock` 未删除。两项均复用 release `Matcher_3cc75993d69e`。mean/max launch 为 `train_experiment_job340894_20260814T093012_a7`、W&B run `79immary`；未增强注意力 launch 为 `train_experiment_job340895_20260814T092853_a4`、W&B run `12oeeshn`。二者首个 global batch 32 更新分别耗时 `61.3182/61.9103 s`，裁剪前梯度范数 `27.0919/81.2901`，峰值保留显存 `39,439,040,512/39,634,075,648 bytes`；候选任务的身份监督数按契约为零。成功事件都在有限性检查、参数更新与 CUDA 同步后出现，未见 OOM、NaN、Traceback 或缓存回退。第 2 批五个非重复任务至此全部提交。
+
+第 3 批实现、四份配置、测试与当时三层账本提交为 `495e7de54dca88ab3464fe0a667dcce5a540ef72 feat(batch3): add zero-initialized attention biases`。提交前 `git diff --cached --check` 通过，范围为 52 个预期文件；忽略目录中的临时部署脚本未进入提交。随后从该干净提交执行安全同步：
+
+```powershell
+& 'C:\Users\15919\Desktop\Matcher\与服务器交互\sync_code.ps1'
+```
+
+同步只增量更新 `/home/penghongen/My_Project/Matcher`，不使用 `rsync --delete`，没有修改任何 release、launch、实验产物或 allocation 锁。远端门禁脚本 `tmp/verify_batch3_remote_20260814.sh` 的最终 SHA-256 为 `ca956957c12434065fe922763ff07fe9ef7fe01439eab704dd4d91426cfa43a6`。第一次远端尝试在文件哈希通过后因 Conda 激活脚本与 `set -u` 的 `ADDR2LINE` 未定义变量冲突而停止；该尝试没有创建 release 或触发任务。脚本仅在 Conda 激活期间暂时关闭未定义变量检查后，以以下控制端命令通过：
+
+```powershell
+& "$env:USERPROFILE\.codex\tools\Invoke-ProjectSsh.ps1" `
+  -Command 'bash -s' `
+  -InputFile 'C:\Users\15919\Desktop\Matcher\tmp\verify_batch3_remote_20260814.sh'
+```
+
+门禁逐项核对 `contracts/experiment_config/tracking/training/candidate_encoder/config/fusion/schema` 八个源码文件和四份 Batch3 YAML 的 SHA-256；正式 Conda 环境还确认四项均使用 W&B online、project `AdaLigand-Matcher-Batch3`、`v_centroid`、4/4 workers、增强候选条件注意力和 global batch 32，候选任务为 A800 `16×2` 且身份损失权重为零，三项完整 Matcher 为 A100 `8×4`、SMI-TED 289M、五类非背景身份和 oracle/detached/joint。
+
+通过门禁后执行：
+
+```bash
+bash '/home/penghongen/My_Project/Matcher/训练与运行/runtime/create_release.sh' \
+  '/home/penghongen/My_Project/Matcher' \
+  '/home/penghongen/Feedback/Matcher/releases'
+```
+
+得到预冻结 release `/home/penghongen/Feedback/Matcher/releases/Matcher_d15132948a18/Matcher`，manifest 内容摘要为 `d15132948a1885bae9a2019ac55175503c5c15459f043145147fe4a6d3598f89`，创建时间为 `2026-08-14T09:50:02+0800`。同一远端门禁随后以该 release 为项目根再次完整通过。此时只完成第 3 批发布准备，没有安装动态运行命令、删除 `try_lock`、删除 `after_lock` 或提交 GPU；四项仍按自然空闲资源与批次优先级等待。
