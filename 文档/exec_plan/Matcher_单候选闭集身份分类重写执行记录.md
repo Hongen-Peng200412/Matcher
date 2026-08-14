@@ -894,7 +894,7 @@ A100 与 A800 的第一次控制尝试分别因为前序旧 YAML 缺少后续版
 
 第 4 批初始化随后按用户裁定继续收缩职责：正式包只保存来源运行的语义自洽、候选结构和严格加载，不保存文件哈希或 launch/release 字节证据。一次性取证只留在 `tmp/batch4_source_audit/audit_candidate_pretrain_source.py`，报告只能写入 Matcher diagnostics；脚本不被正式包导入，也不参与训练或选模。正式初始化要求来源 YAML 与 `resolved.json` 显式保存候选任务的 `language_family=null`、`identity_variant=null` 和 `initialize_candidate_from=null`；来源 BEST/LAST、训练 YAML 与阶段/运行摘要必须是语义自洽的绝对路径。共享 checkpoint loader 还在目标参数变化前拒绝非字符串参数名或非张量参数值。
 
-第四批单任务记录入口已建立在 `文档/记录/单任务记录/第四批次/README.md`。当前明确记录 0 项任务已决定、0 项已提交；后续每项任务必须在触发 GPU 前单独保存科学变量、YAML、实现提交、release、一次性来源审计、Slurm、W&B、首步、validation 和对照结论。
+第四批单任务记录入口已建立在 `文档/记录/单任务记录/第四批次/README.md`。在该准备节点明确记录 0 项任务已决定、0 项已提交；后续每项任务必须在触发 GPU 前单独保存科学变量、YAML、实现提交、release、一次性来源审计、Slurm、W&B、首步、validation 和对照结论。
 
 用户另行要求整理 `matcher/` 的目录布局。该工作不与第 4 批初始化混入同一提交：初始化基础先完成独立门禁和提交；随后在 `talk/refactor/` 建立全部正式文件的职责、调用者、生命周期、测试与目标位置清单，再以行为等价为唯一边界移动数据、加载、训练和评估模块。该结构整理不改变活动 Goal；第 1–5 批实验和六卡优先级仍是主线。
 
@@ -968,4 +968,22 @@ Git 忽略目录中的一次性激活控制器经科学正确性和严格技术�
 
 第 5 批门值实现把 `initial_graph_gate/initial_inventory_gate` 加为正式模型配置字段。第 0–4 批 22 份 YAML 的 23 个阶段全部显式为 `0.0/0.0`，历史 checkpoint/resolved 缺字段时只在恢复入口迁移为零；候选预训练拒绝非零门。完整 Matcher validation 的正式前向同时保存语言基线、已乘图门增量与已乘清单门增量，诊断直接读取同批组件，不重跑打分器，也不再次执行由 `torch.any(...)` 触发的 device→host 布尔判定；每个物理批次新增的唯一 device→host 传输是一组聚合标量。结果只进入 W&B `identity_contribution/validation/*`，不进入损失、正式指标、selection score、历史、checkpoint 或 calibration。
 
-首项配置为 `configs/experiments/batch5/batch5_smi_ted_v_centroid_gate_002_oracle_a100.yaml`，相对第 2 批 oracle 只把双门初值从 `0.0/0.0` 改成 `0.02/0.02`，另改变 plan/stage 名和 W&B project/group。选择 `0.02` 是因为第 1–3 批从零训练的门值自然学习到约 `0.01–0.03`；不直接采用缺少证据的 `0.1`，也不同时改变裁剪阈值、学习率、优化器或损失。预定资源为自然空闲的 A100 Job `340899`，W&B online project/group 为 `AdaLigand-Matcher-Batch5/matcher-batch5-gate-initialization`。当前为 1 项已决定、0 项已提交；配置、测试、双线 Git、release、远端门禁和受保护激活全部完成前不删除 `try_lock_340899`。
+首项配置为 `configs/experiments/batch5/batch5_smi_ted_v_centroid_gate_002_oracle_a100.yaml`，相对第 2 批 oracle 只把双门初值从 `0.0/0.0` 改成 `0.02/0.02`，另改变 plan/stage 名和 W&B project/group。选择 `0.02` 是因为第 1–3 批从零训练的门值自然学习到约 `0.01–0.03`；不直接采用缺少证据的 `0.1`，也不同时改变裁剪阈值、学习率、优化器或损失。预定资源为自然空闲的 A100 Job `340899`，W&B online project/group 为 `AdaLigand-Matcher-Batch5/matcher-batch5-gate-initialization`。该启动前节点为 1 项已决定、0 项已提交；配置、测试、双线 Git、release、远端门禁和受保护激活全部完成前不删除 `try_lock_340899`。
+
+### 第 5 批首项发布与运行
+
+实现分支端点 `5098f382076795033e3461a1685bd820a928c3f9` 与按“批次记录→模型门值→贡献诊断→回归测试”重建的学习端点 `ec012345153ad3d758a47dc88b4d0e81e5e5b0a8` 逐文件等价，`Learn/CUMULATIVE` 已快进到学习端点。安全同步后创建冻结 release `/home/penghongen/Feedback/Matcher/releases/Matcher_1e75c58542e5/Matcher`；远端正式解析 23 份 YAML 的 24 个阶段、内存编译全部 Matcher Python 源码，并从 train/validation 各读取 3 个候选。该门禁不读取 calibration，也不申请新 GPU。
+
+Git 忽略目录中的 `tmp/batch5_launch/activate_batch5_gate.sh` 经科学正确性和严格技术表达两项独立审查后均为 PASS。控制端实际执行：
+
+```powershell
+& "$env:USERPROFILE\.codex\tools\Invoke-ProjectSsh.ps1" `
+  -Command 'bash -s' `
+  -InputFile 'C:\Users\15919\Desktop\Matcher\tmp\batch5_launch\activate_batch5_gate.sh'
+```
+
+控制器精确绑定 Job `340899` 的 Batch3 joint 自然早停结果、冻结 release、Batch2 oracle 基线、Batch5 目标、资源、目标目录、重复任务和四类锁。所有门禁通过后，它原子安装 Batch5 动态命令并只删除 `try_lock_340899`；`after_lock_340899` 保留，`pre_lock_340899/kill_lock_340899` 均不存在。新 launch 为 `train_experiment_job340899_20260814T232001_a4`，W&B online run 为 [`yd20vpcv`](https://wandb.ai/pencounkdual-111/AdaLigand-Matcher-Batch5/runs/yd20vpcv)。
+
+首个 global batch 32 已完成参数更新：总损失 `3.6084863407`，四项未加权损失 classification/ligand area/binding area/identity 为 `1.7836914062/1.7509000003/1.6756209433/1.4821428401`；裁剪前梯度范数 `42.3180923462`，数据等待 `6.7542922919 s`，计算 `24.3319061401 s`，吞吐 `1.0293957323 candidate/s`，身份有效候选数 7，显存峰值 allocated/reserved 为 `14,195,046,400/19,667,091,456` bytes。第一次更新后的 graph/inventory 门值为 `0.0200999994/0.0200999975`。首次完整 validation 与 `identity_contribution/validation/*` 尚未产生；在这组证据出现前不并行铺开第二个门值、裁剪阈值或学习率任务。
+
+同次事件式读取正式运行摘要与 BEST epoch `history.jsonl`，补齐了此前仍写成“训练中”的三项。第 3 批增强注意力 oracle/detached 分别在 BEST/last epoch `11/13` 与 `7/9` 自然早停，selection score 为 `0.6921287290/0.6900402677`；相对第 2 批同损失 mean/max 为 `-0.856%/+0.518%`。结合 joint 的 `-1.801%` 和增强六分类近似持平结果，第 3 批四项没有跨任务稳定收益，后续不优先采用增强注意力。第 4 批候选预训练初始化 detached 在 BEST/last epoch `3/5` 自然早停，selection score `0.6871224546`，相对第 2 批从零 detached 高 `0.093%`；其它核心指标方向混合，等待 oracle 与 joint 后再作批次结论。三个训练命令均正常写出运行根 `summary.json` 并由 runner 恢复对应 `try_lock`，各自 `after_lock` 保留。

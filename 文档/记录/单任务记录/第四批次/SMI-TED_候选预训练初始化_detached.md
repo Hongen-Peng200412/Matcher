@@ -2,7 +2,7 @@
 
 ## 任务身份与科学对照
 
-- 状态：已于 2026-08-14 启动并持续训练；W&B online 已写出首批参数更新曲线。
+- 状态：已于 2026-08-14 22:37:16（Asia/Shanghai）自然早停；BEST/last epoch 为 `3/5`。
 - 目标任务：用第 2 批 mean/max 六分类预训练 BEST 初始化完整 Matcher 的候选编码器，再训练 detached 身份损失。
 - 直接基线：第 2 批从零 `batch2_smi_ted_v_centroid_detached_a100`，BEST selection score `0.6864829756`。
 - 来源：Job `340894` 的 `batch2_candidate_v_centroid_mean_max_a800`，BEST epoch 1，validation macro-F1 `0.5303632887`。
@@ -42,5 +42,6 @@ exec bash "${TASK_PROJECT_ROOT}/训练与运行/sh/train_experiment.sh" \
 - 启动前必须通过正式 YAML 解析、来源严格初始化、本地机械检查、独立科学审查和严格技术表达审查。
 - 首个已核实快照为 global step 30：总损失 `1.0011232`、六分类损失 `0.1895230`、ligand/binding 区域损失 `0.6826798/0.5773869`、身份损失 `0.6855935`，身份有效数 13。
 - 同一步裁剪前梯度范数 `2.2862473`，data wait `0.0005100 s`，compute `2.5781285 s`，吞吐 `12.4096 candidate/s`，CUDA 峰值 allocated/reserved 为 `28267852800/39996882944 bytes`；全部为有限值。
-- BEST 时间线、完整 validation 和训练命令退出状态仍待自然事件回填；不建立 heartbeat。
-- 最终只用 validation 与直接基线比较 selection score、六分类、身份层次、区域指标、有效监督数和混淆情况；calibration 禁止读取。
+- BEST epoch 3 的 selection score 为 `0.6871224546`；六分类 macro-F1、五类固有 Top-1、精确子类条件 Top-1、宽松五类端到端 F1 和 small_molecule 兼容端到端 F1 依次为 `0.5317979900/0.8547066849/0.8656093489/0.6639600250/0.6396989652`。ligand/binding micro-Dice 为 `0.2603784612/0.0702168392`，身份有效监督数为 `1,466`。
+- 相对第 2 批从零 detached，selection score、macro-F1、五类固有 Top-1、宽松端到端 F1 和 binding Dice 依次变化 `+0.093%/+0.966%/+0.481%/+0.726%/+35.134%`；精确子类条件 Top-1、small_molecule 兼容端到端 F1 和 ligand Dice 变化 `-0.911%/-2.186%/-3.264%`。方向混合，没有多个核心指标约 10% 的共同下降或一致改善，单项结果不足以判定候选预训练初始化明显有益或有害。
+- 训练命令正常写出运行根与阶段 `summary.json`，`stopped_by_patience=true`；Job `340895` 的 allocation 和 `after_lock_340895` 继续保留，runner 已恢复 `try_lock_340895`。calibration 未读取。
