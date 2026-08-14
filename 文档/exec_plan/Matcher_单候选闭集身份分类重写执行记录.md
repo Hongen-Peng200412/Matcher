@@ -1035,3 +1035,5 @@ Git 忽略目录中的 `tmp/batch5_launch/activate_batch5_gate.sh` 经科学正�
 两轮独立审查发现并已修正任意非空 `PreparedLigand.kind`、持久联合键字段隐式转换、扩展路径类型漂移，以及一次性审计器的源真值和跨类别覆盖等边界。第二轮修订后的本地全套为 `162 passed in 152.31s`，mypy 检查 45 个 Python 文件零问题，compileall、pyflakes 和 diff-check 通过；一次性审计器另有 8 项回归通过。科学正确性与严格技术表达两项独立复审均为 PASS，阻断项为零。正式测试包含同模板不同字符串拆槽、同字符串不同模板不合并、显式空值不借用、来源缺失独立状态、语言归档字符串类型与内容不一致、跨划分类别漂移和同数值批次前向隔离。该结果仅证明合成契约与代码接口；真实数据等价尚未执行。
 
 Git 忽略目录 `tmp/joint_identity_v4_audit/` 已准备一次性清单比较工具，只读取显式传入的 v3/v4 train/validation JSONL 与 PreparedLigand 记录。后续先构建独立 `closed_set_v4`，逐 PDB 报告拆槽、固定语言 occurrence、seen 和候选监督变化；再对未受影响 PDB 比较 Dataset 科学张量、固定权重前向和 `loss/metrics/sample_count/identity_eligible_count`。calibration、墙钟与吞吐均不进入该等价判断。两项独立代码复审已通过；真实审计完成前，不创建或触发 v4 零门训练任务。
+
+双线 Git 随后从同一 `Learn/CUMULATIVE` 基点收口。实现分支保留真实实现提交；学习分支按文档契约、schema、清单构造、Dataset 和测试的顺序形成五个线性提交。两端树逐文件相同，学习端点重跑 `162 passed`、mypy、compileall、pyflakes 和 diff-check 后，累计学习分支快进到学习端点。一次性审计器仍位于 Git 忽略目录，不进入两条正式历史。

@@ -4,7 +4,7 @@ Date: 2026-08-15
 
 ## Current State
 
-当前分支为 `codex/matcher-joint-identity-v4`，基点为 `Learn/CUMULATIVE@a25f2e71adb35c0edf6893142dc3311077bfe0ca`。工作树包含联合身份 v4 的正式代码、测试和文档候选，尚未提交；Git 忽略目录中另有一次性 train/validation 清单比较工具 `tmp/joint_identity_v4_audit/audit_manifest_equivalence.py`。
+联合身份 v4 已从共同基点 `Learn/CUMULATIVE@a25f2e71adb35c0edf6893142dc3311077bfe0ca` 完成双线 Git 收口。实现分支 `codex/matcher-joint-identity-v4` 保留真实实现提交；学习分支 `Learn/matcher-joint-identity-v4` 按文档契约、schema、清单构造、Dataset 和测试的顺序重建，两端最终树逐文件相同，`Learn/CUMULATIVE` 已快进到学习端点。Git 忽略目录中另有一次性 train/validation 清单比较工具 `tmp/joint_identity_v4_audit/audit_manifest_equivalence.py`。
 
 第 5 批六项继续冻结 `closed_set_v3` 并占用六张受管 GPU。本 handoff 没有刷新服务器状态；最近留证仍是 2026-08-15 03:28 的六个 Slurm allocation `RUNNING`、六个 W&B run `running`、六个 `after_lock` 保留且无 `pre_lock/kill_lock`。不得为 v4 开发中断、释放或热替换这些任务。
 
@@ -23,6 +23,7 @@ calibration 模型推理和正式指标仍需用户在全部迭代结束后单�
 - 第二轮修订后正式全套为 `162 passed in 152.31s`；mypy 检查 45 个 Python 文件零问题；compileall、pyflakes、diff-check 通过。
 - 一次性清单比较工具另有 8 项回归全部通过，并通过 py_compile 与 pyflakes；它不进入 Git，也不参与正式训练。
 - 第二轮修订快照的科学正确性与严格技术表达两项独立复审均为 PASS，阻断项为零。
+- 实现线与学习线的树摘要完全相同；学习端点另行通过 `162 passed`、mypy、compileall、pyflakes 和 diff-check。
 
 ## Decisions
 
@@ -42,11 +43,10 @@ calibration 模型推理和正式指标仍需用户在全部迭代结束后单�
 
 ## Next Actions
 
-1. 按双线 Git 保存实现历史并重建等价学习历史，只有树等价后才能快进 `Learn/CUMULATIVE`。
-2. 安全同步等价学习树并创建独立 v4 release；只构建 `closed_set_v4` 的 train/validation。
-3. 运行一次性清单审计并回填受影响 PDB、身份、occurrence、候选、seen 和有效监督数量；不读取 calibration。
-4. 根据清单结果补齐 Dataset/固定权重前向/科学评估精确比较。真实门禁通过后，才准备 v4 零门 oracle 配置和单任务记录。
-5. 第 5 批只在完整 validation、BEST 刷新、自然早停或失败等明确事件回填；不建立 heartbeat。
+1. 安全同步等价学习树并创建独立 v4 release；只构建 `closed_set_v4` 的 train/validation。
+2. 运行一次性清单审计并回填受影响 PDB、身份、occurrence、候选、seen 和有效监督数量；不读取 calibration。
+3. 根据清单结果补齐 Dataset、固定权重前向和科学评估精确比较。真实门禁通过后，才准备 v4 零门 oracle 配置和单任务记录。
+4. 第 5 批只在完整 validation、BEST 刷新、自然早停或失败等明确事件回填；不建立 heartbeat。
 
 ## Files To Reopen
 
