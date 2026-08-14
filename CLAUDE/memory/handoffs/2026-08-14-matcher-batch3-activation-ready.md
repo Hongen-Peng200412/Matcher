@@ -8,6 +8,8 @@ Date: 2026-08-14
 
 2026-08-14 10:44:47 的只读状态为：Job `340893/340894/340895/340897/340898/340899` 全部 `RUNNING`，每项 `after_lock=1`，`try_lock/pre_lock/kill_lock=0`。第 1 批 joint 与第 2 批五项继续运行；没有执行第 3 批控制器，没有安装新动态命令，也没有删除任何锁。
 
+当前任务已创建 30 分钟 heartbeat `matcher-1-5`。它复用本 active Goal，只在明确状态事件发生时记录或接续；无变化时不写日志、不重复通知。
+
 calibration 清单或缓存可以作为不参与判断的准备产物；在全部批次结束且用户再次明确确认前，不得运行 calibration 模型推理、读取其指标或用于方案选择。
 
 ## Completed
@@ -20,6 +22,7 @@ calibration 清单或缓存可以作为不参与判断的准备产物；在全�
 - 已安装但尚未触发的命令可以在完整命令逐字节一致时恢复。其它 Job 若仍有半触发命令，A100 不会越过它选择下一项。
 - 生成的动态命令在训练前断言 `TASK_PROJECT_ROOT` 精确等于冻结 release；控制器只删除当前 Job 的 `try_lock`，永不删除 `after_lock`。
 - 两个控制器分别通过科学部署终审与严格 Bash/技术表达终审；`bash -n`、内嵌 Python 编译、编码与换行、哈希、正常安装、冲突、空洞、重复和半触发恢复探针全部通过。
+- heartbeat `matcher-1-5` 已处于 `ACTIVE`，其权限白名单、禁删 `after_lock`、禁读 calibration 推理和固定 release 接续要求均已写入持久提示。
 
 ## Decisions
 

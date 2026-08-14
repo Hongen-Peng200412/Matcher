@@ -854,3 +854,5 @@ bash '/home/penghongen/My_Project/Matcher/训练与运行/runtime/create_release
 最终两份脚本分别通过独立科学部署终审和严格 Bash/技术表达终审。验证覆盖 `bash -n`、UTF-8/LF、内嵌 Python 编译、冻结源码与四份 YAML 的 SHA-256，以及不执行真实脚本的合成正常安装、A100 三种前缀、A800 唯一提交、跨 Job 半触发、空洞、重复和恢复探针；两项结论均为 PASS，阻断项为零。共享文件系统的跨进程 `flock` 语义没有用真实服务器控制锁做破坏性探针，作为运行环境假设保留；W&B 完成证据是 `finish(0)` 返回后才发布的本地运行根摘要，不额外查询远端 API。
 
 2026-08-14 10:44:47 再次只读核验六个受管 Job：全部为 `RUNNING`，每项 `after_lock=1`，`try_lock/pre_lock/kill_lock=0`。因此两个控制器均未执行，没有安装第 3 批命令、删除锁、同步服务器或读取 calibration。修订说明：本节只记录未来自然空闲时可恢复且失败关闭的接续协议，不把第 3 批四项记作已提交。
+
+为落实低频监控而不让当前任务依赖人工轮询，随后创建 30 分钟 heartbeat `matcher-1-5`，目标仍是本 active Goal。其持久提示要求每次先重读目标草案与本批 handoff，只读检查六个白名单 Job；状态无变化时不写日志或重复通知，只有自然出现 `try_lock`、完整 validation、自然收口或失败时才执行相称动作和回填记录。该 heartbeat 不是 Slurm 或训练时间上限，不允许删除 `after_lock`、释放 GPU、触碰用户任务或执行 calibration 模型推理。
