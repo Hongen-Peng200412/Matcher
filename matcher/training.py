@@ -2,7 +2,7 @@
 
 ``evaluate_model`` 汇总一个完整数据划分；``run_training_stage`` 从头执行一个正式阶段。
 下列产物全部写入调用方传入的 ``stage_directory``，不会使用隐式输出位置。
-``resolved.json`` 保存阶段、数据、模型、训练、初始化、数值后端和运行环境的解析后配置。
+``resolved.json`` 保存阶段、数据、模型、训练、初始化来源、数值后端和运行环境的解析后配置。
 ``tracking.json`` 保存 W&B online run 标识、曲线地址和本地同步目录，不保存 API key。
 ``history.jsonl`` 逐 epoch 保存训练统计、完整 validation、选模分数和学习率时序。
 ``BEST.pt`` 保存严格改善 epoch 的模型、优化器、调度器、缩放器和早停状态。
@@ -16,7 +16,6 @@ from __future__ import annotations
 import itertools
 import json
 import math
-import re
 import sys
 import time
 from contextlib import AbstractContextManager
@@ -38,11 +37,14 @@ from .batching import (
 from .candidate_data import CandidateDataset
 from .checkpointing import (
     CHECKPOINT_SCHEMA_VERSION,
-    load_candidate_encoder_checkpoint,
     save_checkpoint,
 )
 from .contracts import CandidateBatch
 from .experiment_config import DataConfig, Precision, StageConfig, TrackingConfig
+from .initialization import (
+    CandidateInitializationRecord,
+    initialize_candidate_encoder_from_pretraining,
+)
 from .json_artifacts import append_jsonl, write_json
 from .losses import (
     LossOutput,
@@ -356,9 +358,15 @@ def _build_stage_runtime(
     data: DataConfig,
     tracking: TrackingConfig,
     stage_directory: Path,
-    plan_directory: Path,
 ) -> _StageRuntime:
-    """一次性构造数据、模型和优化状态，并写出可审计的 resolved.json。"""
+    """一次性构造数据、模型和优化状态，并写出可审计的 ``resolved.json``。
+
+    ``stage`` 定义任务、模型、损失、批量与可选候选预训练 BEST 绝对路径。
+    ``data`` 定义 train/validation 清单、缓存和工作进程配置。
+    ``tracking`` 原样写入解析记录，供随后建立同阶段 W&B online run。
+    ``stage_directory`` 是尚未含 ``resolved.json`` 的新阶段目录。
+    返回值持有两个非持久 DataLoader、已初始化模型、优化器与数值状态，不读取 calibration。
+    """
 
     numeric_backend = configure_random_seeds_and_numeric_backend(stage.training.seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -431,16 +439,17 @@ def _build_stage_runtime(
         model = CandidateEncoder(stage.model)
     else:
         model = ClosedSetMatcher(stage.model)
-    initialization: dict[str, Any] | None = None
+    initialization: CandidateInitializationRecord | None = None
     if stage.initialize_candidate_from is not None:
         checkpoint_path = _resolve_initial_checkpoint(
             stage.initialize_candidate_from,
-            plan_directory,
         )
-        initialization = {
-            "checkpoint": str(checkpoint_path),
-            **load_candidate_encoder_checkpoint(model, checkpoint_path),
-        }
+        initialization = initialize_candidate_encoder_from_pretraining(
+            model,
+            checkpoint_path,
+            stage,
+            data,
+        )
     model.to(device)
     optimizer = AdamW(
         model.parameters(),
@@ -924,21 +933,12 @@ def _autocast_context(precision: Precision) -> AbstractContextManager[None]:
     return torch.autocast("cuda", enabled=False)
 
 
-def _resolve_initial_checkpoint(specification: str, plan_directory: Path) -> Path:
-    """解析绝对路径或 ``stage:<name>:BEST`` 的同计划阶段 checkpoint 引用。"""
+def _resolve_initial_checkpoint(specification: str) -> Path:
+    """解析另一项已完成运行的候选预训练 ``BEST.pt`` 绝对路径。"""
 
-    if specification.startswith("stage:"):
-        parts = specification.split(":")
-        if (
-            len(parts) != 3
-            or parts[2] not in ("BEST", "LAST")
-            or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", parts[1]) is None
-        ):
-            raise ValueError("阶段 checkpoint 引用必须写为 stage:<name>:BEST|LAST。")
-        return plan_directory / parts[1] / f"{parts[2]}.pt"
     path = PurePosixPath(specification)
-    if not path.is_absolute():
-        raise ValueError("外部 checkpoint 必须使用绝对路径。")
+    if not path.is_absolute() or path.name != "BEST.pt":
+        raise ValueError("外部 checkpoint 必须使用以 BEST.pt 结尾的绝对路径。")
     return Path(path.as_posix())
 
 
@@ -1159,7 +1159,6 @@ def run_training_stage(
         data,
         tracking,
         stage_directory,
-        plan_directory,
     )
     tracker = start_wandb_tracking(
         tracking,

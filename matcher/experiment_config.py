@@ -129,7 +129,7 @@ class StageConfig:
     ``identity_scope`` 选择只监督 small_molecule 或全部五类非背景身份；候选预训练必须为 None。
     ``model`` 是已完成跨字段验证的 MatcherModelConfig。
     ``training`` 是本阶段完整 TrainingConfig。
-    ``initialize_candidate_from`` 是绝对 checkpoint 或此前 stage:name:BEST|LAST；None 表示从零。
+    ``initialize_candidate_from`` 是已完成候选预训练 ``BEST.pt`` 的绝对路径；仅 full_matcher 可非 None，candidate_pretrain 必须为 None。
     """
 
     name: str
@@ -150,7 +150,7 @@ class ExperimentPlan:
     ``output_root`` 是运行、阶段和 checkpoint 的根目录，必须位于 Matcher 临时产物根。
     ``data`` 是全部阶段共享的 DataConfig；其中 data.output_root 用于清单、体素与 PP token 缓存。
     ``tracking`` 是每个阶段分别建立 W&B online run 的共享配置。
-    ``stages`` 是非空有序 StageConfig 元组，stage:name 引用只能指向此前阶段。
+    ``stages`` 是非空有序 StageConfig 元组；完整 Matcher 可从外部绝对 ``BEST.pt`` 初始化。
     """
 
     plan_name: str
@@ -397,24 +397,16 @@ def _require_keys(values: dict[str, Any], expected: set[str], name: str) -> None
 
 
 def _validate_stage_initialization(stages: tuple[StageConfig, ...]) -> None:
-    """限制 checkpoint 初始化为绝对路径或此前已声明阶段的 BEST/LAST。"""
+    """只允许完整 Matcher 引用另一项已完成运行的绝对 ``BEST.pt``。"""
 
-    previous_names: set[str] = set()
     for stage in stages:
         specification = stage.initialize_candidate_from
         if specification is not None:
-            if specification.startswith("stage:"):
-                parts = specification.split(":")
-                if (
-                    len(parts) != 3
-                    or _path_component(parts[1], "initialize stage") != parts[1]
-                    or parts[1] not in previous_names
-                    or parts[2] not in ("BEST", "LAST")
-                ):
-                    raise ValueError("阶段初始化必须引用此前 stage:<name>:BEST|LAST。")
-            elif not PurePosixPath(specification).is_absolute():
-                raise ValueError("外部 initialize_candidate_from 必须是绝对路径。")
-        previous_names.add(stage.name)
+            if stage.task_name != "full_matcher":
+                raise ValueError("initialize_candidate_from 只允许用于 full_matcher 阶段。")
+            external_path = PurePosixPath(specification)
+            if not external_path.is_absolute() or external_path.name != "BEST.pt":
+                raise ValueError("initialize_candidate_from 必须是以 BEST.pt 结尾的绝对路径。")
 
 
 # ================================================================================================

@@ -793,10 +793,10 @@ def test_formal_yaml_requires_all_model_feature_switches(
         load_experiment_plan(invalid)
 
 
-def test_experiment_config_rejects_output_escape_and_relative_initialization(
+def test_experiment_config_rejects_output_escape_and_non_best_initialization(
     tmp_path: Path,
 ) -> None:
-    """规范化后越过业务产物根的路径，以及相对 checkpoint，都必须在启动前失败。"""
+    """越界输出、相对或 LAST 来源，以及候选预训练继承参数，都必须在启动前失败。"""
 
     source = (
         Path(__file__).parents[2]
@@ -816,8 +816,29 @@ def test_experiment_config_rejects_output_escape_and_relative_initialization(
     values["stages"][0]["initialize_candidate_from"] = "relative/BEST.pt"
     relative = tmp_path / "relative.yaml"
     relative.write_text(yaml.safe_dump(values, sort_keys=False), encoding="utf-8")
-    with pytest.raises(ValueError, match="必须是绝对路径"):
+    with pytest.raises(ValueError, match="绝对路径"):
         load_experiment_plan(relative)
+
+    values["stages"][0]["initialize_candidate_from"] = (
+        "/storage/penghongen/tmp/Matcher/checkpoints/LAST.pt"
+    )
+    last = tmp_path / "last.yaml"
+    last.write_text(yaml.safe_dump(values, sort_keys=False), encoding="utf-8")
+    with pytest.raises(ValueError, match="BEST.pt"):
+        load_experiment_plan(last)
+
+    candidate_source = (
+        Path(__file__).parents[2]
+        / "configs/experiments/batch3/candidate_enhanced_cross_attention_a800.yaml"
+    )
+    candidate_values = yaml.safe_load(candidate_source.read_text(encoding="utf-8"))
+    candidate_values["stages"][0]["initialize_candidate_from"] = (
+        "/storage/penghongen/tmp/Matcher/checkpoints/BEST.pt"
+    )
+    candidate = tmp_path / "candidate.yaml"
+    candidate.write_text(yaml.safe_dump(candidate_values, sort_keys=False), encoding="utf-8")
+    with pytest.raises(ValueError, match="只允许用于 full_matcher"):
+        load_experiment_plan(candidate)
 
 
 def test_calibration_requires_matching_stage_checkpoint_and_safe_output(tmp_path: Path) -> None:
@@ -1085,24 +1106,21 @@ def test_experiment_config_rejects_seed_outside_numpy_range(tmp_path: Path) -> N
             load_experiment_plan(invalid)
 
 
-def test_initial_checkpoint_resolver_accepts_only_stage_dsl_or_posix_absolute_path() -> None:
-    """运行时解析器只接受同计划阶段引用或服务器 POSIX 绝对路径。"""
+def test_initial_checkpoint_resolver_accepts_only_posix_absolute_best_path() -> None:
+    """运行时解析器只接受 validation 选定的外部 ``BEST.pt`` 绝对路径。"""
 
-    plan_directory = Path("/tmp/matcher-plan")
-    assert _resolve_initial_checkpoint(
-        "stage:candidate_weak:BEST",
-        plan_directory,
-    ) == plan_directory / "candidate_weak" / "BEST.pt"
     external = _resolve_initial_checkpoint(
         "/storage/penghongen/tmp/Matcher/checkpoints/BEST.pt",
-        plan_directory,
     )
     assert external.as_posix() == "/storage/penghongen/tmp/Matcher/checkpoints/BEST.pt"
+    with pytest.raises(ValueError, match="BEST.pt.*绝对路径"):
+        _resolve_initial_checkpoint("checkpoints/BEST.pt")
+    with pytest.raises(ValueError, match="BEST.pt.*绝对路径"):
+        _resolve_initial_checkpoint(
+            "/storage/penghongen/tmp/Matcher/checkpoints/LAST.pt",
+        )
     with pytest.raises(ValueError, match="绝对路径"):
-        _resolve_initial_checkpoint("checkpoints/BEST.pt", plan_directory)
-    for unsafe_reference in ("stage:..:BEST", "stage:.hidden:BEST", "stage:-dash:LAST"):
-        with pytest.raises(ValueError, match="stage:<name>"):
-            _resolve_initial_checkpoint(unsafe_reference, plan_directory)
+        _resolve_initial_checkpoint("stage:candidate_weak:BEST")
 
 
 def test_stage_runtime_uses_spawn_loaders_and_records_process_isolation(
@@ -1146,7 +1164,6 @@ def test_stage_runtime_uses_spawn_loaders_and_records_process_isolation(
         data,
         plan.tracking,
         stage_directory,
-        tmp_path,
     )
 
     for loader, expected_workers in (

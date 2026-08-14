@@ -212,6 +212,97 @@ Matcher 的正式任务只从 `/home/penghongen/My_Project/Matcher` 冻结 relea
 
 `build_manifest.sh` 与 `precompute_data.sh` 的清单参数必须显式提供 `data-root/stage1-root/output-root/coverage-threshold/selection-seed`。`precompute_data.sh` 还必须显式提供 `--products` 和 `--local-crop-strategy`；仅当选择 `pp` 时提供正整数 `--pp-top-k`。`fixed_center` 表示固定 `[16,64)³`，`v_centroid` 表示按完整权威 V 质心解析候选起点。`train_experiment.sh` 只接收 `--plan`，其它科学与训练参数都由 YAML 唯一声明。`evaluate_calibration.sh` 必须显式提供 `--plan/--stage/--checkpoint/--output`。它核对 checkpoint 最佳轮次、阶段完成摘要、模型与训练配置，以及训练时 `data_root/stage1_root/output_root/coverage_threshold/selection_seed/pp_top_k/local_crop_strategy`；数据清单缺失时直接失败，不在保留评估中重建。
 
+### 训练阶段产物与候选预训练初始化
+
+每个阶段目录固定保存 `resolved.json`、`tracking.json`、`history.jsonl`、`BEST.pt`、`LAST.pt` 和阶段 `summary.json`。运行目录另保存开始前的 `run.json`；全部阶段及其 W&B online run 正常收口后才发布运行根 `summary.json`。
+
+`resolved.json` 是严格 JSON 对象，顶层字段如下：
+
+| 字段 | 类型与语义 |
+| --- | --- |
+| `stage` | JSON 对象；保存当前 YAML 阶段的名称、任务、语言家族、身份损失、身份范围、模型、训练和初始化配置。 |
+| `data` | JSON 对象；字段见下表。 |
+| `tracking` | JSON 对象；逐字段保存 `provider/mode/entity/project/group/log_every_global_steps/init_timeout_seconds`。 |
+| `device` | 字符串；实际 CUDA 设备名称。 |
+| `torch_version` | 字符串；实际 PyTorch 版本。 |
+| `frozen_optimizer_semantics` | JSON 对象；逐字段保存 AdamW、ReduceLROnPlateau 与 FP16 GradScaler 的显式参数。 |
+| `numeric_backend` | JSON 对象；逐字段保存 `python_numpy_torch_seed/cudnn_benchmark/cudnn_deterministic/deterministic_algorithms/float32_matmul_precision`。 |
+| `initialization` | JSON 对象或 `null`；从零训练时为 `null`，加载候选预训练 BEST 时见后表。 |
+| `train_candidate_count` | 非负整数；train 清单候选总数。 |
+| `train_candidates_used_per_epoch` | 非负整数；每轮截成完整 global batch 后实际训练的候选数。 |
+| `validation_candidate_count` | 非负整数；validation 清单候选总数。 |
+
+`data` 字段如下：
+
+| 字段 | 类型与语义 |
+| --- | --- |
+| `data_root` | 字符串；AdaLigand 原始数据只读根。 |
+| `stage1_root` | 字符串；Stage1 固化推理产物只读根。 |
+| `output_root` | 字符串；Matcher 清单与缓存可写根。 |
+| `coverage_threshold` | 浮点数；候选与 occurrence 双向覆盖率阈值。 |
+| `selection_seed` | 非负整数；身份 occurrence 的确定性选择种子。 |
+| `pp_top_k` | 正整数；每个候选的 PP token 上限。 |
+| `local_crop_strategy` | 字符串；`fixed_center` 或 `v_centroid`。 |
+| `train_num_workers` | 正整数；一次 train 迭代建立的 DataLoader 工作进程数。 |
+| `validation_num_workers` | 正整数；一次 validation 迭代建立的 DataLoader 工作进程数。 |
+| `prefetch_factor` | 正整数；每个工作进程预取的物理批次数。 |
+| `cache_gib_per_worker` | 正浮点数；单个工作进程五类 LRU 缓存的 GiB 总上限。 |
+| `multiprocessing_context` | 字符串；当前固定为 `spawn`。 |
+| `persistent_workers` | 布尔值；当前固定为 `false`。 |
+| `worker_pool_lifecycle` | 字符串；当前为 `per_complete_loader_iteration`，表示每次完整 train 或 validation 迭代单独建立并回收进程池。 |
+| `train_worker_generator_seed` | 非负整数；train DataLoader 专用生成器种子。 |
+| `validation_worker_generator_seed` | 非负整数；validation DataLoader 专用生成器种子。 |
+| `worker_generator_lifecycle` | 字符串；说明两个 DataLoader 各自持有生成器，建立迭代器不会推进模型的全局 Torch 随机状态。 |
+
+`frozen_optimizer_semantics` 中，`adam_betas/adam_epsilon/adam_amsgrad/adam_maximize/adam_foreach/adam_capturable/adam_differentiable/adam_fused` 冻结 AdamW 行为；`scheduler/scheduler_mode/scheduler_factor/scheduler_patience/scheduler_threshold/scheduler_threshold_mode/scheduler_cooldown/scheduler_minimum_learning_rate/scheduler_epsilon` 冻结验证分数调度行为；`grad_scaler_initial_scale/grad_scaler_growth_factor/grad_scaler_backoff_factor/grad_scaler_growth_interval` 冻结可选 FP16 缩放器行为。数值类型分别沿用名称对应的 JSON 数值、布尔值或字符串，不存在隐藏库默认值。
+
+`stage.initialize_candidate_from` 只接受另一项已完成运行中以 `BEST.pt` 结尾的服务器绝对路径，只允许用于 `full_matcher`。它不接受 `LAST.pt`、相对路径或候选预训练阶段继续继承参数。目标优化器构造前，入口要求来源 `task_name=candidate_pretrain`、checkpoint 最佳轮次自洽、阶段摘要与运行根摘要已经发布、W&B run ID/HTTPS 地址存在，并核对来源训练 YAML、`resolved.json`、checkpoint 与运行记录中的阶段、模型、训练、数据和追踪配置。来源与目标还必须具有相容的候选编码器结构，以及相同的 `data_root/stage1_root/output_root/coverage_threshold/selection_seed/pp_top_k/local_crop_strategy`。工作进程数、预取量和单工作进程缓存只影响 I/O，不参与来源—目标科学配置比较，但来源 YAML 与来源 `resolved.json` 仍须自洽。
+
+训练主线不读取 `launch.json`、`run_cmd.sh` 或 release manifest，也不计算文件 SHA-256。选定第 4 批来源 BEST 后，提交者使用 `tmp/batch4_source_audit/audit_candidate_pretrain_source.py` 记录发布路径、release manifest 声明的内容摘要和关键文件当时的字节摘要，并把报告写入 Matcher diagnostics 和批次记录。该一次性脚本不独立重算或证明整棵 release 目录的内容摘要，也不进入训练包、模型输入、损失、选模或 `resolved.json`。
+
+非 `null` 的 `initialization` 字段如下：
+
+| 字段 | 类型与语义 |
+| --- | --- |
+| `checkpoint_path` | 字符串；已解析的来源 `BEST.pt` 绝对路径。 |
+| `source_plan_name` | 字符串；来源候选预训练运行的计划名称。 |
+| `source_stage_name` | 字符串；来源候选预训练阶段名称。 |
+| `source_run_stamp` | 字符串；来源运行目录名称。 |
+| `source_slurm_job_id` | 字符串；来源运行记录中的 Slurm Job ID。 |
+| `source_epoch` | 非负整数；来源 BEST 的零起始 validation 最佳轮次。 |
+| `source_global_step` | 非负整数；来源 BEST 保存时累计完成的参数更新数。 |
+| `source_best_score` | 有限浮点数；来源候选预训练的 validation `evaluation.metrics.six_class.macro_f1`；该兼容字段等于只平均真实支持数大于 0 类别的 `macro_f1_supported_classes`。 |
+| `source_tracking_run_id` | 非空字符串；来源 W&B online run ID。 |
+| `source_tracking_url` | HTTPS 字符串；来源 W&B online 曲线地址。 |
+| `source_candidate_model_config` | JSON 对象；含 `aggregation/use_manual_features/use_sampling_features/use_candidate_token_attention_bias/model_dim/attention_heads/dropout/voxel_feature_channels/raunet_planes/recycle_iterations/gradient_checkpointing/bottleneck_attention_layers`，不含只影响身份分支的 `graph_layers`。 |
+| `source_scientific_data` | JSON 对象；含来源与目标逐字段相等的 `data_root/stage1_root/output_root/coverage_threshold/selection_seed/pp_top_k/local_crop_strategy`。 |
+| `resolved_path` | 字符串；来源阶段 `resolved.json` 的绝对路径。 |
+| `stage_summary_path` | 字符串；来源阶段 `summary.json` 的绝对路径。 |
+| `run_record_path` | 字符串；来源运行 `run.json` 的绝对路径。 |
+| `run_summary_path` | 字符串；来源全部阶段及 W&B 收口后发布的根 `summary.json` 绝对路径。 |
+| `training_plan_path` | 字符串；来源运行记录中的训练 YAML 绝对路径。 |
+| `missing_keys` | 字符串数组；严格加载候选编码器后缺失的参数名，成功时为空。 |
+| `unexpected_keys` | 字符串数组；严格加载候选编码器后多出的参数名，成功时为空。 |
+
+`source_candidate_model_config` 的字段如下；元组写入 JSON 后使用数组表示。
+
+| 字段 | JSON 类型与语义 |
+| --- | --- |
+| `aggregation` | 字符串；`mean_max` 或 `candidate_cross_attention`。 |
+| `use_manual_features` | 布尔值；是否使用 12 维候选统计及身份类别概率特征。 |
+| `use_sampling_features` | 布尔值；是否使用 4 维候选裁剪统计。 |
+| `use_candidate_token_attention_bias` | 布尔值；是否启用四模态实体注意力偏置。 |
+| `model_dim` | 正整数；候选表示宽度。 |
+| `attention_heads` | 正整数；注意力头数，且必须整除 `model_dim`。 |
+| `dropout` | 浮点数；位于 `[0,1)` 的无量纲丢弃概率。 |
+| `voxel_feature_channels` | 正整数；RAUNet 输出通道数。 |
+| `raunet_planes` | 九个正整数组成的 JSON 数组；顺序为 `enc0/enc1/enc2/enc3/bottleneck/dec3/dec2/dec1/dec0`。 |
+| `recycle_iterations` | 正整数；RAUNet 回收轮数。 |
+| `gradient_checkpointing` | 布尔值；训练时是否以重计算节省显存。 |
+| `bottleneck_attention_layers` | 正整数；RAUNet 瓶颈注意力层数。 |
+
+来源模型配置缺少 `use_manual_features/use_sampling_features/use_candidate_token_attention_bias` 时，对应开关在历史产物恢复入口迁移为 `false`；来源数据配置缺少 `local_crop_strategy` 时迁移为 `fixed_center`；来源候选阶段缺少 `identity_scope` 时迁移为 `null`。正式 YAML 解析仍要求这些字段显式存在。该过程只构造 train/validation Dataset 并读取训练产物，不读取 calibration 候选、特征或指标。
+
 ### 版本化监督清单字段
 
 清单位于 `data.output_root/manifests/closed_set_v<schema>/`。`manifest.json` 的顶层字段如下：

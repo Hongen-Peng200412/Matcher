@@ -864,3 +864,38 @@ bash '/home/penghongen/My_Project/Matcher/训练与运行/runtime/create_release
 第 5 批证据审计直接读取现有 W&B 训练历史，不启动新 run。`tmp/batch5_gradient_audit.py` 的 SHA-256 为 `70b1c3e4b85586d11f24df3cbf3391188beca1d97b05a32d48e0043ea094ff4b`；六项分别得到 1,575–5,369 个 `gradient/train_step/preclip_norm`，其中 `97.52%–99.93%` 严格大于阈值 `1.0`，P50 为 `2.44–6.56`，P95 为 `5.72–16.31`。裁剪几乎每步生效已经确认，但当前结果没有证明其有害；后续最多从完整 Matcher 分布选一个替代阈值。
 
 `tmp/batch5_branch_audit.py` 的 SHA-256 为 `39fc36660b1e3b2ab4031f9209aba63f7c856a0b6bf3e6d1f3cdb60ddaba040a`。四个完整 Matcher 最新 graph/inventory 门值为 `0.0166–0.0332/0.0136–0.0225`，裁剪后分支梯度 P50 为 graph `0.00203–0.00757`、inventory `0.000928–0.00204`。这证明严格零门没有锁死分支；但缺少门控后分数增量相对语言表示基线身份分数的贡献比例，所以第 5 批先补贡献诊断，非零门值优先考虑真实学习量级附近的 `0.02`，不把 `0.1` 当作无条件默认。详细表格与只读命令写入 `文档/记录/批次记录/第5批次/第5批证据驱动优化.md`；没有提交第 5 批任务。
+
+### 第 4 批候选预训练 BEST 初始化
+
+第 4 批的具体实验组合仍必须等待第 1–3 批 validation 全部自然收口。为避免资源空闲后才临时拼接 checkpoint，本轮先实现不绑定具体任务的初始化科学契约；没有创建第 4 批 YAML，没有同步服务器、发布 release、提交 GPU 或运行 calibration。
+
+`matcher/initialization.py` 要求来源为绝对路径 `BEST.pt`，并在语义层交叉核对 checkpoint、阶段 `resolved.json`、阶段 `summary.json`、运行 `run.json`、运行根 `summary.json` 和训练 YAML。校验覆盖来源任务类型、epoch/best_epoch、global step、selection score、W&B online 收口、科学数据字段和候选编码器结构；完整 Matcher 独有的图网络层数以及 worker/prefetch/cache 等性能字段不作为来源—目标候选编码器兼容条件。来源 YAML 与 resolved 都必须显式证明 `initialize_candidate_from=null`。参数名、形状与 dtype 全部核对通过后，只对目标 `model.candidate_encoder` 执行严格 state-dict 加载；该步骤发生在模型迁移到设备和 optimizer 构造之前。
+
+最初审查建议把来源 `launch.json`、`run_cmd.sh`、release manifest、训练文件 SHA-256 和同字节解析/摘要写入正式初始化记录。用户随后明确引用 `python-writing-style-cn` 裁定：这些属于一次性运维取证，不得进入训练包或主线。本轮因此删除新建的正式摘要模块和训练清单指纹链；`resolved.json.initialization` 只保留来源语义字段与加载结果。选定实际来源 BEST 后，才运行 `tmp/batch4_source_audit/audit_candidate_pretrain_source.py`，把 checkpoint、训练记录、launch、release 和训练 YAML 的路径关系及 SHA-256 报告写入 `/storage/penghongen/tmp/Matcher/diagnostics/`，并在单任务与批次记录中留证。临时脚本不被正式包导入，不读取 calibration，也不参与模型、损失或选模。
+
+历史产物恢复只按字段缺失触发：三个模型特征开关缺失时迁移为 `false`，`local_crop_strategy` 缺失时迁移为 `fixed_center`，候选阶段 `identity_scope` 缺失时迁移为 `null`。正式 YAML 解析仍要求全部字段显式存在。测试使用候选子模块和非候选哨兵，证明成功路径只改变候选编码器且不推进 Torch 随机状态；失败路径在参数变更前拒绝非 BEST、数据/结构错配、未完成运行、训练 YAML 漂移、非从零来源和不兼容 state-dict。
+
+职责收缩后的初始化与配置专项为 `34 passed`。最终候选通过 pytest `103 passed`、mypy 40 个正式源码文件零问题、pyflakes、compileall、19 份正式 YAML 解析、8 个 shell 的 `bash -n`、临时运维脚本编译和 `git diff --check`；科学正确性与严格技术表达两项独立复审正在以该快照为准重新执行。结论出来前不提交、同步或发布这一实现。
+
+### 第 3 批实际接续与第 4 批初始化收口
+
+2026-08-14 15:17:17–15:23:21，四个第 3 批非重复任务按 oracle→detached→joint→增强六分类的既定顺序全部接续。完整身份如下：
+
+| 任务 | Job | launch | W&B run ID | 冻结 release |
+| --- | --- | --- | --- | --- |
+| SMI-TED 增强注意力 oracle | `340893` | `train_experiment_job340893_20260814T151725_a3` | `4iqynr6i` | `Matcher_d15132948a18` |
+| SMI-TED 增强注意力 detached | `340898` | `train_experiment_job340898_20260814T151821_a3` | `b3vua4zk` | `Matcher_d15132948a18` |
+| SMI-TED 增强注意力 joint | `340899` | `train_experiment_job340899_20260814T151852_a3` | `z41ltqiv` | `Matcher_d15132948a18` |
+| 六分类增强候选条件注意力 | `340894` | `train_experiment_job340894_20260814T152229_a8` | `7k0bcaek` | `Matcher_d15132948a18` |
+
+A100 与 A800 的第一次控制尝试分别因为前序旧 YAML 缺少后续版本新增的 `local_crop_strategy` 与 `use_candidate_token_attention_bias` 而失败关闭；两次失败都发生在替换动态命令和删除 `try_lock` 之前。实际成功触发时只为前序旧 YAML 使用轻量定位读取，当前第 3 批目标 YAML 仍由正式解析器严格校验。实际执行版本摘要为 A100 `0f2713e2207e1948d96efd0133914b2ad6a035a09d2fe58b999a131b3b4df04d`、A800 `43b654aceb0d38e0b38388017d4fa270d1e509f13543281325ac1cb0caeb0d64`；触发后本地继续加固安全单级名称与固定实验根规范化，但没有热替换已经启动的 release。四个 Job 的 `after_lock` 全部保留，未创建或触碰 `kill_lock`，未读取 calibration。
+
+自动化 `matcher-1-5` 曾按 30 分钟规则创建，但随后被暂停。2026-08-14 本地持久配置明确为 `status = "PAUSED"`；当前没有活动 heartbeat，后续只在首步、完整 validation、自然收口或失败等明确事件发生时人工检查。
+
+第 4 批初始化随后按用户裁定继续收缩职责：正式包只保存来源运行的语义自洽、候选结构和严格加载，不保存文件哈希或 launch/release 字节证据。一次性取证只留在 `tmp/batch4_source_audit/audit_candidate_pretrain_source.py`，报告只能写入 Matcher diagnostics；脚本不被正式包导入，也不参与训练或选模。正式初始化要求来源 YAML 与 `resolved.json` 显式保存候选任务的 `language_family=null`、`identity_variant=null` 和 `initialize_candidate_from=null`；来源 BEST/LAST、训练 YAML 与阶段/运行摘要必须是语义自洽的绝对路径。共享 checkpoint loader 还在目标参数变化前拒绝非字符串参数名或非张量参数值。
+
+第四批单任务记录入口已建立在 `文档/记录/单任务记录/第四批次/README.md`。当前明确记录 0 项任务已决定、0 项已提交；后续每项任务必须在触发 GPU 前单独保存科学变量、YAML、实现提交、release、一次性来源审计、Slurm、W&B、首步、validation 和对照结论。
+
+用户另行要求整理 `matcher/` 的目录布局。该工作不与第 4 批初始化混入同一提交：初始化基础先完成独立门禁和提交；随后在 `talk/refactor/` 建立全部正式文件的职责、调用者、生命周期、测试与目标位置清单，再以行为等价为唯一边界移动数据、加载、训练和评估模块。该结构整理不改变活动 Goal；第 1–5 批实验和六卡优先级仍是主线。
+
+当前第 4 批冻结候选的初始化与配置定向测试为 `49 passed`，全套 pytest 为 `118 passed in 229.43s`。mypy 检查 40 个正式源码文件零问题；pyflakes、compileall、19 份正式 YAML 解析、8 个 shell 的 `bash -n`、临时审计脚本编译和 `git diff --check` 全部通过。科学正确性与严格技术表达两项独立复审均为 PASS，阻断项为零。

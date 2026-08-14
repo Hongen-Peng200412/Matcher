@@ -7,6 +7,14 @@
 - W&B：project `AdaLigand-Matcher-Batch3`，group `matcher-batch3-full-enhanced-cross-attention`。
 - 个性化变量：身份系数恒为 1；A/P/V/PP 各自使用零初始化实体偏置 MLP。
 - 实现端点：`495e7de54dca88ab3464fe0a667dcce5a540ef72`；预冻结 release：`/home/penghongen/Feedback/Matcher/releases/Matcher_d15132948a18/Matcher`，内容摘要 `d15132948a1885bae9a2019ac55175503c5c15459f043145147fe4a6d3598f89`。
-- 状态：代码、配置、机械检查、两项独立复审、提交、安全同步、远端哈希与配置门禁均已通过；第 2 批五项也已全部提交。当前等待一张受管 A100 自然空闲，没有本任务的 Slurm Job、launch 或 W&B run，不虚构提交命令与结果。
+- 状态：已于 2026-08-14 15:17:17 启动，W&B online 运行已建立；首个 global batch 与 validation 尚待运行产物确认。
 
-实际提交时必须在本文件追加完整 `submit_task.sh` 命令、动态运行命令、release、Slurm Job、W&B run ID/URL、首步验收、validation 结果和分析。
+## 实际提交
+
+- 控制端命令：`& "$env:USERPROFILE\.codex\tools\Invoke-ProjectSsh.ps1" -Command "bash -s -- '340893'" -InputFile 'C:\Users\15919\Desktop\Matcher\tmp\batch3_launch\activate_next_a100.sh'`。
+- 动态训练命令：`exec bash "${TASK_PROJECT_ROOT}/训练与运行/sh/train_experiment.sh" --plan configs/experiments/batch3/full_smi_ted_enhanced_cross_attention_oracle_a100.yaml`。
+- release：`/home/penghongen/Feedback/Matcher/releases/Matcher_d15132948a18/Matcher`。
+- Slurm 与 launch：Job `340893`；`train_experiment_job340893_20260814T151725_a3`。
+- W&B：run ID `4iqynr6i`；project/group 采用本文件上方冻结值。
+- 锁：只删除 `try_lock_340893`；`after_lock_340893` 保留，未创建或修改 `kill_lock`。
+- 待回填：首个 global batch 32 更新、validation 指标、与第 2 批 oracle 的头对头分析和最终运行状态。
