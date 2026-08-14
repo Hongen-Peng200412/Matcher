@@ -2,7 +2,7 @@
 
 本目录定义五个只使用 train/validation 的正式实验。三个完整 Matcher 固定使用 SMI-TED Light 289M、mean/max 聚合和五类非背景身份监督，只比较 `oracle/detached/joint`；两个候选预训练分别使用 mean/max 和未增强的候选条件交叉注意力。五项均从零开始，不读取第 1 批或第 0 批 checkpoint。
 
-五份配置均显式设置 `use_candidate_token_attention_bias=false`。未增强候选条件交叉注意力只使用 query/key 内容分数；第 3 批才把实体相对坐标与 Stage1 概率转换成额外注意力分数。
+五份配置均显式设置 `use_candidate_token_attention_bias=false`。未增强候选条件交叉注意力只使用 query/key 内容分数；第 3 批才把实体相对坐标与 Stage1 概率转换成额外注意力分数。两个候选预训练和三个完整 Matcher 也都显式设置 `initial_graph_gate=0.0`、`initial_inventory_gate=0.0`；候选任务不构造身份分支，完整任务保持原有零增量初始化。
 
 ## 候选级 48³ 视野
 
