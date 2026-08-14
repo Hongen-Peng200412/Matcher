@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import pytest
 import torch
@@ -163,6 +163,24 @@ def test_closed_set_matcher_forward_and_loss_are_finite(tmp_path) -> None:
     assert loss["identity_eligible_count"].item() == 1
     loss["total"].backward()
     assert any(parameter.grad is not None for parameter in model.parameters())
+
+
+def test_joint_identity_strings_do_not_change_model_forward(tmp_path) -> None:
+    """联合身份字符串只解释身份轴；同一数值批次的正式前向必须逐张量相等。"""
+
+    batch = _batch(tmp_path, "full_matcher")
+    altered = cast(CandidateBatch, dict(batch))
+    altered["identity_prepared_smiles"] = [["different-public-input"]]
+    altered_metadata = [dict(item) for item in batch["metadata"]]
+    altered_metadata[0]["matched_prepared_smiles"] = "different-public-input"
+    altered["metadata"] = cast(Any, altered_metadata)
+    model = ClosedSetMatcher(_small_config()).eval()
+    with torch.inference_mode():
+        expected = model(batch)
+        actual = model(altered)
+    assert expected.keys() == actual.keys()
+    for name in expected:
+        assert torch.equal(expected[name], actual[name]), name
 
 
 def test_validation_identity_score_components_reuse_forward_without_syncing_checks(

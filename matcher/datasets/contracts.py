@@ -8,15 +8,27 @@ import numpy as np
 import torch
 
 from ..data.ligand_graph import LigandGraph
+from ..data.schema import PreparedSmilesStatus
 
 
 class CandidateMetadata(TypedDict):
-    """标识一个冻结划分中的 Stage1 F1 候选及其匹配身份。"""
+    """标识一个冻结划分中的 Stage1 F1 候选及其匹配身份。
+
+    ``split`` 是候选所属划分。
+    ``pdb_id`` 是小写 PDB 标识。
+    ``candidate_index`` 是当前 PDB 内从零开始的 Stage1 F1 候选编号。
+    ``matched_object_key`` 是命中 occurrence 的 LigandObject 模板键；背景未命中时为 None。
+    ``matched_prepared_smiles`` 是命中 occurrence 的顶层 PreparedLigand.smiles；只有 ``available`` 状态为非空字符串，其余状态为 None。
+    ``matched_prepared_smiles_status`` 是 ``available/explicit_null/missing_file/not_applicable``；依次表示非空字符串、源记录明确为 null、整个 PreparedLigand 文件缺失和背景不适用。
+    ``identity_seen_in_train`` 表示当前语言家族的联合身份是否曾是 train 正目标；不适用时为 None。
+    """
 
     split: str
     pdb_id: str
     candidate_index: int
     matched_object_key: str | None
+    matched_prepared_smiles: str | None
+    matched_prepared_smiles_status: PreparedSmilesStatus
     identity_seen_in_train: bool | None
 
 
@@ -41,11 +53,12 @@ class CandidateItem(TypedDict):
     ``candidate_manual_features`` 是 float32 ``(12,)``，顺序为 A/P/V/PP 各自的 ``token_count/probability_mean/probability_max``。
     ``candidate_manual_features`` 的计数单位为 token 个数，概率是无量纲 Stage1 固化原值，空模态三项均为零。
     ``candidate_sampling_features`` 是 float32 ``(4,)``，顺序为边界限制标志、L2 voxel 距离、L∞ voxel 距离和 ``[0,1]`` V 保留比例。
-    ``identity_object_keys`` 是长度 ``I`` 的身份键列表。
+    ``identity_object_keys`` 是长度 ``I`` 的 LigandObject 模板键列表。
+    ``identity_prepared_smiles`` 是长度 ``I`` 的非空顶层 PreparedLigand.smiles 字符串列表，并与模板键共同定义身份。
     ``identity_class_index`` 是 int64 ``(I,)``，与身份轴对齐且有效值属于六分类下标 ``[1,5]``。
     ``language_embeddings`` 是 float32 ``(I,768)`` 身份语言表示。
     ``ligand_graphs`` 是长度 ``I`` 的配体图列表。
-    ``identity_target`` 是当前候选真实身份在身份轴上的整数下标；``-1`` 表示当前语言模型下没有可监督目标。
+    ``identity_target`` 是当前候选真实身份在身份轴上的整数下标；非负值同时匹配 metadata 的模板键、顶层字符串和 ``class_target``，``-1`` 表示当前语言模型下没有可监督目标。
     """
 
     metadata: CandidateMetadata
@@ -63,6 +76,7 @@ class CandidateItem(TypedDict):
     candidate_manual_features: np.ndarray
     candidate_sampling_features: np.ndarray
     identity_object_keys: list[str]
+    identity_prepared_smiles: list[str]
     identity_class_index: np.ndarray
     language_embeddings: np.ndarray
     ligand_graphs: list[LigandGraph]
@@ -97,8 +111,9 @@ class CandidateBatch(TypedDict):
     ``language_embeddings`` 是 float32 ``(B,I,768)`` 身份语言表示。
     ``identity_mask`` 是 bool ``(B,I)`` 身份有效掩码。
     ``identity_class_index`` 是 int64 ``(B,I)``，有效槽属于六分类下标 ``[1,5]``，补零槽为 ``-1``。
-    ``identity_target`` 是 int64 ``(B,)``；``-1`` 表示没有可监督目标，否则指向类别等于 ``class_target`` 的有效身份槽。
-    ``identity_object_keys`` 是 ``B`` 个长度 ``I_b`` 的身份键列表。
+    ``identity_target`` 是 int64 ``(B,)``；``-1`` 表示没有可监督目标，否则指向类别等于 ``class_target`` 且联合键匹配同一样本 metadata 的有效身份槽。
+    ``identity_object_keys`` 是 ``B`` 个长度 ``I_b`` 的 LigandObject 模板键列表。
+    ``identity_prepared_smiles`` 是 ``B`` 个长度 ``I_b`` 的非空顶层 PreparedLigand.smiles 字符串列表，并与模板键逐槽对齐。
     ``graph_to_sample`` 是 int64 ``(G,)``，把每张图映射到样本下标。
     ``graph_to_identity`` 是 int64 ``(G,)``，把每张图映射到对应样本的身份下标。
     ``graph_element`` 是 int64 ``(N,)`` 节点元素编号。
@@ -134,6 +149,7 @@ class CandidateBatch(TypedDict):
     identity_class_index: torch.Tensor
     identity_target: torch.Tensor
     identity_object_keys: list[list[str]]
+    identity_prepared_smiles: list[list[str]]
     graph_to_sample: torch.Tensor
     graph_to_identity: torch.Tensor
     graph_element: torch.Tensor

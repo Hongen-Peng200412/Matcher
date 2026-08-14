@@ -2,11 +2,13 @@
 
 ``manifest.json`` 固定源目录、覆盖阈值、语言表示选择种子、六分类顺序、三个
 划分的文件名和摘要。每个 ``<split>_candidates.jsonl`` 对应一个 Stage1 候选，
-记录完整组件覆盖率标签、匹配 occurrence、object_key 和语言监督可用性；每个
-``<split>_identities.jsonl`` 对应一个 ``(pdb_id,class_name,object_key)`` 前景身份，记录
-配体图与两种冻结语言表示的选择证据。``excluded_pdb.jsonl`` 单独记录整 PDB
+记录完整组件覆盖率标签、匹配 occurrence、object_key、顶层 ``PreparedLigand.smiles``
+和语言监督可用性；每个 ``<split>_identities.jsonl`` 对应一个 PDB 内
+``(object_key, PreparedLigand.smiles)`` 前景身份，记录类别、配体图与两种冻结语言
+表示的选择证据。``excluded_pdb.jsonl`` 单独记录整 PDB
 排除原因，任何排除项都不进入训练或指标分母。所有文件位于
-``<output_root>/manifests/closed_set_v<schema>/``，由覆盖阈值与选择种子共同决定身份。
+``<output_root>/manifests/closed_set_v<schema>/``。覆盖阈值决定候选是否命中 occurrence，
+联合键定义身份槽，选择种子只决定同一身份采用哪个有效 occurrence 语言表示。
 训练入口只请求 train/validation；calibration 准备必须由单独命令显式物化，评估入口不会补建。
 ``ensure_manifest`` 供训练构建或复用清单；``require_manifest`` 供只读保留评估要求既有清单。
 """
@@ -30,6 +32,7 @@ from .schema import (
     CLASS_NAMES,
     CLASS_TO_INDEX,
     FOREGROUND_CLASS_NAMES,
+    IDENTITY_KEY_FIELDS,
     LANGUAGE_EMBEDDING_DIM,
     LANGUAGE_FAMILIES,
     LANGUAGE_MODEL_NAMES,
@@ -157,6 +160,7 @@ def build_manifest(
             "excluded": len(pdb_directories) - included_pdb,
         }
 
+    _validate_joint_identity_classes(split_identities)
     _annotate_seen(split_candidates, split_identities)
     return _publish_manifest(
         roots=roots,
@@ -218,6 +222,7 @@ def _extend_manifest(
             "included": included_pdb,
             "excluded": len(pdb_directories) - included_pdb,
         }
+    _validate_joint_identity_classes(split_identities)
     _annotate_seen(split_candidates, split_identities)
     return _publish_manifest(
         roots=roots,
@@ -235,37 +240,82 @@ def _annotate_seen(
     split_candidates: dict[str, list[dict[str, Any]]],
     split_identities: dict[str, list[dict[str, Any]]],
 ) -> None:
-    """按语言模型与 ``(class_name,object_key)`` 标记 train 可监督正身份。"""
+    """按语言模型与联合模板—语言身份标记 train 可监督正身份。"""
 
     train_positive_keys = {
         family: {
-            (candidate["class_name"], candidate["matched_object_key"])
+            (candidate["matched_object_key"], candidate["matched_prepared_smiles"])
             for candidate in split_candidates["train"]
             if candidate["class_name"] in FOREGROUND_CLASS_NAMES
             and candidate["matched_object_key"] is not None
+            and candidate["matched_prepared_smiles"] is not None
             and candidate["language_target_available"][family]
         }
         for family in LANGUAGE_FAMILIES
     }
     for split_name in split_candidates:
         for identity in split_identities[split_name]:
-            identity_key = (identity["class_name"], identity["object_key"])
+            identity_key = (identity["object_key"], identity["prepared_smiles"])
             identity["seen_in_train_by_language"] = {
                 family: identity_key in train_positive_keys[family]
                 for family in LANGUAGE_FAMILIES
             }
         for candidate in split_candidates[split_name]:
             object_key = candidate["matched_object_key"]
-            identity_key = (candidate["class_name"], object_key)
+            prepared_smiles = candidate["matched_prepared_smiles"]
+            identity_key = (object_key, prepared_smiles)
             candidate["identity_seen_in_train_by_language"] = {
                 family: (
                     identity_key in train_positive_keys[family]
                     if object_key is not None
+                    and prepared_smiles is not None
                     and candidate["class_name"] in FOREGROUND_CLASS_NAMES
                     else None
                 )
                 for family in LANGUAGE_FAMILIES
             }
+
+
+def _validate_joint_identity_classes(
+    split_identities: dict[str, list[dict[str, Any]]],
+) -> None:
+    """要求已物化划分中的同一联合身份始终映射到一个六分类类别。
+
+    ``split_identities`` 包含本次准备发布的全部划分身份记录。函数跨 PDB、跨划分
+    聚合 ``(object_key,prepared_smiles)``；同一键出现多个 ``(class_name,class_index)``
+    时在写任何正式清单前失败，否则不修改输入且不返回值。
+    """
+
+    classes_by_identity: dict[tuple[str, str], set[tuple[str, int]]] = defaultdict(set)
+    locations_by_identity: dict[tuple[str, str], list[str]] = defaultdict(list)
+    for split_name, identities in split_identities.items():
+        for record_index, identity in enumerate(identities):
+            prefix = f"{split_name}_identities.jsonl[{record_index}]"
+            object_key = identity.get("object_key")
+            prepared_smiles = identity.get("prepared_smiles")
+            class_name = identity.get("class_name")
+            class_index = identity.get("class_index")
+            if type(object_key) is not str or not object_key:
+                raise ValueError(f"{prefix}.object_key 必须是非空字符串。")
+            if type(prepared_smiles) is not str or not prepared_smiles.strip():
+                raise ValueError(f"{prefix}.prepared_smiles 必须是非空字符串。")
+            if class_name not in FOREGROUND_CLASS_NAMES:
+                raise ValueError(f"{prefix}.class_name 必须属于五类非背景类别。")
+            if type(class_index) is not int or class_index != CLASS_TO_INDEX[class_name]:
+                raise ValueError(f"{prefix}.class_index 与 class_name 不一致。")
+            key = (object_key, prepared_smiles)
+            classes_by_identity[key].add((class_name, class_index))
+            locations_by_identity[key].append(f"{split_name}/{identity['pdb_id']}")
+    conflicts = {
+        key: {
+            "classes": sorted(classes),
+            "locations": sorted(locations_by_identity[key]),
+        }
+        for key, classes in classes_by_identity.items()
+        if len(classes) > 1
+    }
+    if conflicts:
+        raise ValueError(f"联合身份跨 PDB 或划分类别不一致：{conflicts}")
 
 
 def _publish_manifest(
@@ -299,13 +349,22 @@ def _publish_manifest(
         "output_root": str(roots.output_root),
         "coverage_threshold": coverage_threshold,
         "selection_seed": selection_seed,
+        "identity_key_fields": list(IDENTITY_KEY_FIELDS),
+        "prepared_smiles_rule": (
+            "prepared_smiles 逐字采用 PreparedLigand 顶层 smiles；显式 null 不建立身份；"
+            "PreparedLigand 文件缺失单独标记，已有文件不完整时失败。"
+        ),
+        "identity_class_rule": (
+            "同一 (object_key, prepared_smiles) 在全部已物化划分中只能映射到一个类别。"
+        ),
         "language_selection_rule": (
-            "对每个 (pdb_id, object_key, language_family) 的有效 occurrence 编号排序；"
-            "用固定字节加权和与 selection_seed 决定循环起点，选择该位置的 occurrence。"
+            "对每个 (pdb_id, object_key, prepared_smiles, language_family) 的有效 occurrence "
+            "编号排序；沿用 v3 的 (pdb_id, object_key, language_family) 固定字节加权和与 "
+            "selection_seed 决定循环起点，选择该位置的 occurrence。"
         ),
         "seen_identity_rule": (
-            "按语言模型和 (class_name, object_key) 分别判断；只有该身份在 train 候选中"
-            "作为可监督前景正目标出现过，才标记为 seen。"
+            "按语言模型和 (object_key, prepared_smiles) 分别判断；只有该身份在 train "
+            "候选中作为可监督前景正目标出现过，才标记为 seen。"
         ),
         "class_names": list(CLASS_NAMES),
         "available_splits": [name for name in SPLIT_NAMES if name in files],
@@ -334,6 +393,22 @@ def load_jsonl(path: Path) -> list[dict[str, Any]]:
                 raise ValueError(f"{path}:{line_number} 必须是 JSON 对象。")
             records.append(value)
     return records
+
+
+def read_npz_string_scalar(value: Any, field_name: str) -> str:
+    """读取 NPZ 中的非空 Unicode 标量，拒绝数值、bytes 和非标量数组。
+
+    ``value`` 是 ``numpy.load`` 返回的单字段数组；``field_name`` 是错误上下文。
+    返回原始 Python 字符串，不执行 strip、规范化或其它隐式类型转换。
+    """
+
+    array = np.asarray(value)
+    if array.shape != () or array.dtype.kind != "U":
+        raise ValueError(f"{field_name} 必须是非空 Unicode 标量字符串。")
+    result = array.item()
+    if type(result) is not str or not result:
+        raise ValueError(f"{field_name} 必须是非空 Unicode 标量字符串。")
+    return result
 
 
 def _allowed_exclusion(
@@ -384,16 +459,24 @@ def _scan_pdb(
     """扫描一个完整 PDB 的候选标签和五类非背景身份表示。"""
 
     occurrence_records = _read_occurrences(roots.data_root, pdb_id)
+    prepared_smiles_by_candidate, prepared_smiles_file_available = (
+        _read_prepared_smiles_by_candidate(
+            roots,
+            pdb_id,
+            occurrence_records,
+        )
+    )
     occurrence_masks = _read_occurrence_masks(roots.data_root, pdb_id, occurrence_records)
     identities = _build_identity_records(
         roots,
         split_name,
         pdb_id,
         occurrence_records,
+        prepared_smiles_by_candidate,
         selection_seed,
     )
     identity_by_key = {
-        (identity["class_name"], identity["object_key"]): identity
+        (identity["object_key"], identity["prepared_smiles"]): identity
         for identity in identities
     }
 
@@ -411,7 +494,29 @@ def _scan_pdb(
             box_start = np.asarray(centered["box_start_zyx"][candidate_index], dtype=np.int64)
             global_voxels = local_voxels + box_start[None, :]
             target = assign_candidate_target(global_voxels, occurrence_masks, coverage_threshold)
-            identity = identity_by_key.get((target.class_name, target.matched_object_key))
+            matched_prepared_smiles: str | None = None
+            if (
+                target.class_name not in FOREGROUND_CLASS_NAMES
+                or target.matched_candidate_id is None
+            ):
+                matched_prepared_smiles_status = "not_applicable"
+            elif not prepared_smiles_file_available:
+                matched_prepared_smiles_status = "missing_file"
+            else:
+                matched_prepared_smiles = prepared_smiles_by_candidate[
+                    target.matched_candidate_id
+                ]
+                matched_prepared_smiles_status = (
+                    "available" if matched_prepared_smiles is not None else "explicit_null"
+                )
+            identity = identity_by_key.get(
+                (target.matched_object_key, matched_prepared_smiles)
+            )
+            if identity is not None and identity["class_name"] != target.class_name:
+                raise ValueError(
+                    f"{split_name}/{pdb_id} 的联合身份类别 {identity['class_name']!r} "
+                    f"与候选目标类别 {target.class_name!r} 不一致。"
+                )
             language_available = {
                 family: bool(
                     identity
@@ -435,6 +540,8 @@ def _scan_pdb(
                     "class_index": target.class_index,
                     "matched_candidate_id": target.matched_candidate_id,
                     "matched_object_key": target.matched_object_key,
+                    "matched_prepared_smiles": matched_prepared_smiles,
+                    "matched_prepared_smiles_status": matched_prepared_smiles_status,
                     "candidate_coverage": target.candidate_coverage,
                     "occurrence_coverage": target.occurrence_coverage,
                     "overlap_score": target.overlap_score,
@@ -469,6 +576,90 @@ def _read_occurrences(data_root: Path, pdb_id: str) -> list[dict[str, Any]]:
     return sorted(records, key=lambda record: int(record["candidate_id"]))
 
 
+def _read_prepared_smiles_by_candidate(
+    roots: SourceRoots,
+    pdb_id: str,
+    occurrence_records: Iterable[dict[str, Any]],
+) -> tuple[dict[int, str | None], bool]:
+    """读取一个 PDB 的顶层 PreparedLigand.smiles。
+
+    ``occurrence_records`` 是已核验的完整 occurrence 表。返回值第一项把每个五类前景
+    ``candidate_id`` 映射到逐字读取的非空字符串或显式 None；第二项表示
+    ``prepared_smiles.jsonl`` 是否存在。整个文件缺失时返回 ``({},False)``，已有文件的
+    字段、身份或记录集合不完整时失败关闭。
+    """
+
+    occurrences = {int(record["candidate_id"]): record for record in occurrence_records}
+    formal_candidate_ids = {
+        candidate_id
+        for candidate_id, record in occurrences.items()
+        if OCCURRENCE_TYPE_TO_CLASS[str(record["type_tag"])] in FOREGROUND_CLASS_NAMES
+    }
+    path = roots.language_root / "prepared" / pdb_id / "prepared_smiles.jsonl"
+    if not path.is_file():
+        return {}, False
+
+    required_fields = {
+        "pdb_id",
+        "candidate_id",
+        "object_key",
+        "kind",
+        "type_tag",
+        "is_covalent",
+        "smiles",
+        "smiles_source",
+        "diagnostics",
+    }
+    prepared_smiles: dict[int, str | None] = {}
+    for record in load_jsonl(path):
+        missing = sorted(required_fields.difference(record))
+        extra = sorted(set(record).difference(required_fields))
+        if missing or extra:
+            raise ValueError(f"{path} 的 PreparedLigand 字段漂移：missing={missing}, extra={extra}。")
+        if type(record["candidate_id"]) is not int or int(record["candidate_id"]) < 0:
+            raise ValueError(f"{path}:candidate_id 必须是非负整数。")
+        candidate_id = int(record["candidate_id"])
+        if candidate_id in prepared_smiles:
+            raise ValueError(f"{path} 含重复 candidate_id={candidate_id}。")
+        if candidate_id not in formal_candidate_ids:
+            raise ValueError(f"{path} 含非五类前景 occurrence candidate_id={candidate_id}。")
+        occurrence = occurrences[candidate_id]
+        expected = {
+            "pdb_id": pdb_id,
+            "object_key": str(occurrence["object_key"]),
+            "type_tag": str(occurrence["type_tag"]),
+        }
+        for field, expected_value in expected.items():
+            if record[field] != expected_value:
+                raise ValueError(
+                    f"{path}:candidate_id={candidate_id} 的 {field}={record[field]!r}，"
+                    f"期望 {expected_value!r}。"
+                )
+        if type(record["kind"]) is not str or not record["kind"]:
+            raise ValueError(f"{path}:kind 必须是非空字符串。")
+        if type(record["is_covalent"]) is not bool:
+            raise ValueError(f"{path}:is_covalent 必须是布尔值。")
+        smiles = record["smiles"]
+        if smiles is not None and (type(smiles) is not str or not smiles.strip()):
+            raise ValueError(f"{path}:smiles 必须是非空字符串或 null。")
+        if record["smiles_source"] not in {
+            "ccd",
+            "clc",
+            "present_graph",
+            "unsupported",
+            "occurrence_error",
+        }:
+            raise ValueError(f"{path}:smiles_source 不属于 PreparedLigand 枚举。")
+        if type(record["diagnostics"]) is not dict:
+            raise ValueError(f"{path}:diagnostics 必须是 JSON 对象。")
+        prepared_smiles[candidate_id] = smiles
+
+    missing_candidate_ids = sorted(formal_candidate_ids.difference(prepared_smiles))
+    if missing_candidate_ids:
+        raise ValueError(f"{path} 缺少五类前景 candidate_id={missing_candidate_ids}。")
+    return prepared_smiles, True
+
+
 def _read_occurrence_masks(
     data_root: Path,
     pdb_id: str,
@@ -501,21 +692,37 @@ def _build_identity_records(
     split_name: str,
     pdb_id: str,
     occurrence_records: Iterable[dict[str, Any]],
+    prepared_smiles_by_candidate: dict[int, str | None],
     selection_seed: int,
 ) -> list[dict[str, Any]]:
-    """按类别与 object_key 去重五类前景身份，并固定选择语言 occurrence。"""
+    """按 object_key 与顶层 PreparedLigand.smiles 构造 PDB 内前景身份。
 
-    grouped: dict[tuple[str, str], list[int]] = defaultdict(list)
+    显式 null 或来源文件缺失的 occurrence 不建立身份。返回记录按
+    ``(class_index,object_key,prepared_smiles)`` 排序；相同 object_key 的不同字符串
+    保持独立槽，相同字符串的不同 object_key 也不合并。
+    """
+
+    grouped: dict[tuple[str, str], list[tuple[int, str]]] = defaultdict(list)
     for record in occurrence_records:
         class_name = OCCURRENCE_TYPE_TO_CLASS[str(record["type_tag"])]
-        if class_name in FOREGROUND_CLASS_NAMES:
-            grouped[(class_name, str(record["object_key"]))].append(
-                int(record["candidate_id"])
+        candidate_id = int(record["candidate_id"])
+        prepared_smiles = prepared_smiles_by_candidate.get(candidate_id)
+        if class_name in FOREGROUND_CLASS_NAMES and prepared_smiles is not None:
+            grouped[(str(record["object_key"]), prepared_smiles)].append(
+                (candidate_id, class_name)
             )
 
     identities: list[dict[str, Any]] = []
-    for class_name, object_key in sorted(grouped):
-        occurrence_ids = sorted(grouped[(class_name, object_key)])
+    for object_key, prepared_smiles in sorted(grouped):
+        grouped_occurrences = grouped[(object_key, prepared_smiles)]
+        class_names = {class_name for _, class_name in grouped_occurrences}
+        if len(class_names) != 1:
+            raise ValueError(
+                f"{pdb_id} 的联合身份 ({object_key!r}, {prepared_smiles!r}) "
+                f"对应多个六分类类别：{sorted(class_names)}。"
+            )
+        class_name = next(iter(class_names))
+        occurrence_ids = sorted(candidate_id for candidate_id, _ in grouped_occurrences)
         graph_relative_path = f"ligand_objects/{safe_object_filename(object_key)}.npz"
         graph_available = (roots.data_root / graph_relative_path).is_file()
         language = {
@@ -523,6 +730,7 @@ def _build_identity_records(
                 roots,
                 pdb_id,
                 object_key,
+                prepared_smiles,
                 occurrence_ids,
                 family,
                 selection_seed,
@@ -536,24 +744,38 @@ def _build_identity_records(
                 "class_name": class_name,
                 "class_index": CLASS_TO_INDEX[class_name],
                 "object_key": object_key,
+                "prepared_smiles": prepared_smiles,
                 "occurrence_candidate_ids": occurrence_ids,
                 "graph_available": graph_available,
                 "graph_relative_path": graph_relative_path,
                 "language": language,
             }
         )
-    return identities
+    return sorted(
+        identities,
+        key=lambda item: (
+            int(item["class_index"]),
+            str(item["object_key"]),
+            str(item["prepared_smiles"]),
+        ),
+    )
 
 
 def _select_language_representation(
     roots: SourceRoots,
     pdb_id: str,
     object_key: str,
+    prepared_smiles: str,
     occurrence_ids: list[int],
     family: str,
     selection_seed: int,
 ) -> dict[str, Any]:
-    """验证同身份的 occurrence 表示，并从有效集合确定性地选择一个。"""
+    """验证联合身份内的 occurrence 表示，并从有效集合确定性地选择一个。
+
+    有效归档必须同时匹配 ``pdb_id``、``candidate_id``、``object_key``、
+    ``prepared_smiles`` 与语言模型名称。选择继续使用 v3 的
+    ``pdb_id|object_key|family`` 盐值，使没有拆分的身份保持原 occurrence。
+    """
 
     valid: list[dict[str, Any]] = []
     failures: list[dict[str, Any]] = []
@@ -564,7 +786,14 @@ def _select_language_representation(
             failures.append({"candidate_id": candidate_id, "reason": "missing_file"})
             continue
         try:
-            metadata = _validate_language_archive(path, pdb_id, candidate_id, object_key, family)
+            metadata = _validate_language_archive(
+                path,
+                pdb_id,
+                candidate_id,
+                object_key,
+                prepared_smiles,
+                family,
+            )
         except (KeyError, OSError, ValueError) as error:
             failures.append(
                 {
@@ -607,9 +836,14 @@ def _validate_language_archive(
     pdb_id: str,
     candidate_id: int,
     object_key: str,
+    prepared_smiles: str,
     family: str,
 ) -> dict[str, Any]:
-    """核验一个 occurrence 语言表示的身份、模型名称和数值形状。"""
+    """核验 occurrence 归档的联合身份、模型名称和有限 768 维向量。
+
+    ``prepared_smiles`` 必须逐字等于联合身份字符串；``model_smiles`` 只返回给诊断汇总，
+    不参与身份定义或选择。
+    """
 
     with np.load(path, allow_pickle=False) as archive:
         required = {
@@ -617,6 +851,7 @@ def _validate_language_archive(
             "candidate_id",
             "object_key",
             "model_name",
+            "prepared_smiles",
             "model_smiles",
             "embedding",
         }
@@ -624,11 +859,24 @@ def _validate_language_archive(
         if missing:
             raise KeyError(f"缺少字段 {missing}")
         actual = {
-            "pdb_id": str(archive["pdb_id"].item()).lower(),
+            "pdb_id": read_npz_string_scalar(archive["pdb_id"], f"{path}:pdb_id").lower(),
             "candidate_id": int(archive["candidate_id"].item()),
-            "object_key": str(archive["object_key"].item()),
-            "model_name": str(archive["model_name"].item()),
-            "model_smiles": str(archive["model_smiles"].item()),
+            "object_key": read_npz_string_scalar(
+                archive["object_key"],
+                f"{path}:object_key",
+            ),
+            "model_name": read_npz_string_scalar(
+                archive["model_name"],
+                f"{path}:model_name",
+            ),
+            "prepared_smiles": read_npz_string_scalar(
+                archive["prepared_smiles"],
+                f"{path}:prepared_smiles",
+            ),
+            "model_smiles": read_npz_string_scalar(
+                archive["model_smiles"],
+                f"{path}:model_smiles",
+            ),
         }
         embedding = np.asarray(archive["embedding"], dtype=np.float32)
     expected = {
@@ -636,6 +884,7 @@ def _validate_language_archive(
         "candidate_id": candidate_id,
         "object_key": object_key,
         "model_name": LANGUAGE_MODEL_NAMES[family],
+        "prepared_smiles": prepared_smiles,
     }
     for field, expected_value in expected.items():
         if actual[field] != expected_value:
@@ -644,6 +893,7 @@ def _validate_language_archive(
         raise ValueError(f"embedding 必须为有限 ({LANGUAGE_EMBEDDING_DIM},)，实际为 {embedding.shape}")
     return {
         "candidate_id": candidate_id,
+        "prepared_smiles": actual["prepared_smiles"],
         "model_smiles": actual["model_smiles"],
     }
 
@@ -700,7 +950,7 @@ def _summarize(
             family: sum(identity["language"][family]["available"] for identity in identities)
             for family in LANGUAGE_FAMILIES
         }
-        language_smiles_conflicts = {
+        language_model_smiles_conflicts = {
             family: sum(
                 len(identity["language"][family]["distinct_model_smiles"]) > 1
                 for identity in identities
@@ -719,8 +969,27 @@ def _summarize(
             "class_counts": dict(sorted(Counter(item["class_name"] for item in candidates).items())),
             "identity_count": len(identities),
             "unique_object_key_count": len({item["object_key"] for item in identities}),
+            "same_pdb_object_key_multi_prepared_smiles_group_count": sum(
+                count > 1
+                for count in Counter(
+                    (item["pdb_id"], item["object_key"]) for item in identities
+                ).values()
+            ),
+            "matched_foreground_without_prepared_smiles_candidate_count": sum(
+                item["class_name"] in FOREGROUND_CLASS_NAMES
+                and item["matched_prepared_smiles"] is None
+                for item in candidates
+            ),
+            "matched_foreground_explicit_null_candidate_count": sum(
+                item["matched_prepared_smiles_status"] == "explicit_null"
+                for item in candidates
+            ),
+            "matched_foreground_missing_prepared_file_candidate_count": sum(
+                item["matched_prepared_smiles_status"] == "missing_file"
+                for item in candidates
+            ),
             "language_available_identity_count": language_available,
-            "language_multi_smiles_identity_count": language_smiles_conflicts,
+            "language_multi_model_smiles_identity_count": language_model_smiles_conflicts,
             "seen_positive_identity_count": seen_positive_identities,
         }
     result["excluded_pdb_reason_counts"] = dict(
@@ -745,6 +1014,8 @@ def _validate_existing_manifest(
         "output_root": str(roots.output_root),
         "coverage_threshold": coverage_threshold,
         "selection_seed": selection_seed,
+        "identity_key_fields": list(IDENTITY_KEY_FIELDS),
+        "class_names": list(CLASS_NAMES),
     }
     mismatches = {
         key: {"actual": manifest.get(key), "expected": value}

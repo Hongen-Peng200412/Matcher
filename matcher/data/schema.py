@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Literal
 
 
-MANIFEST_SCHEMA_VERSION = 3
+MANIFEST_SCHEMA_VERSION = 4
 VOXEL_CACHE_SCHEMA_VERSION = 2
 PP_CACHE_SCHEMA_VERSION = 2
 
@@ -25,6 +25,19 @@ FOREGROUND_CLASS_NAMES = CLASS_NAMES[1:]
 FOREGROUND_CLASS_INDICES = tuple(CLASS_TO_INDEX[name] for name in FOREGROUND_CLASS_NAMES)
 IdentityScope = Literal["small_molecule", "all_non_background"]
 IDENTITY_SCOPES = ("small_molecule", "all_non_background")
+IDENTITY_KEY_FIELDS = ("object_key", "prepared_smiles")
+PreparedSmilesStatus = Literal[
+    "available",
+    "explicit_null",
+    "missing_file",
+    "not_applicable",
+]
+PREPARED_SMILES_STATUSES = (
+    "available",
+    "explicit_null",
+    "missing_file",
+    "not_applicable",
+)
 LocalCropStrategy = Literal["fixed_center", "v_centroid"]
 LOCAL_CROP_STRATEGIES = ("fixed_center", "v_centroid")
 OCCURRENCE_TYPE_TO_CLASS = {

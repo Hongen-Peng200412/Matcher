@@ -327,15 +327,34 @@ Matcher 的正式任务只从 `/home/penghongen/My_Project/Matcher` 冻结 relea
 | `output_root` | Matcher 清单和缓存的可写根。 |
 | `coverage_threshold` | 候选与 occurrence 双向覆盖率共同采用的阈值。 |
 | `selection_seed` | 同一身份存在多个有效 occurrence 时的确定性选择种子。 |
-| `language_selection_rule` | occurrence 排序、循环起点和固定选择规则的中文说明。 |
-| `seen_identity_rule` | 按语言模型与 `(class_name,object_key)` 判定 train seen 的中文说明。 |
+| `identity_key_fields` | 固定为字符串数组 `["object_key","prepared_smiles"]`；两项共同定义身份。 |
+| `prepared_smiles_rule` | 顶层 PreparedLigand.smiles 的逐字读取、显式 `null` 与缺失来源处理说明。 |
+| `identity_class_rule` | 同一联合身份在全部已物化划分中只能映射到一个六分类类别。 |
+| `language_selection_rule` | 在联合身份内按 occurrence 编号排序，并沿用 v3 的 `(pdb_id,object_key,language_family)` 选择盐值。 |
+| `seen_identity_rule` | 按语言模型与 `(object_key,prepared_smiles)` 判定 train seen 的中文说明。 |
 | `class_names` | 固定六分类顺序，必须是 `background/ion/nucleotide_like/peptide_like/small_molecule/sugar`。 |
 | `available_splits` | 已原子物化的划分名称列表。 |
 | `deferred_splits` | 尚未物化的划分名称列表。 |
 | `splits` | 每个已物化划分到 `candidates` 和 `identities` JSONL 文件名的映射。 |
 | `excluded_pdb` | 整 PDB 排除记录 JSONL 的文件名。 |
 | `split_pdb_counts` | 每个划分的 `discovered/included/excluded` PDB 数。 |
-| `summary` | 每划分候选类别数、身份数、语言可用数、多 SMILES 数、seen 数及排除原因计数。 |
+| `summary` | 下表定义的逐划分计数与整 PDB 排除原因计数。 |
+
+`summary.splits.<split>` 的字段如下；`summary.excluded_pdb_reason_counts` 是整 PDB 排除原因到数量的映射。
+
+| 字段 | 类型与语义 |
+| --- | --- |
+| `candidate_count` | 当前划分的候选总数。 |
+| `class_counts` | 六分类名称到候选数的映射，只含实际出现的类别。 |
+| `identity_count` | 非空联合身份总数。 |
+| `unique_object_key_count` | 联合身份涉及的不同 LigandObject 模板键数量。 |
+| `same_pdb_object_key_multi_prepared_smiles_group_count` | 同一 PDB 内被多个非空顶层 SMILES 拆分的 object_key 组数。 |
+| `matched_foreground_without_prepared_smiles_candidate_count` | 命中五类前景但顶层 SMILES 不可用的候选数，包含下列两种原因。 |
+| `matched_foreground_explicit_null_candidate_count` | 命中 occurrence 的 PreparedLigand 记录存在且顶层 smiles 明确为 `null` 的候选数。 |
+| `matched_foreground_missing_prepared_file_candidate_count` | 当前 PDB 的 `prepared_smiles.jsonl` 不存在，因而无法建立联合身份的候选数。 |
+| `language_available_identity_count` | 每个语言家族下至少有一个有效语言归档的身份数；不要求 LigandObject 图可用。 |
+| `language_multi_model_smiles_identity_count` | 每个语言家族下有效归档含多个 `model_smiles` 诊断字符串的联合身份数。 |
+| `seen_positive_identity_count` | 每个语言家族下曾作为 train 可监督正目标的联合身份数。 |
 
 每个 `<split>_candidates.jsonl` 对应一个 Stage1 候选，字段如下：
 
@@ -352,13 +371,15 @@ Matcher 的正式任务只从 `/home/penghongen/My_Project/Matcher` 冻结 relea
 | `class_index` | `class_names` 中的整数下标。 |
 | `matched_candidate_id` | 命中的真实 occurrence 编号；背景未命中时为 `null`。 |
 | `matched_object_key` | 命中身份的 object_key；背景未命中时为 `null`。 |
+| `matched_prepared_smiles` | 命中 occurrence 的顶层 PreparedLigand.smiles；显式 `null`、来源文件缺失或背景不适用时为 `null`。 |
+| `matched_prepared_smiles_status` | `available/explicit_null/missing_file/not_applicable`；分别表示非空字符串、明确空值、PreparedLigand 文件缺失和背景不适用。 |
 | `candidate_coverage` | 交集占完整候选组件的比例；未命中时为 0。 |
 | `occurrence_coverage` | 交集占真实 occurrence 的比例；未命中时为 0。 |
 | `overlap_score` | 两侧覆盖率几何平均；未命中时为 0。 |
 | `language_target_available` | 按语言家族记录“身份图和所选语言表示同时可用”的布尔值。 |
 | `identity_seen_in_train_by_language` | 按语言家族记录前景正身份是否曾作为 train 可监督目标；背景或没有前景身份时为 `null`。 |
 
-每个 `<split>_identities.jsonl` 对应一个 PDB 内 `(class_name,object_key)` 五类前景身份，字段如下：
+每个 `<split>_identities.jsonl` 对应一个 PDB 内 `(object_key,prepared_smiles)` 五类前景身份。`class_name/class_index` 是联合身份属性；同一联合键在全部已物化划分中只能映射到一个类别。字段如下：
 
 | 字段 | 类型与语义 |
 | --- | --- |
@@ -366,16 +387,17 @@ Matcher 的正式任务只从 `/home/penghongen/My_Project/Matcher` 冻结 relea
 | `pdb_id` | 小写 PDB 标识。 |
 | `class_name` | 五类非背景类别字符串。 |
 | `class_index` | 六分类中的整数下标，取值为 1–5。 |
-| `object_key` | PDB 内与类别共同定义去重身份的非空字符串。 |
+| `object_key` | 联合身份中的 LigandObject 模板键；相同 SMILES 但不同模板键不会合并。 |
+| `prepared_smiles` | 联合身份中的非空顶层 PreparedLigand.smiles；逐字采用公开模型接口输入，不使用 `model_smiles`。 |
 | `occurrence_candidate_ids` | 聚合到该身份的升序 occurrence 编号列表。 |
 | `graph_available` | 对应配体图归档是否存在。 |
 | `graph_relative_path` | 相对 `data_root` 的配体图归档路径。 |
 | `language` | `molformer` 与 `smi_ted_289m` 两个语言家族的选择证据。 |
-| `seen_in_train_by_language` | 按语言家族记录该 `(class_name,object_key)` 是否在 train 有可监督正目标。 |
+| `seen_in_train_by_language` | 按语言家族记录该 `(object_key,prepared_smiles)` 是否在 train 有可监督正目标。 |
 
-`language.<family>` 的 `available` 表示是否至少有一个有效归档；`selected_candidate_id/selected_relative_path` 在不可用时为 `null`；`valid_candidate_ids` 保存全部有效 occurrence；`failed_occurrences` 逐项保存缺文件或归档无效原因；`distinct_model_smiles` 保存有效归档中去重后的模型输入字符串。`excluded_pdb.jsonl` 至少保存 `split/pdb_id/reason`；`reason=missing_required_product` 时另含 `missing_paths`。身份范围或语言缺失只令候选身份目标不可用，不写入整 PDB 排除记录。
+`language.<family>` 的 `available` 表示是否至少有一个 object_key 和 `prepared_smiles` 都与联合身份相等的有效归档；`selected_candidate_id/selected_relative_path` 在不可用时为 `null`；`valid_candidate_ids` 保存全部有效 occurrence；`failed_occurrences` 逐项保存缺文件或归档无效原因；`distinct_model_smiles` 只保存 tokenizer 输入诊断，不参与身份定义。`excluded_pdb.jsonl` 至少保存 `split/pdb_id/reason`；`reason=missing_required_product` 时另含 `missing_paths`。显式 `smiles=null` 或整个 PreparedLigand 文件缺失都保留 PDB、候选、六分类与区域监督，并令相应身份目标不可用；已有 PreparedLigand 文件缺记录或字段损坏时失败关闭。
 
-校准入口分别记录本次 YAML 与训练 release 中原 YAML 的路径和 SHA-256，但不要求两个 YAML 字节相同：训练完成后可以显式调整 validation 工作进程数、预取量和单工作进程缓存等 I/O 资源。模型、训练超参数和上段七个科学数据字段仍必须逐项相同；因此 I/O 调整不会被误报成科学方案变化，也不能借 I/O 调整更换监督清单或候选视野。
+校准入口分别记录本次 YAML 与训练 release 中原 YAML 的路径和 SHA-256，但不要求两个 YAML 字节相同：训练完成后可以显式调整 validation 工作进程数、预取量和单工作进程缓存等 I/O 资源。模型、训练超参数和 `source_scientific_data` 表列出的七个科学数据字段仍必须逐项相同；因此 I/O 调整不会被误报成科学方案变化，也不能借 I/O 调整更换监督清单或候选视野。
 
 支持类 macro-F1 只平均真实候选数大于零的类别；固定六类 macro-F1 把零支持类 F1 记为 0 后仍平均 `background/ion/nucleotide_like/peptide_like/small_molecule/sugar` 六类。兼容字段 `evaluation.metrics.six_class.macro_f1` 等于 `macro_f1_supported_classes`，validation 选模继续使用该兼容口径。
 
@@ -519,7 +541,7 @@ Matcher 的正式任务只从 `/home/penghongen/My_Project/Matcher` 冻结 relea
 
 结果已发布而 claim 尚未收口时，同参数重试先核验结果中的计划、阶段、checkpoint 和数据指纹，再只把 claim 改为 `completed`，不再次执行模型。`claim_<data_fingerprint>.json.lock` 是入口不会主动删除的空互斥锁文件，只用于并发串行化，没有科学或完成状态语义；是否完成只能读取 claim 的 `status`。
 
-组合指纹先对 manifest 中来源根、监督参数、类别顺序、语言/seen 规则、calibration 文件名、PDB 计数和 calibration 摘要组成的规范 JSON 计算 SHA-256；创建时间和 train/validation 摘要不参与。再把该摘要、calibration 候选 JSONL 摘要和身份 JSONL 摘要按 `semantic + "\n" + candidates + "\n" + identities + "\n"` 的 ASCII 字节再次计算 SHA-256。SHA-256 在此只用于文件内容留证和 claim 定位，不参与样本、监督或模型计算。
+组合指纹先对 manifest 中来源根、监督参数、身份键字段、PreparedLigand.smiles 规则、联合身份类别一致性规则、类别顺序、语言/seen 规则、calibration 文件名、PDB 计数和 calibration 摘要组成的规范 JSON 计算 SHA-256；创建时间和 train/validation 摘要不参与。再把该摘要、calibration 候选 JSONL 摘要和身份 JSONL 摘要按 `semantic + "\n" + candidates + "\n" + identities + "\n"` 的 ASCII 字节再次计算 SHA-256。SHA-256 在此只用于文件内容留证和 claim 定位，不参与样本、监督或模型计算。
 
 105 通道缓存写入 `cache/voxel_input_v2/<strategy>/<split>/<pdb>/candidate_<index>_start_<z>_<y>_<x>.npy`。每个文件是有限且无缺失值的 float16 `(C,Z,Y,X)=(105,48,48,48)`。通道 0–55 继承完整实验/模拟密度的数值语义，并按 `operation → normalization → postprocess` 的嵌套顺序排列：`operation` 依次为 `exp/sim/diff/posdiff`，`normalization` 依次为 `nonorm/clipnorm`，`postprocess` 依次为 `nopost/gauss1/gauss2/DoG1/DoG2/smooth1/smooth2`。通道 56–104 原样保持 `receptor_tokens.npz:feat[:,0:49]` 的第二轴顺序；受体世界坐标换算后向下取整得到所属体素，同一体素内的特征求和。这些通道继承来源特征的数值语义。两组通道均先在完整 `80³` 上构造，再裁剪候选级 `48³`。`<strategy>` 为 `fixed_center` 或 `v_centroid`；文件名还保存实际 ZYX 起点，策略或起点不同均不复用数组。
 

@@ -22,20 +22,25 @@ from ..data.geometry import (
     voxel_zyx_to_crop_centered_world,
 )
 from ..data.ligand_graph import LigandGraphStore
-from ..data.manifest import load_jsonl
+from ..data.manifest import load_jsonl, read_npz_string_scalar
 from ..data.pp_input import PpCandidateInput, PpInputStore
 from ..data.schema import (
-    CLASS_NAMES,
     A_TOKEN_DIM,
     BOX_ORIGIN_ABSOLUTE_TOLERANCE_ANGSTROM,
     CANDIDATE_MANUAL_FEATURE_DIM,
+    CLASS_NAMES,
+    CLASS_TO_INDEX,
+    FOREGROUND_CLASS_NAMES,
     FULL_CONTEXT_HALF_EXTENT_VOXELS,
+    IDENTITY_KEY_FIELDS,
     LANGUAGE_EMBEDDING_DIM,
     LANGUAGE_FAMILIES,
     LOCAL_CROP_STRATEGIES,
     LOCAL_BOX_SIZE,
     LOCAL_CONTEXT_HALF_EXTENT_VOXELS,
+    MANIFEST_SCHEMA_VERSION,
     P_TOKEN_DIM,
+    PREPARED_SMILES_STATUSES,
     SourceRoots,
     V_TOKEN_DIM,
     IdentityScope,
@@ -98,6 +103,12 @@ class CandidateDataset(Dataset[CandidateItem]):
         if cache_bytes_per_worker < 0:
             raise ValueError("cache_bytes_per_worker 不能为负数。")
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if manifest.get("schema_version") != MANIFEST_SCHEMA_VERSION:
+            raise ValueError(
+                f"{manifest_path} 的 schema_version 必须为 {MANIFEST_SCHEMA_VERSION}。"
+            )
+        if manifest.get("identity_key_fields") != list(IDENTITY_KEY_FIELDS):
+            raise ValueError(f"{manifest_path} 的联合身份字段顺序与代码不一致。")
         if tuple(manifest["class_names"]) != CLASS_NAMES:
             raise ValueError(f"{manifest_path} 的六分类顺序与代码不一致。")
         split_files = manifest["splits"].get(split_name)
@@ -114,12 +125,17 @@ class CandidateDataset(Dataset[CandidateItem]):
         self.cache_bytes_per_worker = int(cache_bytes_per_worker)
         self.records = load_jsonl(manifest_path.parent / split_files["candidates"])
         identity_records = load_jsonl(manifest_path.parent / split_files["identities"])
+        _validate_identity_records(identity_records, split_name)
         self.identities_by_pdb: dict[str, list[dict[str, Any]]] = defaultdict(list)
         for identity in identity_records:
-            self.identities_by_pdb[str(identity["pdb_id"])].append(identity)
+            self.identities_by_pdb[identity["pdb_id"]].append(identity)
         for identities in self.identities_by_pdb.values():
             identities.sort(
-                key=lambda item: (int(item["class_index"]), str(item["object_key"]))
+                key=lambda item: (
+                    item["class_index"],
+                    item["object_key"],
+                    item["prepared_smiles"],
+                )
             )
 
         budgets = _split_cache_budget(self.cache_bytes_per_worker)
@@ -210,12 +226,29 @@ class CandidateDataset(Dataset[CandidateItem]):
             box_start,
             crop_geometry.start_zyx,
         )
+        matched_prepared_smiles_status = record["matched_prepared_smiles_status"]
+        if matched_prepared_smiles_status not in PREPARED_SMILES_STATUSES:
+            raise ValueError(
+                f"{self.split_name}/{pdb_id}/candidate_{candidate_index} 的 "
+                "matched_prepared_smiles_status 无效。"
+            )
+        matched_prepared_smiles = record["matched_prepared_smiles"]
+        if matched_prepared_smiles_status == "available":
+            if (
+                type(matched_prepared_smiles) is not str
+                or not matched_prepared_smiles.strip()
+            ):
+                raise ValueError("available 状态必须对应非空 matched_prepared_smiles。")
+        elif matched_prepared_smiles is not None:
+            raise ValueError("非 available 状态的 matched_prepared_smiles 必须为 null。")
 
         metadata: CandidateMetadata = {
             "split": self.split_name,
             "pdb_id": pdb_id,
             "candidate_index": candidate_index,
             "matched_object_key": record["matched_object_key"],
+            "matched_prepared_smiles": matched_prepared_smiles,
+            "matched_prepared_smiles_status": matched_prepared_smiles_status,
             "identity_seen_in_train": (
                 record["identity_seen_in_train_by_language"][self.language_family]
                 if self.language_family is not None
@@ -254,11 +287,13 @@ class CandidateDataset(Dataset[CandidateItem]):
                     pdb_id,
                     int(record["class_index"]),
                     record["matched_object_key"],
+                    record["matched_prepared_smiles"],
                 )
             )
         else:
             item.update(
                 identity_object_keys=[],
+                identity_prepared_smiles=[],
                 identity_class_index=np.empty(0, dtype=np.int64),
                 language_embeddings=np.empty((0, LANGUAGE_EMBEDDING_DIM), dtype=np.float32),
                 ligand_graphs=[],
@@ -312,8 +347,9 @@ class CandidateDataset(Dataset[CandidateItem]):
         pdb_id: str,
         matched_class_index: int,
         matched_object_key: str | None,
+        matched_prepared_smiles: str | None,
     ) -> dict[str, Any]:
-        """读取当前范围内语言表示和配体图都可用的去重前景身份。"""
+        """读取当前范围内语言表示和配体图都可用的联合前景身份。"""
 
         if self.language_family is None or self.identity_scope is None:
             raise AssertionError("full_matcher 的语言模型和身份范围不应为空。")
@@ -322,31 +358,47 @@ class CandidateDataset(Dataset[CandidateItem]):
         if cached is not None:
             target = _identity_target_index(
                 cached["identity_object_keys"],
+                cached["identity_prepared_smiles"],
                 cached["identity_class_index"],
                 matched_class_index,
                 matched_object_key,
+                matched_prepared_smiles,
             )
             return {**cached, "identity_target": target}
         object_keys: list[str] = []
+        prepared_smiles_values: list[str] = []
         embeddings: list[np.ndarray] = []
         class_indices: list[int] = []
         graphs = []
         allowed_classes = set(identity_scope_class_indices(self.identity_scope))
         for identity in self.identities_by_pdb.get(pdb_id, []):
-            class_index = int(identity["class_index"])
+            class_index = identity["class_index"]
             if class_index not in allowed_classes:
                 continue
             language = identity["language"][self.language_family]
             if not identity["graph_available"] or not language["available"]:
                 continue
-            object_key = str(identity["object_key"])
-            relative_path = str(language["selected_relative_path"])
+            object_key = identity["object_key"]
+            prepared_smiles = identity["prepared_smiles"]
+            relative_path = language["selected_relative_path"]
+            if type(relative_path) is not str or not relative_path:
+                raise ValueError("可用语言身份必须保存非空 selected_relative_path。")
             path = self.roots.language_root / relative_path
             with np.load(path, allow_pickle=False) as archive:
                 embedding = np.asarray(archive["embedding"], dtype=np.float32)
+                archive_prepared_smiles = read_npz_string_scalar(
+                    archive["prepared_smiles"],
+                    f"{path}:prepared_smiles",
+                )
             if embedding.shape != (LANGUAGE_EMBEDDING_DIM,) or not np.isfinite(embedding).all():
                 raise ValueError(f"{path}:embedding 必须为有限 ({LANGUAGE_EMBEDDING_DIM},)。")
+            if archive_prepared_smiles != prepared_smiles:
+                raise ValueError(
+                    f"{path}:prepared_smiles={archive_prepared_smiles!r}，"
+                    f"与联合身份 {prepared_smiles!r} 不一致。"
+                )
             object_keys.append(object_key)
+            prepared_smiles_values.append(prepared_smiles)
             embeddings.append(embedding)
             class_indices.append(class_index)
             graphs.append(self.graph_store.load(object_key))
@@ -357,16 +409,21 @@ class CandidateDataset(Dataset[CandidateItem]):
         )
         cached = {
             "identity_object_keys": object_keys,
+            "identity_prepared_smiles": prepared_smiles_values,
             "language_embeddings": embedding_array,
             "identity_class_index": np.asarray(class_indices, dtype=np.int64),
             "ligand_graphs": graphs,
         }
+        if len(set(zip(object_keys, prepared_smiles_values))) != len(object_keys):
+            raise ValueError("同一 PDB 身份轴含重复联合身份。")
         self._identity_cache.put(cache_key, cached)
         target = _identity_target_index(
             object_keys,
+            prepared_smiles_values,
             cached["identity_class_index"],
             matched_class_index,
             matched_object_key,
+            matched_prepared_smiles,
         )
         return {**cached, "identity_target": target}
 
@@ -381,6 +438,74 @@ class CandidateDataset(Dataset[CandidateItem]):
 
 
 # ================================================================================================
+
+
+def _validate_identity_records(
+    records: list[dict[str, Any]],
+    split_name: str,
+) -> None:
+    """核验清单身份的联合键、类别、occurrence 和语言证据类型。
+
+    ``records`` 是当前划分身份 JSONL 的完整对象列表；``split_name`` 是 Dataset
+    请求划分。函数拒绝任何隐式字符串或整数迁移，并要求同一 PDB 的联合键唯一；
+    输入通过时不修改记录且不返回值。
+    """
+
+    seen_keys: set[tuple[str, str, str]] = set()
+    for record_index, record in enumerate(records):
+        prefix = f"{split_name}_identities.jsonl[{record_index}]"
+        if record.get("split") != split_name:
+            raise ValueError(f"{prefix}.split 与请求划分不一致。")
+        pdb_id = record.get("pdb_id")
+        if type(pdb_id) is not str or not pdb_id or pdb_id != pdb_id.lower():
+            raise ValueError(f"{prefix}.pdb_id 必须是非空小写字符串。")
+        class_name = record.get("class_name")
+        class_index = record.get("class_index")
+        if class_name not in FOREGROUND_CLASS_NAMES:
+            raise ValueError(f"{prefix}.class_name 必须属于五类非背景类别。")
+        if type(class_index) is not int or class_index != CLASS_TO_INDEX[class_name]:
+            raise ValueError(f"{prefix}.class_index 与 class_name 不一致。")
+        object_key = record.get("object_key")
+        prepared_smiles = record.get("prepared_smiles")
+        if type(object_key) is not str or not object_key:
+            raise ValueError(f"{prefix}.object_key 必须是非空字符串。")
+        if type(prepared_smiles) is not str or not prepared_smiles.strip():
+            raise ValueError(f"{prefix}.prepared_smiles 必须是非空字符串。")
+        joint_key = (pdb_id, object_key, prepared_smiles)
+        if joint_key in seen_keys:
+            raise ValueError(f"{prefix} 与同一 PDB 的既有联合身份重复。")
+        seen_keys.add(joint_key)
+
+        occurrence_ids = record.get("occurrence_candidate_ids")
+        if (
+            not isinstance(occurrence_ids, list)
+            or not occurrence_ids
+            or any(type(value) is not int or value < 0 for value in occurrence_ids)
+            or occurrence_ids != sorted(set(occurrence_ids))
+        ):
+            raise ValueError(
+                f"{prefix}.occurrence_candidate_ids 必须是非空、升序且不重复的非负整数列表。"
+            )
+        if type(record.get("graph_available")) is not bool:
+            raise ValueError(f"{prefix}.graph_available 必须是布尔值。")
+        if type(record.get("graph_relative_path")) is not str:
+            raise ValueError(f"{prefix}.graph_relative_path 必须是字符串。")
+        language = record.get("language")
+        if not isinstance(language, dict) or set(language) != set(LANGUAGE_FAMILIES):
+            raise ValueError(f"{prefix}.language 必须逐项包含两个语言家族。")
+        for family in LANGUAGE_FAMILIES:
+            evidence = language[family]
+            if not isinstance(evidence, dict) or type(evidence.get("available")) is not bool:
+                raise ValueError(f"{prefix}.language.{family} 必须保存布尔 available。")
+        seen = record.get("seen_in_train_by_language")
+        if (
+            not isinstance(seen, dict)
+            or set(seen) != set(LANGUAGE_FAMILIES)
+            or any(type(seen[family]) is not bool for family in LANGUAGE_FAMILIES)
+        ):
+            raise ValueError(
+                f"{prefix}.seen_in_train_by_language 必须保存两个语言家族的布尔值。"
+            )
 
 
 def _candidate_manual_features(
@@ -418,21 +543,35 @@ def _candidate_manual_features(
 
 def _identity_target_index(
     object_keys: list[str],
+    prepared_smiles_values: list[str],
     class_indices: np.ndarray,
     matched_class_index: int,
     matched_object_key: str | None,
+    matched_prepared_smiles: str | None,
 ) -> int:
-    """按类别与 object_key 唯一定位真实身份；不可用时返回 -1。"""
+    """在平行身份轴中按联合键与类别唯一定位真实目标。
 
-    if matched_object_key is None:
+    ``object_keys``、``prepared_smiles_values`` 与 ``class_indices`` 必须逐槽对齐。
+    候选没有完整联合身份或当前可用身份轴不含真值时返回 ``-1``；重复真值槽失败关闭。
+    """
+
+    if matched_object_key is None or matched_prepared_smiles is None:
         return -1
+    if len(object_keys) != len(prepared_smiles_values) or class_indices.shape != (
+        len(object_keys),
+    ):
+        raise ValueError("身份模板键、PreparedLigand.smiles 与类别数量不一致。")
     matches = [
         index
-        for index, (class_index, object_key) in enumerate(zip(class_indices, object_keys))
-        if int(class_index) == matched_class_index and object_key == matched_object_key
+        for index, (class_index, object_key, prepared_smiles) in enumerate(
+            zip(class_indices, object_keys, prepared_smiles_values)
+        )
+        if int(class_index) == matched_class_index
+        and object_key == matched_object_key
+        and prepared_smiles == matched_prepared_smiles
     ]
     if len(matches) > 1:
-        raise ValueError("同一 PDB 身份清单含重复 (class_index, object_key)。")
+        raise ValueError("同一 PDB 身份清单含重复联合身份。")
     return matches[0] if matches else -1
 
 
