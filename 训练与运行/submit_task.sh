@@ -11,12 +11,12 @@ usage() {
     cat <<'EOF'
 用法：
   bash 训练与运行/submit_task.sh \
-    --sh 训练与运行/sh/mode1/train.sh \
+    --sh 训练与运行/sh/train_experiment.sh \
     --resource a800 \
     --gpus 1 \
     --cpus 24 \
     [资源选项] \
-    [-- 传给任务脚本的参数]
+    -- --plan configs/experiments/initial/full_scratch_smi_ted_light_289m_oracle.yaml
 
 必需参数：
   --sh PATH              任务脚本。只有文件名时从“训练与运行/sh/”查找；
@@ -46,8 +46,19 @@ usage() {
                          根目录解析；默认就是“训练与运行”的上一层。
 
 示例：
-  bash 训练与运行/submit_task.sh --sh 训练与运行/sh/mode1/train.sh --resource a800 --gpus 1 --cpus 24
-  bash 训练与运行/submit_task.sh --sh 训练与运行/sh/mode1/prepare_manifest_cpu.sh --resource cpu --cpus 96
+  bash 训练与运行/submit_task.sh \
+    --sh 训练与运行/sh/train_experiment.sh \
+    --resource a800 --gpus 1 --cpus 16 \
+    -- --plan configs/experiments/initial/full_scratch_smi_ted_light_289m_oracle.yaml
+  bash 训练与运行/submit_task.sh \
+    --sh 训练与运行/sh/build_manifest.sh \
+    --resource cpu --cpus 16 \
+    -- \
+    --data-root /storage/penghongen/AdaLigand/Ori_Data \
+    --stage1-root /storage/penghongen/AdaLigand_stage1_inference/Find_0-CPC1-ligand_PRAUC_0.675477/artifacts/Find_0 \
+    --output-root /storage/penghongen/tmp/Matcher \
+    --coverage-threshold 0.30 \
+    --selection-seed 3407
   bash 训练与运行/submit_task.sh --simple --task-root /项目根 --sh /项目根/ops/任务.sh --resource cpu --cpus 1
 EOF
 }

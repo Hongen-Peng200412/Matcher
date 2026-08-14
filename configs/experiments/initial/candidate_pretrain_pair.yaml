@@ -1,0 +1,97 @@
+# matcher.experiment_config.load_experiment_plan 读取本文件，matcher.experiment.run_plan 顺序执行 stages。
+# use_manual_features=false 不拼接12项模态统计；use_sampling_features=false 不拼接4项裁剪统计；use_candidate_token_attention_bias=false 不增加实体偏置。
+# 单张 A100 顺序运行两个相互独立的候选六分类实验；第二阶段不继承第一阶段参数。
+plan_name: candidate_pretrain_pair
+output_root: /storage/penghongen/tmp/Matcher/experiments  # 顶层：run、阶段、checkpoint 和指标的根目录。
+
+# 每个 stage 单独建立 W&B online run；认证读取服务器环境或现有 ~/.netrc，不保存 API key。
+tracking:
+  provider: wandb  # 在线曲线服务的实现名称；当前入口只接受 wandb。
+  mode: online  # 在线初始化失败即终止，不静默切换为离线记录。
+  entity: pencounkdual-111  # 拥有在线项目的 W&B 账户或团队。
+  project: AdaLigand-Matcher  # 收纳本轮训练曲线的 W&B 项目。
+  group: matcher-initial-round1  # 七个首轮任务共享的在线比较组。
+  log_every_global_steps: 1  # 每个含 32 个候选的 global batch 完成一次参数更新后写入曲线。
+  init_timeout_seconds: 120  # W&B 在线握手等待秒数；不是训练或 Slurm 时限。
+
+data:
+  # data 只声明冻结输入、命中清单参数和每个 DataLoader 工作进程的 I/O 资源。
+  # data_root 是只读 A–G、密度图、受体字段、配体图和两套冻结语言表示的共同来源。
+  data_root: /storage/penghongen/AdaLigand/Ori_Data
+  # stage1_root 是只读 Find_0 F1 候选、A/P/V 和完整概率图来源。
+  stage1_root: /storage/penghongen/AdaLigand_stage1_inference/Find_0-CPC1-ligand_PRAUC_0.675477/artifacts/Find_0
+  output_root: /storage/penghongen/tmp/Matcher  # data 内：版本化清单、105 通道体素与 PP token 缓存根。
+  coverage_threshold: 0.30  # 候选覆盖率和 occurrence 覆盖率都达到该值才命中。
+  selection_seed: 3407  # 固定每个配体身份采用哪一个有效 occurrence 语言表示。
+  pp_top_k: 1024  # 每个候选从完整概率图最多采样的 PP token 数。
+  local_crop_strategy: fixed_center  # 第0批固定裁取 [16,64)³。
+  train_num_workers: 4  # 每次 train 迭代单独建立的 DataLoader 工作进程数。
+  validation_num_workers: 4  # 每次 validation 迭代单独建立的工作进程数。
+  prefetch_factor: 2  # 每个工作进程预先准备的物理批次数。
+  # 每个工作进程的五类最近最少使用缓存总上限，单位 GiB；按需增长，不预分配。
+  cache_gib_per_worker: 16
+
+stages:
+  # 每个 stage 的 model 定义网络结构，training 定义优化、批量、数值精度、损失和早停。
+  - name: candidate_pretrain_mean_max
+    task_name: candidate_pretrain
+    language_family: null  # null 表示候选六分类不读取任何配体语言表示。
+    identity_variant: null  # null 表示该阶段不计算身份损失。
+    identity_scope: null  # 候选预训练没有身份监督范围。
+    model:
+      aggregation: mean_max
+      use_manual_features: false
+      use_sampling_features: false
+      use_candidate_token_attention_bias: false
+      model_dim: 256
+      attention_heads: 8
+      dropout: 0.10
+      voxel_feature_channels: 48
+      # 九项依次是 enc0、enc1、enc2、enc3、bottleneck、dec3、dec2、dec1、dec0 通道数。
+      raunet_planes: [64, 256, 256, 256, 256, 256, 128, 64, 64]
+      recycle_iterations: 3
+      gradient_checkpointing: true
+      bottleneck_attention_layers: 4
+      graph_layers: 4
+    training: &a100_training
+      seed: 3407
+      physical_batch_size: 8  # 每次前向的候选数。
+      gradient_accumulation: 4  # 连续四个物理批次合成一次参数更新。
+      global_batch_size: 32  # 8 × 4；不同硬件实验均保持 32。
+      learning_rate: 1.0e-4
+      weight_decay: 1.0e-4
+      maximum_epochs: null  # 不设 epoch 上限，只由连续两次 validation 无改善结束。
+      patience_bad_epochs: 2
+      precision: bf16
+      gradient_clip_norm: 1.0
+      class_weights: null  # null 表示六类交叉熵不额外加权。
+      loss_weights:
+        # 四项依次加权六分类、配体区域、受体结合区域和闭集身份损失。
+        classification: 1.0
+        ligand_area: 0.10
+        binding_area: 0.10
+        identity: 0.0
+    initialize_candidate_from: null  # null 表示从随机初始化开始。
+
+  - name: candidate_pretrain_cross_attention
+    task_name: candidate_pretrain
+    language_family: null
+    identity_variant: null
+    identity_scope: null
+    model:
+      aggregation: candidate_cross_attention
+      use_manual_features: false
+      use_sampling_features: false
+      use_candidate_token_attention_bias: false
+      model_dim: 256
+      attention_heads: 8
+      dropout: 0.10
+      voxel_feature_channels: 48
+      # 九项顺序同上一阶段：enc0 至 bottleneck，再由 dec3 至 dec0。
+      raunet_planes: [64, 256, 256, 256, 256, 256, 128, 64, 64]
+      recycle_iterations: 3
+      gradient_checkpointing: true
+      bottleneck_attention_layers: 4
+      graph_layers: 4
+    training: *a100_training
+    initialize_candidate_from: null  # 明确不继承 mean/max 阶段参数。
