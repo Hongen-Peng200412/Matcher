@@ -899,3 +899,13 @@ A100 与 A800 的第一次控制尝试分别因为前序旧 YAML 缺少后续版
 用户另行要求整理 `matcher/` 的目录布局。该工作不与第 4 批初始化混入同一提交：初始化基础先完成独立门禁和提交；随后在 `talk/refactor/` 建立全部正式文件的职责、调用者、生命周期、测试与目标位置清单，再以行为等价为唯一边界移动数据、加载、训练和评估模块。该结构整理不改变活动 Goal；第 1–5 批实验和六卡优先级仍是主线。
 
 当前第 4 批冻结候选的初始化与配置定向测试为 `49 passed`，全套 pytest 为 `118 passed in 229.43s`。mypy 检查 40 个正式源码文件零问题；pyflakes、compileall、19 份正式 YAML 解析、8 个 shell 的 `bash -n`、临时审计脚本编译和 `git diff --check` 全部通过。科学正确性与严格技术表达两项独立复审均为 PASS，阻断项为零。
+
+### Matcher 正式包职责整理
+
+第 4 批初始化基础完成双线 Git 收口后，`Learn/CUMULATIVE` 位于 `a74deca9b7a3f6a58909410623ba1c8b99eb9625`。用户确认整理方案后，从该端点建立 `codex/matcher-package-layout`，并先提交 `talk/refactor/Matcher_包目录职责整理.md` 的全部正式文件清单。整理只改变模块位置、导入路径、四个 `python -m` 入口、十九份 YAML 的读取入口说明和当前结构文档。
+
+新目录按 `data/datasets/model/training/evaluation/utils` 划分来源适配、Dataset 与 DataLoader、模型、训练、评估和非科学通用支撑。`evaluation.calibration` 可以复用 `training.engine.evaluate_model`；`training.engine` 只读取 `evaluation.metrics`，各子包入口不建立批量转发，从而不引入循环导入。旧顶层模块全部移除，不建立兼容包装；运行中的任务继续使用既有 release，不会读取本地移动结果。
+
+以整理前累计端点为基准，对 36 个既有 Python 文件做语法树归一比较，移除导入与模块说明后全部等价。测试按文件串行得到 `test_data_pipeline=35`、`test_model_and_loss=28`、`test_metrics_and_config=24`、calibration/initialization/tracking 合计 `31`，总数精确为 `118 passed`；重型模型测试在当前本机负载下耗时约 10 分 34 秒。mypy 45 个源码文件零问题，pyflakes、compileall、19 份正式 YAML、8 个 Shell、四个新模块帮助入口、`spawn` 工作进程生命周期和 diff-check 均通过。第一次总套件与一次并行尝试因外层 5 分钟限制被工具终止，没有报告断言失败；它们不计为通过证据，最终只采用上述干净串行结果。
+
+本轮没有访问 calibration 数据或运行模型评估，没有同步服务器、创建 release、安装动态命令、改动 Slurm 作业或删除任何锁。独立科学正确性与严格技术表达复核均为 PASS，阻断项为零；下一步提交整理实现端点，并按双线历史建立与其树内容完全一致的学习端点。
