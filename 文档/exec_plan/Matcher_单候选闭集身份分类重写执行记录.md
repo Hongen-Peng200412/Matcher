@@ -838,3 +838,5 @@ bash '/home/penghongen/My_Project/Matcher/训练与运行/runtime/create_release
 ```
 
 得到预冻结 release `/home/penghongen/Feedback/Matcher/releases/Matcher_d15132948a18/Matcher`，manifest 内容摘要为 `d15132948a1885bae9a2019ac55175503c5c15459f043145147fe4a6d3598f89`，创建时间为 `2026-08-14T09:50:02+0800`。同一远端门禁随后以该 release 为项目根再次完整通过。此时只完成第 3 批发布准备，没有安装动态运行命令、删除 `try_lock`、删除 `after_lock` 或提交 GPU；四项仍按自然空闲资源与批次优先级等待。
+
+09:57 进行一次事件式只读核验。六个受管 allocation 均为 `RUNNING`，每项 `after_lock` 存在，`try_lock/kill_lock` 均不存在；因此没有放行第 3 批。第 1 批 joint 的 epoch 9 再次改善，selection score 为 `0.6928435444`，六分类 macro-F1、五类固有 Top-1、精确子类条件 Top-1、宽松五类端到端 F1 和小分子兼容端到端 F1 分别为 `0.5193692059/0.8526603001/0.8971229294/0.6620384979/0.6646646647`。第 2 批三个完整 Matcher 在 epoch 3 的 selection score 为 oracle `0.6624755578`、detached `0.6739567888`、joint `0.6543584471`，三轮均标记为改善；五类固有 Top-1 分别为 `0.8253751705/0.8431105048/0.8437926330`，宽松端到端 F1 分别为 `0.6284892086/0.6444572085/0.5985090522`。第 2 批 mean/max 与未增强候选条件注意力完成 epoch 0 validation，macro-F1 分别为 `0.5234197383/0.4935270492`；二者首轮 nucleotide_like/peptide_like F1 均为零。全部任务继续运行，本次快照只作为曲线与吞吐证据，不据首轮或单指标提前判定改动方向。

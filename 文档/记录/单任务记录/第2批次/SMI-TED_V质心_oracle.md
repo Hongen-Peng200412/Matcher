@@ -23,4 +23,5 @@ exec bash "${TASK_PROJECT_ROOT}/训练与运行/sh/train_experiment.sh" \
 - launch：`/home/penghongen/Feedback/Matcher/launches/340897/train_experiment_job340897_20260814T073305_a2`。
 - W&B：run ID `6soiol5e`；[在线曲线](https://wandb.ai/pencounkdual-111/AdaLigand-Matcher-Batch2/runs/6soiol5e)。
 - 首步验收：global batch 32；有效身份目标 7；计算 `25.8580 s`；裁剪前梯度范数 `42.1343`；峰值已分配/保留显存 `14,194,926,080 / 19,610,468,352 bytes`。参数更新与 CUDA 同步均已完成，未见 OOM、NaN 或 Traceback。
+- 2026-08-14 09:52:12 的 epoch 3 validation 刷新当前最好值：selection score `0.6624755578`，六分类 macro-F1 `0.5232567136`，五类固有 Top-1 `0.8253751705`，精确子类条件 Top-1 `0.8356807512`，宽松五类端到端 F1 `0.6284892086`，小分子兼容端到端 F1 `0.5639639640`，有效身份数 `1,466`。该轮仍为改善轮，不据此提前判定相对第 1 批的方向。
 - 状态：训练中；最终 validation 与第 1 批 oracle 头对头结果待自然收口后追加。

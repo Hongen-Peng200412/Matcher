@@ -14,6 +14,7 @@ calibration 可以有不参与判断的准备产物，但全部批次结束且�
 
 - 第 2 批三个完整 Matcher 已使用 release `Matcher_3cc75993d69e` 启动并完成首步；W&B run 为 oracle `6soiol5e`、detached `i0j1i1hc`、joint `s3lj6298`。
 - 第 2 批两个候选预训练也已使用同一 release 启动并完成首步；mean/max 的 Job/W&B 为 `340894/79immary`，未增强候选条件注意力为 `340895/12oeeshn`。
+- 2026-08-14 09:57 的最近完整 validation 快照：第 1 批 joint 在 epoch 9 刷新 selection score `0.6928435444`；第 2 批 oracle/detached/joint 在 epoch 3 分别为 `0.6624755578/0.6739567888/0.6543584471`，均仍改善；第 2 批 mean/max 与未增强交叉注意力候选任务在 epoch 0 分别为 `0.5234197383/0.4935270492`。六项都继续运行，不能按首轮或单指标提前判停。
 - 第 3 批一次性结构审计完成：四模态偏置输入固定为每个实体的归一化相对 XYZ 与 Stage1 固化概率，不移植 Matcher 不具备的 selector 树谱系字段。
 - `CandidateTokenAttentionBias` 已实现为每模态独立 `Linear(4,D_m) → SiLU → Linear(D_m,K)`；末层权重和偏置采用零初始化，偏置加在 softmax 前。
 - 新分支构造隔离 CPU 随机流，未增强/增强模型的共同参数初值逐值一致；PP 原有零输出投影未改变。
