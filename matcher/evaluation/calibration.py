@@ -288,6 +288,7 @@ def _calibration_data_evidence(manifest_path: Path) -> CalibrationDataEvidence:
         "identity_key_fields": manifest.get("identity_key_fields"),
         "prepared_smiles_rule": manifest.get("prepared_smiles_rule"),
         "identity_class_rule": manifest.get("identity_class_rule"),
+        "split_pdb_rule": manifest.get("split_pdb_rule"),
         "language_selection_rule": manifest.get("language_selection_rule"),
         "seen_identity_rule": manifest.get("seen_identity_rule"),
         "class_names": manifest.get("class_names"),
