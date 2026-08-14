@@ -927,3 +927,11 @@ A100 与 A800 的第一次控制尝试分别因为前序旧 YAML 缺少后续版
 正式清理先后两次验证 36 个正式模块导入、19 份 YAML 解析、compileall 与 `manifest/precompute/experiment/calibration` 四个帮助入口。前置门禁通过后，只从可变项目根的 `matcher/` 顶层删除 23 个已经移动的旧 Python 副本；删除后同一门禁再次通过。既有内容寻址 release、实验目录、动态命令、Slurm Job、`try_lock` 与 `after_lock` 均未修改，运行中的第 3 批继续使用原 release。
 
 清理后的事件式只读检查显示，增强六分类已完成 epoch 5，BEST epoch 4 macro-F1 为 `0.5276366341`，最新 epoch 5 为 `0.5168636141`，当前坏验证轮数为 1；因此尚未达到 patience=2 的自然早停条件。增强完整 Matcher oracle/detached/joint 当前 BEST selection score 为 `0.6774816979/0.6612648822/0.6763544866`。第 4 批来源和任务矩阵继续等待第 3 批自然收口，不用空闲的 Job `340895/340897` 抢跑未决方案。
+
+### 第 3 批增强六分类收口与第 4 批选源
+
+2026-08-14 18:51 的事件式只读核验确认，第 3 批增强六分类在 last epoch 6 自然早停，BEST epoch 4 macro-F1 为 `0.5276366341`，对应 Job `340894` 已恢复 `try_lock`。增强相对第 2 批未增强候选条件注意力只提高约 `0.07%`，仍比第 2 批 V 质心 mean/max 低约 `0.51%`；结合复杂度和三个同架构完整 Matcher 从零对照，正式选择第 2 批 mean/max 候选预训练 BEST 作为第 4 批来源。第 0 批 mean/max 分数虽近似相同，但固定中心视野与当前 V 质心模型结构不兼容，不作为初始化来源。
+
+来源 checkpoint 为 `/storage/penghongen/tmp/Matcher/experiments/batch2_candidate_v_centroid_mean_max_a800/train_experiment_job340894_20260814T093012_a7/batch2_candidate_v_centroid_mean_max_a800/BEST.pt`。18:55:30 用 Git 忽略目录中的一次性脚本完成最终发布关系取证，退出码为 0，报告为 `/storage/penghongen/tmp/Matcher/diagnostics/batch4_source_audit_20260814/batch2_meanmax_job340894_a7_final.json`；完整控制端命令保存在 `文档/记录/批次记录/第4批次/第4批候选预训练初始化.md`。正式 `matcher` 包、YAML 解析值和 `resolved.json` 均不读取该报告或文件摘要。
+
+第 4 批最小矩阵为 oracle、detached、joint 三项完整 Matcher，分别对应 Job `340897/340895/340894`。三项共享 mean/max、V 质心、SMI-TED 289M、五类非背景身份、global batch 32、同一来源 BEST 和 W&B online project/group；A800 两项只把物理批量与梯度累积从 `8×4` 调整为 `16×2`，并把每工作进程缓存上限从 16 GiB 调整为 32 GiB。三份 YAML、三份单任务记录和回归测试已建立；完整 pytest 为 `119 passed`，mypy 检查 45 个 Python 文件零问题，pyflakes、compileall、22 份正式 YAML 解析和 diff-check 通过。科学正确性与严格技术表达两项独立终审均为 PASS，阻断项为零。此时仍为 3 项已决定、0 项已提交，没有同步候选、发布 release、安装动态命令或删除 `try_lock`。
