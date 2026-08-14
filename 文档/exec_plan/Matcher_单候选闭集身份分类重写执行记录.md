@@ -840,3 +840,17 @@ bash '/home/penghongen/My_Project/Matcher/训练与运行/runtime/create_release
 得到预冻结 release `/home/penghongen/Feedback/Matcher/releases/Matcher_d15132948a18/Matcher`，manifest 内容摘要为 `d15132948a1885bae9a2019ac55175503c5c15459f043145147fe4a6d3598f89`，创建时间为 `2026-08-14T09:50:02+0800`。同一远端门禁随后以该 release 为项目根再次完整通过。此时只完成第 3 批发布准备，没有安装动态运行命令、删除 `try_lock`、删除 `after_lock` 或提交 GPU；四项仍按自然空闲资源与批次优先级等待。
 
 09:57 进行一次事件式只读核验。六个受管 allocation 均为 `RUNNING`，每项 `after_lock` 存在，`try_lock/kill_lock` 均不存在；因此没有放行第 3 批。第 1 批 joint 的 epoch 9 再次改善，selection score 为 `0.6928435444`，六分类 macro-F1、五类固有 Top-1、精确子类条件 Top-1、宽松五类端到端 F1 和小分子兼容端到端 F1 分别为 `0.5193692059/0.8526603001/0.8971229294/0.6620384979/0.6646646647`。第 2 批三个完整 Matcher 在 epoch 3 的 selection score 为 oracle `0.6624755578`、detached `0.6739567888`、joint `0.6543584471`，三轮均标记为改善；五类固有 Top-1 分别为 `0.8253751705/0.8431105048/0.8437926330`，宽松端到端 F1 分别为 `0.6284892086/0.6444572085/0.5985090522`。第 2 批 mean/max 与未增强候选条件注意力完成 epoch 0 validation，macro-F1 分别为 `0.5234197383/0.4935270492`；二者首轮 nucleotide_like/peptide_like F1 均为零。全部任务继续运行，本次快照只作为曲线与吞吐证据，不据首轮或单指标提前判定改动方向。
+
+### 第 3 批受保护接续控制器
+
+为了在任一受管 allocation 自然出现 `try_lock` 时立即按批次优先级接续，同时不把“检查完成”和“删除锁”之间的半触发窗口变成重复提交，建立两个一次性控制器：A100 为 `tmp/batch3_launch/activate_next_a100.sh`，SHA-256 `6938a27fe13a30a0121b2f790e40b195b44b9edc8b5988f5ee165b9817c80731`；A800 为 `tmp/batch3_launch/activate_candidate_a800.sh`，SHA-256 `71eceb2ccc71c64502c72da17e8e344fcbd748777643812608c8ec892fba2bd7`。前者只接受 Job `340893/340897/340898/340899` 并维持 oracle→detached→joint 的全局已提交前缀，后者只接受 Job `340894/340895` 且只允许增强六分类一次。
+
+第一轮只读审查发现四类阻断：不同 Job 并发可能重复选择同一目标；原子替换 `run_cmd` 后、删除 `try_lock` 前退出时不能恢复；只凭阶段 `summary.json` 存在不能证明 W&B 与整条运行命令正常收口；allocation runner 在解锁后重新选择 release，可能使实际执行版本偏离审查版本。严格 Bash 审查还发现命令替换 stderr 污染、Python `assert` 可被优化模式跳过、grep 读取错误失败开放和资源字段子串匹配。控制器随后集中修订，而不是在 GPU 锁上边试边改。
+
+最终状态机在全部全局读取、动态命令替换和锁删除之前，共同持有 `/home/penghongen/Feedback/Matcher/batch3_activation.lock`。它从当前 Job 最新不可变 `launch.json` 的冻结 release 读取前序配置，要求运行根 `summary.json` 与内嵌阶段摘要一致，BEST/LAST 文件存在，epoch、global step、selection score、W&B run ID 与 URL 有效；A100 还会检查其它受管 Job 是否留有已安装但未触发的第 3 批命令。若当前 Job 已安装目标命令但 `try_lock` 仍存在，控制器只在重新生成的完整命令逐字节一致时恢复删除该锁；否则失败关闭。
+
+生成的动态命令在进入训练前断言 `TASK_PROJECT_ROOT=/home/penghongen/Feedback/Matcher/releases/Matcher_d15132948a18/Matcher`，从而使 allocation runner 即使在解锁后看到可变项目根的新内容，也只会安全失败而不会用错 release。控制器唯一持久 Job 控制文件替换是当前 Job 的 `run_cmd`，唯一受管锁删除是当前 Job 的 `try_lock`；`after_lock/pre_lock/kill_lock` 和其它 Job 均不修改，calibration 入口与数据均未引用。
+
+最终两份脚本分别通过独立科学部署终审和严格 Bash/技术表达终审。验证覆盖 `bash -n`、UTF-8/LF、内嵌 Python 编译、冻结源码与四份 YAML 的 SHA-256，以及不执行真实脚本的合成正常安装、A100 三种前缀、A800 唯一提交、跨 Job 半触发、空洞、重复和恢复探针；两项结论均为 PASS，阻断项为零。共享文件系统的跨进程 `flock` 语义没有用真实服务器控制锁做破坏性探针，作为运行环境假设保留；W&B 完成证据是 `finish(0)` 返回后才发布的本地运行根摘要，不额外查询远端 API。
+
+2026-08-14 10:44:47 再次只读核验六个受管 Job：全部为 `RUNNING`，每项 `after_lock=1`，`try_lock/pre_lock/kill_lock=0`。因此两个控制器均未执行，没有安装第 3 批命令、删除锁、同步服务器或读取 calibration。修订说明：本节只记录未来自然空闲时可恢复且失败关闭的接续协议，不把第 3 批四项记作已提交。
