@@ -39,6 +39,8 @@ stages:
       use_manual_features: true  # 候选聚合与身份 MLP 使用计数、固化概率和身份类别概率。
       use_sampling_features: false  # 第1批不读取第2批新增的裁剪几何统计。
       use_candidate_token_attention_bias: false  # 第1批 mean/max 聚合不使用候选—实体注意力偏置。
+      initial_graph_gate: 0.0  # 图身份分数增量从严格零开始。
+      initial_inventory_gate: 0.0  # 清单身份分数增量从严格零开始。
       model_dim: 256
       attention_heads: 8
       dropout: 0.10

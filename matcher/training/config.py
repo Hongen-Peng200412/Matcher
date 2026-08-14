@@ -212,6 +212,8 @@ def _parse_stage(values: dict[str, Any]) -> StageConfig:
             "use_manual_features",
             "use_sampling_features",
             "use_candidate_token_attention_bias",
+            "initial_graph_gate",
+            "initial_inventory_gate",
             "model_dim",
             "attention_heads",
             "dropout",
@@ -225,6 +227,10 @@ def _parse_stage(values: dict[str, Any]) -> StageConfig:
         "stage.model",
     )
     model = MatcherModelConfig.from_dict(model_values)
+    if task_name == "candidate_pretrain" and (
+        model.initial_graph_gate != 0.0 or model.initial_inventory_gate != 0.0
+    ):
+        raise ValueError("candidate_pretrain 不构造身份打分分支，两个初始身份门必须为 0。")
     training_values = _mapping(values["training"], "stage.training")
     expected_training = {
         "seed",

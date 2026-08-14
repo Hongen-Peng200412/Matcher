@@ -43,6 +43,8 @@ stages:
       use_manual_features: false
       use_sampling_features: false
       use_candidate_token_attention_bias: false
+      initial_graph_gate: 0.0  # 候选预训练不构造身份分支，两个门必须为零。
+      initial_inventory_gate: 0.0
       model_dim: 256
       attention_heads: 8
       dropout: 0.10
@@ -83,6 +85,8 @@ stages:
       use_manual_features: false
       use_sampling_features: false
       use_candidate_token_attention_bias: false
+      initial_graph_gate: 0.0  # 候选预训练不构造身份分支，两个门必须为零。
+      initial_inventory_gate: 0.0
       model_dim: 256
       attention_heads: 8
       dropout: 0.10
