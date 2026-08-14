@@ -6,7 +6,7 @@ Date: 2026-08-14
 
 活动 Goal 仍是 Matcher 第 1–5 批开发、validation 头对头比较、六张受管 GPU 调度、分批 W&B 和三层实验记录。恢复工作时先读取 `文档/记录/目标草案.md`，再核对本文件、Git 状态和服务器事件；不得运行 calibration 模型推理或把 calibration 用于选择。
 
-当前分支为 `codex/matcher-package-layout`。整理前累计基点与 `Learn/CUMULATIVE` 均为 `a74deca9b7a3f6a58909410623ba1c8b99eb9625`；分支已提交逐文件清单 `cc1f70e`，目录移动、导入、Shell/YAML 入口和当前文档已经暂存。科学正确性与严格技术表达两项独立复核均为 PASS，正在完成实现提交与双线 Git 收口。
+当前工作分支为 `Learn/CUMULATIVE@8d6ba38`。目录整理实现端点是 `codex/matcher-package-layout@6176122`；学习历史按职责清单、运行模块与入口、测试导入、文档证据重建到 `8d6ba38`。两个端点的树摘要均为 `dd86b658cab8d0401248726563ff504b662a2c56`，逐文件内容完全一致；科学正确性与严格技术表达两项独立复核均为 PASS。
 
 六个受管 allocation 仅为 Job `340893/340894/340895/340897/340898/340899`。2026-08-14 17:26 后只读核验时六项均为 `RUNNING` 且全部保留 `after_lock`；Job `340895` 与 `340897` 已自然结束当前命令并生成 `try_lock`，其余四项继续第 3 批。不得删除任何 `after_lock`、释放 allocation、触碰用户任务或未经计划重复实验。
 
@@ -17,8 +17,8 @@ Date: 2026-08-14
 - 四个正式 Shell 已改用 `matcher.data.manifest`、`matcher.data.precompute`、`matcher.training.experiment` 和 `matcher.evaluation.calibration`；十九份正式 YAML 只更新读取入口说明。
 - 对整理前 36 个既有 Python 文件做语法树归一比较，移除导入与模块说明后全部等价。六个测试文件按四组精确得到 `118 passed`；mypy 检查 `matcher/` 下 45 个 Python 文件零问题，pyflakes、compileall、19 份 YAML、8 个 Shell、四个帮助入口、公共导入和真实 `spawn` 工作进程生命周期均通过。
 - 独立科学正确性审查确认候选集合、监督、模型状态、随机状态、损失、指标、global batch、持久产物和 calibration 禁读边界均未漂移；严格技术表达审查确认目录职责、依赖方向、入口与记录可以脱离本次对话冷读。两项结论均为 PASS，阻断项为零。
-- Batch2 未增强候选条件注意力在 Job `340895` 自然早停：BEST epoch 4，macro-F1 `0.5272674639`，W&B run `12oeeshn`。
-- Batch2 V 质心 oracle 完整 Matcher 在 Job `340897` 自然早停：BEST epoch 11，selection score `0.6981048482`，六分类 macro-F1 `0.5285113541`，五类固有 Top-1 `0.8758526603`，宽松端到端 F1 `0.6758793970`，W&B run `6soiol5e`。
+- 第 1 批 joint 已自然早停：BEST/last epoch `11/13`，selection score `0.6945667425`；第 1 批三种损失最大分差约 `0.26%`，不能确定稳定排序。
+- 第 2 批五项均已自然早停并完成单任务/批次头对头回填。三个完整 Matcher oracle/detached/joint 的 selection score 为 `0.6981048482/0.6864829756/0.6887556119`；两项候选预训练 mean/max/未增强交叉注意力的 macro-F1 为 `0.5303632887/0.5272674639`。没有多个核心指标约 10% 的共同下降，后续继续使用 V 质心单视野。
 
 ## Decisions
 
@@ -31,17 +31,15 @@ Date: 2026-08-14
 ## Open Questions
 
 - 第 3 批增强六分类和三个增强完整 Matcher 尚未全部自然收口；候选预训练 BEST 来源与第 4 批最小任务矩阵仍未确定。
-- 当前目录整理尚待实现提交和学习端点等价证明；两项独立复核已经通过。
 - 包整理发布前需要对可变服务器项目根执行一次精确旧路径清理；现有内容寻址 release 与运行任务必须保持不变。
 - “去 SHA-256”只在 Batch4 来源运维取证边界内已经闭合；若要调整尚未执行的 calibration claim 格式，必须作为目录整理之外的独立治理改动评审。
 
 ## Next Actions
 
-1. 提交 `codex/matcher-package-layout` 实现端点，在隔离工作树按人类理解顺序建立学习端点，验证端点等价后快进 `Learn/CUMULATIVE`。
-2. 把 Batch2 两项新自然收口结果回填对应单任务、Batch2 批次、总记录与 ExecPlan；继续只读观察第 3 批明确事件。
-3. 第 3 批增强六分类自然收口后，只用 validation 在候选预训练模型中选源，运行一次性来源审计，建立第 4 批最小 YAML 与逐任务记录。
-4. 新任务发布前安全同步新包，并仅在可变服务器项目根精确删除旧顶层模块；从内容寻址 release 启动，W&B 使用独立 Batch4 project/group。
-5. 不读取 calibration 模型结果，不删除 `after_lock`，不释放 GPU，不触碰用户任务。
+1. 继续只读观察第 3 批首个完整 validation、自然收口或失败事件；不按固定心跳重复记录无变化状态。
+2. 第 3 批增强六分类自然收口后，只用 validation 在候选预训练模型中选源，运行一次性来源审计，建立第 4 批最小 YAML 与逐任务记录。
+3. 新任务发布前安全同步新包，并仅在可变服务器项目根精确删除旧顶层模块；从内容寻址 release 启动，W&B 使用独立 Batch4 project/group。
+4. 不读取 calibration 模型结果，不删除 `after_lock`，不释放 GPU，不触碰用户任务。
 
 ## Files To Reopen
 

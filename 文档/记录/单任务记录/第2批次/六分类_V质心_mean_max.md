@@ -8,7 +8,7 @@
 - 代码与 release：远端发布源逐文件核对为第 2 批冻结端点，实际复用 release `Matcher_3cc75993d69e`。
 - launch：`train_experiment_job340894_20260814T093012_a7`。
 - W&B run：[`79immary`](https://wandb.ai/pencounkdual-111/AdaLigand-Matcher-Batch2/runs/79immary)。
-- 状态：训练中；W&B online 与首个 global batch 32 更新均已通过，最终 validation 待自然早停。
+- 状态：训练命令已自然早停；W&B online 与首个 global batch 32 更新均通过，受管 allocation 后续已接续第 3 批任务。
 
 控制端使用下列完整命令执行受保护接续；脚本 SHA-256 为 `092a61bdd10e301bd9f23c05cbe269340cdddfeb7358156d37692e23d00093c4`：
 
@@ -28,3 +28,9 @@ exec bash "${TASK_PROJECT_ROOT}/训练与运行/sh/train_experiment.sh" \
 2026-08-14 09:57:35 完成 epoch 0 validation：macro-F1 与 selection score 均为 `0.5234197383`。按 `background/ion/nucleotide_like/peptide_like/small_molecule/sugar` 顺序的 F1 为 `0.9131389150/0.6872682324/0/0/0.8283002588/0.7118110236`；混淆矩阵为 `[[4368,482,0,0,98,75],[14,556,0,0,6,0],[1,0,0,0,2,0],[0,0,0,0,8,0],[67,4,0,0,480,0],[94,0,0,0,14,226]]`。训练数据等待 `11.0 s`、计算 `1200.4 s`，validation `389.2 s`；该轮是首轮改善，任务继续运行。
 
 2026-08-14 10:48:48 已完成 epoch 2 validation。当前 BEST 是 epoch 1 的 macro-F1 `0.5303632887`，与第 0 批 mean/max `0.5304244533` 仅差约 `-0.01%`；epoch 2 回落到 `0.5119483075`，坏验证轮数 1，下一轮学习率 `5e-5`。BEST 六类 F1 依次为 `0.9277242777/0.7020164302/0/0/0.8500000000/0.7024390244`；nucleotide_like 与 peptide_like 仍为零，任务尚未自然收口。
+
+## 最终 validation 与自然收口
+
+2026-08-14 11:16:43（Asia/Shanghai），任务在 epoch 3 后因连续两个坏验证轮自然早停。BEST 保持 epoch 1，macro-F1 与 selection score 均为 `0.5303632887`；按 `background/ion/nucleotide_like/peptide_like/small_molecule/sugar` 顺序的 F1 为 `0.9277242777/0.7020164302/0/0/0.8500000000/0.7024390244`，支持数为 `5,023/576/3/8/551/334`。混淆矩阵为 `[[4576,292,0,0,90,65],[101,470,0,0,5,0],[1,0,0,0,2,0],[0,0,0,0,8,0],[57,1,0,0,493,0],[107,0,0,0,11,216]]`；ligand/binding micro-Dice 为 `0.2523511323/0.0693798118`。
+
+该 BEST 相对第 0 批 mean/max `0.5304244533` 仅低约 `0.01%`，可视为持平；V 质心视野与采样统计没有损害六分类整体结果。运行根：`/storage/penghongen/tmp/Matcher/experiments/batch2_candidate_v_centroid_mean_max_a800/train_experiment_job340894_20260814T093012_a7/summary.json`。

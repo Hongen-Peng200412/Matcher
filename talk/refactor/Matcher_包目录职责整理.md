@@ -98,4 +98,6 @@ matcher/
 
 对基点 `a74deca9b7a3f6a58909410623ba1c8b99eb9625` 的 36 个既有 Python 文件执行语法树归一比较：移除导入语句与模块说明后，函数、类、常量和可执行语句全部相同。六个测试文件按四组得到 `35 + 28 + 24 + 31 = 118 passed`；其中 31 项由 calibration、初始化和追踪三个测试文件合并执行。mypy 检查 `matcher/` 下 45 个 Python 文件零问题，pyflakes、compileall、19 份 YAML 正式解析、8 个 Shell 的 `bash -n`、四个新模块入口的 `--help`、真实 `spawn` 工作进程创建与退出，以及 `git diff HEAD --check` 均通过。
 
-本次整理没有修改配置值、数据和缓存路径、模型或损失计算、指标、随机状态、批次顺序、checkpoint/JSON schema 或 calibration 禁读边界。运行中的六个受管 Job 继续读取各自既有内容寻址 release；本次本地整理没有访问或修改这些 release、动态命令、Slurm 作业和任何锁。独立科学正确性与严格技术表达复核均为 PASS，阻断项为零；该快照可以作为目录整理实现端点进入双线 Git 收口。
+本次整理没有修改配置值、数据和缓存路径、模型或损失计算、指标、随机状态、批次顺序、checkpoint/JSON schema 或 calibration 禁读边界。运行中的六个受管 Job 继续读取各自既有内容寻址 release；本次本地整理没有访问或修改这些 release、动态命令、Slurm 作业和任何锁。独立科学正确性与严格技术表达复核均为 PASS，阻断项为零。
+
+实现端点为 `codex/matcher-package-layout@6176122`；学习历史按“职责清单→运行模块与入口→测试导入→文档证据”重建到 `Learn/matcher-package-layout@8d6ba38`。两个端点的树摘要均为 `dd86b658cab8d0401248726563ff504b662a2c56`，逐文件内容完全一致；`Learn/CUMULATIVE` 已快进到学习端点。

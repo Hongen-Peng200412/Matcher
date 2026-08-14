@@ -8,6 +8,8 @@
 - 配置与版本：YAML 路径、实现提交、内容寻址 release 和一次性来源审计报告路径。
 - 资源身份：受管 Slurm Job、GPU 型号、CPU 数、物理批量、梯度累积与 global batch。
 - 完整提交：控制端命令、动态训练命令、触发时间、launch 和保留的 `after_lock`。
+- 状态时间线：提交、开始、首步、每次刷新 BEST、自然早停或失败，以及训练命令退出状态；Slurm allocation 的保留状态单独记录。
+- 产物位置：运行根、阶段目录、`resolved.json`、`history.jsonl`、BEST/LAST、阶段 `summary.json` 和运行根 `summary.json`。
 - W&B：project、group、run ID、在线地址和分层指标前缀。
 - 个性化信息：该任务相对来源候选预训练及最近头对头基线的唯一变量。
 - 运行验收：首个 global batch 32 更新、有限损失与梯度、显存和数据等待。
