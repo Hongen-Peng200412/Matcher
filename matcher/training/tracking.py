@@ -334,6 +334,7 @@ def start_wandb_tracking(
             "classification_summary/*",
             "classification_per_class/*",
             "classification_confusion/*",
+            "identity_contribution/validation/*",
             *(f"{prefix}/*" for prefix in _IDENTITY_REPORT_PREFIXES),
             "area/*",
             "selection/*",

@@ -248,7 +248,7 @@ def test_candidate_initialization_loads_only_candidate_encoder_from_completed_be
 
 
 def test_candidate_initialization_migrates_missing_historical_fields(tmp_path: Path) -> None:
-    """字段缺失时迁移三个模型开关、固定中心裁剪和空身份范围。"""
+    """字段缺失时迁移三个模型开关、两个身份门、固定中心裁剪和空身份范围。"""
 
     source_plan_path, source_stage, source_data, target_stage = _batch0_plans()
     historical_values = yaml.safe_load(source_plan_path.read_text(encoding="utf-8"))
@@ -257,6 +257,8 @@ def test_candidate_initialization_migrates_missing_historical_fields(tmp_path: P
         "use_manual_features",
         "use_sampling_features",
         "use_candidate_token_attention_bias",
+        "initial_graph_gate",
+        "initial_inventory_gate",
     ):
         historical_stage["model"].pop(name)
     historical_stage.pop("identity_scope")
@@ -278,6 +280,8 @@ def test_candidate_initialization_migrates_missing_historical_fields(tmp_path: P
             "use_manual_features",
             "use_sampling_features",
             "use_candidate_token_attention_bias",
+            "initial_graph_gate",
+            "initial_inventory_gate",
         ),
         stage_field_omissions=("identity_scope",),
         data_field_omissions=("local_crop_strategy",),
@@ -298,12 +302,20 @@ def test_candidate_initialization_migrates_missing_historical_fields(tmp_path: P
     assert record["source_scientific_data"]["local_crop_strategy"] == "fixed_center"
 
 
-def test_candidate_initialization_migrates_missing_attention_bias_only(tmp_path: Path) -> None:
-    """已有手动与采样统计的来源只迁移缺失的注意力偏置开关。"""
+def test_candidate_initialization_migrates_batch2_attention_and_identity_gates(
+    tmp_path: Path,
+) -> None:
+    """已有手动与采样统计的第 2 批来源迁移缺失的注意力偏置开关和两个身份门。"""
 
     source_plan_path, source_stage, source_data, target_stage = _batch2_plans()
     historical_values = yaml.safe_load(source_plan_path.read_text(encoding="utf-8"))
-    del historical_values["stages"][0]["model"]["use_candidate_token_attention_bias"]
+    historical_model = historical_values["stages"][0]["model"]
+    for name in (
+        "use_candidate_token_attention_bias",
+        "initial_graph_gate",
+        "initial_inventory_gate",
+    ):
+        del historical_model[name]
     historical_plan_path = tmp_path / "historical_batch2.yaml"
     historical_plan_path.write_text(
         yaml.safe_dump(historical_values, sort_keys=False),
@@ -317,7 +329,11 @@ def test_candidate_initialization_migrates_missing_attention_bias_only(tmp_path:
         nn.Linear(3, 2),
         checkpoint_updates={},
         data_updates={},
-        model_config_omissions=("use_candidate_token_attention_bias",),
+        model_config_omissions=(
+            "use_candidate_token_attention_bias",
+            "initial_graph_gate",
+            "initial_inventory_gate",
+        ),
         stage_field_omissions=(),
         data_field_omissions=(),
         publish_run_summary=True,
@@ -334,6 +350,8 @@ def test_candidate_initialization_migrates_missing_attention_bias_only(tmp_path:
     assert record["source_candidate_model_config"]["use_manual_features"] is True
     assert record["source_candidate_model_config"]["use_sampling_features"] is True
     assert record["source_candidate_model_config"]["use_candidate_token_attention_bias"] is False
+    assert "initial_graph_gate" not in record["source_candidate_model_config"]
+    assert "initial_inventory_gate" not in record["source_candidate_model_config"]
 
 
 @pytest.mark.parametrize(

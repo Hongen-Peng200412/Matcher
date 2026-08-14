@@ -43,6 +43,8 @@ stages:
       use_manual_features: true
       use_sampling_features: true
       use_candidate_token_attention_bias: false
+      initial_graph_gate: 0.0  # Batch4 只改变候选编码器初始化，身份门保持从零学习。
+      initial_inventory_gate: 0.0
       model_dim: 256
       attention_heads: 8
       dropout: 0.10

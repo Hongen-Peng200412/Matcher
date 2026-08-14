@@ -44,7 +44,12 @@ from ..evaluation.metrics import (
     IdentityScopeMetrics,
     selection_score,
 )
-from ..model import CandidateEncoder, ClosedSetMatcher
+from ..model import (
+    CandidateEncoder,
+    ClosedSetMatcher,
+    FullMatcherOutput,
+    IdentityScoreComponents,
+)
 from ..utils.json_artifacts import append_jsonl, write_json
 from .checkpointing import (
     CHECKPOINT_SCHEMA_VERSION,
@@ -127,7 +132,7 @@ class LossValues(TypedDict):
 
 
 class IdentityDiagnostics(TypedDict):
-    """完整 Matcher 两个零初始化身份出口门在 epoch 结束时的值。
+    """完整 Matcher 两个身份出口门在 epoch 结束时的值。
 
     ``graph_gate`` 是配体原子图身份分数出口的可训练标量门。
     ``inventory_gate`` 是排除自身清单身份分数出口的可训练标量门。
@@ -135,6 +140,151 @@ class IdentityDiagnostics(TypedDict):
 
     graph_gate: float
     inventory_gate: float
+
+
+class IdentityContributionDiagnostics(TypedDict):
+    """validation 中身份分数增量相对语言基线排序尺度的诊断结果。
+
+    ``multi_identity_eligible_count`` 是身份目标有效且清单至少含两个身份的候选数。
+    ``nonzero_native_count`` 是语言基线中心化 L2 范数大于 ``1e-12`` 的候选数。
+    ``native_centered_l2_mean`` 是无量纲 logits 在有效身份槽内去均值后的 L2 范数均值；无候选时为 None。
+    ``graph_increment_centered_l2_mean`` 是无量纲已乘 graph 门分数增量的中心化 L2 范数均值；无候选时为 None。
+    ``inventory_increment_centered_l2_mean`` 是无量纲已乘 inventory 门分数增量的中心化 L2 范数均值；无候选时为 None。
+    ``graph_to_native_ratio_mean`` 是无量纲 graph 增量范数与非零语言基线范数之比的逐候选均值；无有效分母时为 None。
+    ``inventory_to_native_ratio_mean`` 是无量纲 inventory 增量范数与非零语言基线范数之比的逐候选均值；无有效分母时为 None。
+    ``combined_to_native_ratio_mean`` 是无量纲门控增量和的中心化范数与非零语言基线范数之比的均值；无有效分母时为 None。
+    """
+
+    multi_identity_eligible_count: int
+    nonzero_native_count: int
+    native_centered_l2_mean: float | None
+    graph_increment_centered_l2_mean: float | None
+    inventory_increment_centered_l2_mean: float | None
+    graph_to_native_ratio_mean: float | None
+    inventory_to_native_ratio_mean: float | None
+    combined_to_native_ratio_mean: float | None
+
+
+class _IdentityContributionStatistics:
+    """跨 validation 批次累积不参与损失、指标或选模的身份分数贡献尺度。"""
+
+    def __init__(self) -> None:
+        self.multi_identity_eligible_count = 0
+        self.nonzero_native_count = 0
+        self.native_centered_l2_sum = 0.0
+        self.graph_increment_centered_l2_sum = 0.0
+        self.inventory_increment_centered_l2_sum = 0.0
+        self.graph_to_native_ratio_sum = 0.0
+        self.inventory_to_native_ratio_sum = 0.0
+        self.combined_to_native_ratio_sum = 0.0
+
+    @staticmethod
+    def _centered_l2(values: torch.Tensor, identity_mask: torch.Tensor) -> torch.Tensor:
+        """在每个候选的有效身份槽内去均值，返回 float64 ``(B,)`` L2 范数。"""
+
+        values64 = values.to(dtype=torch.float64)
+        valid_values = torch.where(identity_mask, values64, 0.0)
+        counts = identity_mask.sum(dim=1).to(dtype=torch.float64).clamp_min(1.0)
+        means = valid_values.sum(dim=1) / counts
+        centered = torch.where(identity_mask, values64 - means[:, None], 0.0)
+        return centered.square().sum(dim=1).sqrt()
+
+    def update(
+        self,
+        components: IdentityScoreComponents,
+        batch: MatcherLossBatch,
+        identity_scope: IdentityScope,
+    ) -> None:
+        """只累积有真实身份目标且至少存在两个有效身份槽的候选。"""
+
+        identity_mask = batch["identity_mask"]
+        eligible = identity_eligible_mask(
+            batch,
+            identity_scope,
+        )
+        selected = eligible & (identity_mask.sum(dim=1) >= 2)
+        selected_mask = identity_mask[selected]
+        native = self._centered_l2(components["native"][selected], selected_mask)
+        graph = self._centered_l2(
+            components["graph_increment"][selected],
+            selected_mask,
+        )
+        inventory = self._centered_l2(
+            components["inventory_increment"][selected],
+            selected_mask,
+        )
+        combined = self._centered_l2(
+            (
+                components["graph_increment"][selected]
+                + components["inventory_increment"][selected]
+            ),
+            selected_mask,
+        )
+        nonzero_native = native > 1e-12
+        denominator = native[nonzero_native]
+        summary = torch.stack(
+            (
+                selected.sum().to(dtype=torch.float64),
+                nonzero_native.sum().to(dtype=torch.float64),
+                native.sum(),
+                graph.sum(),
+                inventory.sum(),
+                (graph[nonzero_native] / denominator).sum(),
+                (inventory[nonzero_native] / denominator).sum(),
+                (combined[nonzero_native] / denominator).sum(),
+            )
+        )
+        values = [float(value) for value in summary.detach().cpu().tolist()]
+        if not all(math.isfinite(value) for value in values):
+            raise FloatingPointError("validation 身份分数贡献诊断含 NaN 或 Inf。")
+        self.multi_identity_eligible_count += int(values[0])
+        self.nonzero_native_count += int(values[1])
+        self.native_centered_l2_sum += values[2]
+        self.graph_increment_centered_l2_sum += values[3]
+        self.inventory_increment_centered_l2_sum += values[4]
+        self.graph_to_native_ratio_sum += values[5]
+        self.inventory_to_native_ratio_sum += values[6]
+        self.combined_to_native_ratio_sum += values[7]
+
+    def compute(self) -> IdentityContributionDiagnostics:
+        """返回可直接展开到 W&B validation 指标树的有限均值与支持数。"""
+
+        candidate_count = self.multi_identity_eligible_count
+        native_count = self.nonzero_native_count
+        return {
+            "multi_identity_eligible_count": candidate_count,
+            "nonzero_native_count": native_count,
+            "native_centered_l2_mean": (
+                self.native_centered_l2_sum / candidate_count
+                if candidate_count > 0
+                else None
+            ),
+            "graph_increment_centered_l2_mean": (
+                self.graph_increment_centered_l2_sum / candidate_count
+                if candidate_count > 0
+                else None
+            ),
+            "inventory_increment_centered_l2_mean": (
+                self.inventory_increment_centered_l2_sum / candidate_count
+                if candidate_count > 0
+                else None
+            ),
+            "graph_to_native_ratio_mean": (
+                self.graph_to_native_ratio_sum / native_count
+                if native_count > 0
+                else None
+            ),
+            "inventory_to_native_ratio_mean": (
+                self.inventory_to_native_ratio_sum / native_count
+                if native_count > 0
+                else None
+            ),
+            "combined_to_native_ratio_mean": (
+                self.combined_to_native_ratio_sum / native_count
+                if native_count > 0
+                else None
+            ),
+        }
 
 
 class TrainingEpochResult(TypedDict):
@@ -1089,6 +1239,41 @@ def _evaluation_wandb_metrics(
     return metrics
 
 
+def _identity_contribution_wandb_metrics(
+    diagnostics: IdentityContributionDiagnostics,
+) -> dict[str, MetricValue]:
+    """把不参与选模的 validation 身份分数贡献诊断展开到独立 W&B 子树。"""
+
+    metrics: dict[str, MetricValue] = {
+        "identity_contribution/validation/multi_identity_eligible_count": diagnostics[
+            "multi_identity_eligible_count"
+        ],
+        "identity_contribution/validation/nonzero_native_count": diagnostics[
+            "nonzero_native_count"
+        ],
+    }
+    diagnostic_values = {
+        "native_centered_l2_mean": diagnostics["native_centered_l2_mean"],
+        "graph_increment_centered_l2_mean": diagnostics[
+            "graph_increment_centered_l2_mean"
+        ],
+        "inventory_increment_centered_l2_mean": diagnostics[
+            "inventory_increment_centered_l2_mean"
+        ],
+        "graph_to_native_ratio_mean": diagnostics["graph_to_native_ratio_mean"],
+        "inventory_to_native_ratio_mean": diagnostics[
+            "inventory_to_native_ratio_mean"
+        ],
+        "combined_to_native_ratio_mean": diagnostics[
+            "combined_to_native_ratio_mean"
+        ],
+    }
+    for name, value in diagnostic_values.items():
+        if value is not None:
+            metrics[f"identity_contribution/validation/{name}"] = value
+    return metrics
+
+
 # ================================================================================================
 
 
@@ -1098,11 +1283,14 @@ def evaluate_model(
     stage: StageConfig,
     class_weights: torch.Tensor | None,
     device: torch.device,
+    *,
+    identity_contribution_statistics: _IdentityContributionStatistics | None = None,
 ) -> EvaluationResult:
     """在调用方指定的完整数据划分 loader 上返回 ``EvaluationResult``。
 
     损失按全划分真实分母汇总；指标由 ``EvaluationAccumulator`` 跨物理批次合并。
     任一非有限模型输出或损失立即终止，不返回有效 ``EvaluationResult``。
+    可选统计器只读取完整 Matcher 的分数组件，不改变返回值、损失、指标或选模。
     """
 
     started_at = time.perf_counter()
@@ -1122,6 +1310,18 @@ def evaluate_model(
                     stage.identity_scope,
                     class_weights,
                 )
+                if identity_contribution_statistics is not None:
+                    if not isinstance(model, ClosedSetMatcher) or stage.identity_scope is None:
+                        raise TypeError("身份分数贡献诊断只适用于配置身份范围的完整 Matcher。")
+                    components = model.identity_score_components(
+                        batch,
+                        cast(FullMatcherOutput, outputs),
+                    )
+                    identity_contribution_statistics.update(
+                        components,
+                        batch,
+                        stage.identity_scope,
+                    )
             batch_size = int(batch["class_target"].shape[0])
             statistics.update(losses, batch_size)
             metrics.update(outputs, batch)
@@ -1191,12 +1391,18 @@ def run_training_stage(
                 tracker,
             )
             global_step = int(training["global_step"])
+            identity_contribution_statistics = (
+                _IdentityContributionStatistics()
+                if isinstance(runtime.model, ClosedSetMatcher)
+                else None
+            )
             validation = evaluate_model(
                 runtime.model,
                 runtime.validation_loader,
                 stage,
                 runtime.class_weights,
                 runtime.device,
+                identity_contribution_statistics=identity_contribution_statistics,
             )
             validation_metrics = validation["metrics"]
             score = selection_score(
@@ -1302,6 +1508,12 @@ def run_training_stage(
             epoch_metrics.update(
                 _evaluation_wandb_metrics(validation, stage.identity_scope)
             )
+            if identity_contribution_statistics is not None:
+                epoch_metrics.update(
+                    _identity_contribution_wandb_metrics(
+                        identity_contribution_statistics.compute()
+                    )
+                )
             tracker.log_epoch(epoch, global_step, epoch_metrics)
             print(
                 json.dumps(

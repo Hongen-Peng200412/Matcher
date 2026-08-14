@@ -959,3 +959,13 @@ Git 忽略目录中的一次性激活控制器经科学正确性和严格技术�
 | joint | `340894` | `train_experiment_job340894_20260814T200250_a9` | `c527adm0` | step 30；loss `0.9081250`；preclip `0.9958403`；`12.3511 candidate/s` |
 
 三项 `resolved.json.initialization` 的来源语义一致，严格加载的 `missing_keys/unexpected_keys` 为空。首批损失、梯度、数据等待、吞吐和显存均为有限值；三项 `after_lock` 全部保留。当前没有活动 heartbeat，后续只在完整 validation、BEST 刷新、自然收口或失败等明确事件发生时回填。第 5 批可以在更早批次非重复任务全部提交后使用自然空闲的受管卡，但必须先完成科学动机、直接对照、配置、测试和独立审查；不得为填卡提交未经准备的实验。
+
+### 第 3 批 joint 收口与第 5 批首项门初值对照
+
+2026-08-14 21:30 的事件式只读核验确认，第 3 批增强注意力 joint 已于 19:08:52 自然早停。Job `340899` 的 Slurm allocation 继续 `RUNNING`、`after_lock_340899` 保留，runner 自然恢复 `try_lock_340899`；没有执行取消、释放、命令替换或锁删除。该运行 launch 为 `train_experiment_job340899_20260814T151852_a3`，W&B run 为 `z41ltqiv`，BEST/last epoch 为 `4/6`，global step `3129`，selection score `0.6763544866`。六分类 macro-F1、五类固有 Top-1、精确子类条件 Top-1、宽松五类端到端 F1 与 small_molecule 兼容端到端 F1 依次为 `0.4939851657/0.8328785812/0.8985645933/0.6365137009/0.6194503171`；ligand/binding micro Dice 为 `0.2493513245/0.0801483948`。
+
+相对第 2 批 V 质心 mean/max joint，增强 joint 的 selection score、分类与主要身份指标约低 `0.38%–3.09%`，ligand Dice 低约 `17.43%`，binding Dice 高约 `19.72%`。它没有多个核心指标同时下降约 10%，不判为明显有害；但与已收口增强六分类一起都没有给出采用增强注意力的正证据。因此第 5 批首项不混入注意力结构变化，继续使用更简单且当前更强的 V 质心 mean/max oracle。
+
+第 5 批门值实现把 `initial_graph_gate/initial_inventory_gate` 加为正式模型配置字段。第 0–4 批 22 份 YAML 的 23 个阶段全部显式为 `0.0/0.0`，历史 checkpoint/resolved 缺字段时只在恢复入口迁移为零；候选预训练拒绝非零门。完整 Matcher validation 的正式前向同时保存语言基线、已乘图门增量与已乘清单门增量，诊断直接读取同批组件，不重跑打分器，也不再次执行由 `torch.any(...)` 触发的 device→host 布尔判定；每个物理批次新增的唯一 device→host 传输是一组聚合标量。结果只进入 W&B `identity_contribution/validation/*`，不进入损失、正式指标、selection score、历史、checkpoint 或 calibration。
+
+首项配置为 `configs/experiments/batch5/batch5_smi_ted_v_centroid_gate_002_oracle_a100.yaml`，相对第 2 批 oracle 只把双门初值从 `0.0/0.0` 改成 `0.02/0.02`，另改变 plan/stage 名和 W&B project/group。选择 `0.02` 是因为第 1–3 批从零训练的门值自然学习到约 `0.01–0.03`；不直接采用缺少证据的 `0.1`，也不同时改变裁剪阈值、学习率、优化器或损失。预定资源为自然空闲的 A100 Job `340899`，W&B online project/group 为 `AdaLigand-Matcher-Batch5/matcher-batch5-gate-initialization`。当前为 1 项已决定、0 项已提交；配置、测试、双线 Git、release、远端门禁和受保护激活全部完成前不删除 `try_lock_340899`。

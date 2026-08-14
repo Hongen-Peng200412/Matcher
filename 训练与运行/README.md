@@ -254,6 +254,8 @@ Matcher 的正式任务只从 `/home/penghongen/My_Project/Matcher` 冻结 relea
 | `validation_worker_generator_seed` | 非负整数；validation DataLoader 专用生成器种子。 |
 | `worker_generator_lifecycle` | 字符串；说明两个 DataLoader 各自持有生成器，建立迭代器不会推进模型的全局 Torch 随机状态。 |
 
+`stage.model` 中，`initial_graph_gate` 与 `initial_inventory_gate` 是完整 Matcher 图分支和清单分支身份分数增量的初始标量门。二者必须是 `[0,1]` 内有限 JSON 数值，可以写成整数或浮点数；训练开始后仍是无边界可训练参数。候选预训练不构造身份打分分支，因此两项必须显式为 `0.0`。第 0–4 批正式 YAML 也都显式为 `0.0`，保持原有严格零增量初始化；对应历史 checkpoint 或 `resolved.json` 缺少字段时，恢复入口迁移为 `0.0`。正式 YAML 缺少任一字段立即失败，不使用迁移默认值。
+
 `frozen_optimizer_semantics` 中，`adam_betas/adam_epsilon/adam_amsgrad/adam_maximize/adam_foreach/adam_capturable/adam_differentiable/adam_fused` 冻结 AdamW 行为；`scheduler/scheduler_mode/scheduler_factor/scheduler_patience/scheduler_threshold/scheduler_threshold_mode/scheduler_cooldown/scheduler_minimum_learning_rate/scheduler_epsilon` 冻结验证分数调度行为；`grad_scaler_initial_scale/grad_scaler_growth_factor/grad_scaler_backoff_factor/grad_scaler_growth_interval` 冻结可选 FP16 缩放器行为。数值类型分别沿用名称对应的 JSON 数值、布尔值或字符串，不存在隐藏库默认值。
 
 `stage.initialize_candidate_from` 只接受另一项已完成运行中以 `BEST.pt` 结尾的服务器绝对路径，只允许用于 `full_matcher`。它不接受 `LAST.pt`、相对路径或候选预训练阶段继续继承参数。目标优化器构造前，入口要求来源 `task_name=candidate_pretrain`、checkpoint 最佳轮次自洽、阶段摘要与运行根摘要已经发布、W&B run ID/HTTPS 地址存在，并核对来源训练 YAML、`resolved.json`、checkpoint 与运行记录中的阶段、模型、训练、数据和追踪配置。来源与目标还必须具有相容的候选编码器结构，以及相同的 `data_root/stage1_root/output_root/coverage_threshold/selection_seed/pp_top_k/local_crop_strategy`。工作进程数、预取量和单工作进程缓存只影响 I/O，不参与来源—目标科学配置比较，但来源 YAML 与来源 `resolved.json` 仍须自洽。
@@ -301,7 +303,15 @@ Matcher 的正式任务只从 `/home/penghongen/My_Project/Matcher` 冻结 relea
 | `gradient_checkpointing` | 布尔值；训练时是否以重计算节省显存。 |
 | `bottleneck_attention_layers` | 正整数；RAUNet 瓶颈注意力层数。 |
 
-来源模型配置缺少 `use_manual_features/use_sampling_features/use_candidate_token_attention_bias` 时，对应开关在历史产物恢复入口迁移为 `false`；来源数据配置缺少 `local_crop_strategy` 时迁移为 `fixed_center`；来源候选阶段缺少 `identity_scope` 时迁移为 `null`。正式 YAML 解析仍要求这些字段显式存在。该过程只构造 train/validation Dataset 并读取训练产物，不读取 calibration 候选、特征或指标。
+来源模型配置缺少 `use_manual_features/use_sampling_features/use_candidate_token_attention_bias` 时，对应开关在历史产物恢复入口迁移为 `false`；缺少 `initial_graph_gate/initial_inventory_gate` 时迁移为 `0.0`。来源数据配置缺少 `local_crop_strategy` 时迁移为 `fixed_center`；来源候选阶段缺少 `identity_scope` 时迁移为 `null`。正式 YAML 解析仍要求这些字段显式存在。该过程只构造 train/validation Dataset 并读取训练产物，不读取 calibration 候选、特征或指标。
+
+### Validation 身份分数贡献诊断
+
+完整 Matcher 可把只读诊断写入 W&B 的 `identity_contribution/validation/*` 指标树。该诊断只统计真实身份目标有效且当前 PDB 身份清单至少有两个有效槽的候选。对语言基线分数、已乘图门的分数增量、已乘清单门的分数增量，以及两个增量之和，均先在每个候选的有效身份槽内减去均值，再计算 L2 范数；补零身份槽不参与计算。
+
+`native_centered_l2_mean`、`graph_increment_centered_l2_mean` 与 `inventory_increment_centered_l2_mean` 是上述候选内范数的跨候选均值。三个 `*_to_native_ratio_mean` 先对语言基线范数大于 `1e-12` 的候选逐一求比值，再跨候选平均；语言基线没有可辨识排序尺度时不发送比值。`multi_identity_eligible_count` 与 `nonzero_native_count` 分别保存两个分母。
+
+正式 validation 前向在完成全部输入校验和三个配对打分器计算时，同时把语言基线与两个门控增量保存在内存输出中；诊断直接读取这些同批组件，不重跑打分器，也不再次执行由 `torch.any(...)` 触发的 device→host 布尔判定。每个物理批次新增的唯一 device→host 传输是一组聚合标量；该过程不修改模型、优化器或随机状态。诊断不写入损失、`EvaluationResult`、`history.jsonl`、checkpoint、validation 选择分数或 calibration 产物，也不能单独作为方案优劣结论。
 
 ### 版本化监督清单字段
 

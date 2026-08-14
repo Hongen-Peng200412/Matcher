@@ -4,6 +4,8 @@
 
 三份计划保持第 2 批 mean/max 完整 Matcher 的候选集合、V 质心视野、12 项 Stage1 固化统计、4 项采样统计、SMI-TED 289M、五类非背景身份范围、模型结构、损失权重、学习率与 global batch 32。唯一科学变化是候选编码器由同一个预训练 BEST 初始化；完整 Matcher 的语言、配体图、清单交互与身份打分分支仍按目标随机种子初始化。
 
+三份计划的 `initial_graph_gate=0.0` 与 `initial_inventory_gate=0.0` 保持两个身份分数增量分支从严格零开始，因此候选预训练初始化仍是本批唯一科学变化。
+
 - oracle 使用 A100，物理批量 8、梯度累积 4、每工作进程缓存上限 16 GiB。
 - detached 与 joint 使用 A800，物理批量 16、梯度累积 2、每工作进程缓存上限 32 GiB。
 - 三项均使用 4 个 train worker 与 4 个 validation worker、BF16、patience 2、W&B online project `AdaLigand-Matcher-Batch4` 和 group `matcher-batch4-pretrained-mean-max`。

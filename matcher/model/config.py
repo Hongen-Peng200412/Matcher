@@ -19,6 +19,8 @@ class MatcherModelConfig:
     ``use_sampling_features`` 控制候选聚合是否拼接四项裁剪几何统计。
     ``use_sampling_features`` 还控制三个身份打分 MLP 是否拼接同一四项统计。
     ``use_candidate_token_attention_bias`` 控制候选条件注意力是否加入每模态独立的实体偏置 MLP。
+    ``initial_graph_gate`` 是完整 Matcher 图身份分数增量的有限初始标量门，候选预训练必须为 0。
+    ``initial_inventory_gate`` 是完整 Matcher 清单身份分数增量的有限初始标量门，候选预训练必须为 0。
     ``model_dim`` 是候选、token 和身份表示的共同宽度。
     ``attention_heads`` 是所有多头注意力的头数。
     ``dropout`` 是候选、图和身份分支共同采用的丢弃率。
@@ -34,6 +36,8 @@ class MatcherModelConfig:
     use_manual_features: bool
     use_sampling_features: bool
     use_candidate_token_attention_bias: bool
+    initial_graph_gate: float
+    initial_inventory_gate: float
     model_dim: int
     attention_heads: int
     dropout: float
@@ -57,6 +61,14 @@ class MatcherModelConfig:
             raise TypeError("use_candidate_token_attention_bias 必须是布尔值。")
         if self.use_candidate_token_attention_bias and self.aggregation != "candidate_cross_attention":
             raise ValueError("候选实体注意力偏置只适用于 candidate_cross_attention 聚合。")
+        for name, value in (
+            ("initial_graph_gate", self.initial_graph_gate),
+            ("initial_inventory_gate", self.initial_inventory_gate),
+        ):
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise TypeError(f"{name} 必须是数值。")
+            if not math.isfinite(float(value)) or not 0.0 <= float(value) <= 1.0:
+                raise ValueError(f"{name} 必须位于 [0,1]。")
         integer_fields = {
             "model_dim": self.model_dim,
             "attention_heads": self.attention_heads,
@@ -97,13 +109,15 @@ class MatcherModelConfig:
 
     @classmethod
     def from_dict(cls, values: dict[str, Any]) -> "MatcherModelConfig":
-        """从配置字典恢复模型参数，并显式迁移第 0–2 批 checkpoint。
+        """从配置字典恢复模型参数，并显式迁移第 0–4 批历史模型配置。
 
         第 0 批缺少两个特征开关，二者都迁移为 ``False``；第 1 批已有
         ``use_manual_features=True`` 而只缺采样开关，因此保留手动统计并仅把
         ``use_sampling_features`` 迁移为 ``False``。
         第 0–2 批均没有候选—实体注意力偏置，因此缺少
         ``use_candidate_token_attention_bias`` 时迁移为 ``False``。
+        第 0–4 批没有显式身份门初值，因此缺少 ``initial_graph_gate`` 或
+        ``initial_inventory_gate`` 时迁移为 ``0.0``，逐值保持原有零增量初始化。
         """
 
         normalized = dict(values)
@@ -113,6 +127,10 @@ class MatcherModelConfig:
             normalized["use_sampling_features"] = False
         if "use_candidate_token_attention_bias" not in normalized:
             normalized["use_candidate_token_attention_bias"] = False
+        if "initial_graph_gate" not in normalized:
+            normalized["initial_graph_gate"] = 0.0
+        if "initial_inventory_gate" not in normalized:
+            normalized["initial_inventory_gate"] = 0.0
         if "raunet_planes" in normalized:
             raw_planes = normalized["raunet_planes"]
             if not isinstance(raw_planes, (list, tuple)):
