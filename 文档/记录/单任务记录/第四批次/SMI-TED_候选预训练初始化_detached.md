@@ -2,7 +2,7 @@
 
 ## 任务身份与科学对照
 
-- 状态：本地配置、测试和两项独立终审已通过；尚未发布 release 或触发 GPU。
+- 状态：已于 2026-08-14 启动并持续训练；W&B online 已写出首批参数更新曲线。
 - 目标任务：用第 2 批 mean/max 六分类预训练 BEST 初始化完整 Matcher 的候选编码器，再训练 detached 身份损失。
 - 直接基线：第 2 批从零 `batch2_smi_ted_v_centroid_detached_a100`，BEST selection score `0.6864829756`。
 - 来源：Job `340894` 的 `batch2_candidate_v_centroid_mean_max_a800`，BEST epoch 1，validation macro-F1 `0.5303632887`。
@@ -15,11 +15,32 @@
 - YAML：`configs/experiments/batch4/full_smi_ted_v_centroid_pretrained_mean_max_detached_a800.yaml`。
 - 计划资源：受管 Job `340895`，单张 A800、16 CPU；物理批量 16 × 梯度累积 2 = global batch 32。
 - DataLoader：train/validation 各 4 个 spawn 非持久工作进程；每工作进程缓存上限 32 GiB。
-- W&B：online project `AdaLigand-Matcher-Batch4`，group `matcher-batch4-pretrained-mean-max`；run ID 与 URL 在触发后回填。
-- 实现提交、release、launch、完整控制命令和动态训练命令：冻结并触发后回填。
+- 实现提交：`704ce849fd8be0dbf27148d7dd23d500e9052070`；等价学习端点：`e3f9dfad45cde4ecbc09d85ef400c76eccf36406`。
+- release：`/home/penghongen/Feedback/Matcher/releases/Matcher_ce65027869f4/Matcher`。
+- launch：`/home/penghongen/Feedback/Matcher/launches/340895/train_experiment_job340895_20260814T200131_a5`。
+- 运行根：`/storage/penghongen/tmp/Matcher/experiments/batch4_smi_ted_v_centroid_pretrained_mean_max_detached_a800/train_experiment_job340895_20260814T200131_a5`。
+- W&B：online project `AdaLigand-Matcher-Batch4`，group `matcher-batch4-pretrained-mean-max`，run ID `yep6nt4l`，[在线曲线](https://wandb.ai/pencounkdual-111/AdaLigand-Matcher-Batch4/runs/yep6nt4l)。
+
+## 提交与启动证据
+
+控制端执行的完整一次性激活命令见 [oracle 任务记录](SMI-TED_候选预训练初始化_oracle.md#提交与启动证据)；三项共用同一受保护控制器，本任务没有独立重复触发命令。
+
+本任务实际动态训练命令为：
+
+```bash
+exec bash "${TASK_PROJECT_ROOT}/训练与运行/sh/train_experiment.sh" \
+  --plan configs/experiments/batch4/full_smi_ted_v_centroid_pretrained_mean_max_detached_a800.yaml
+```
+
+- 激活控制器只读审查版本：`E17BE1021E76223B3435A4FCE892ED5AB243E0A5FFCEB293D8157DFB05BE1203`；只用于一次性运维留证。
+- allocation runner 轮询后于 20:01:31 建立 launch；墙钟时间不代表控制端删除锁的先后顺序。
+- 启动后 `try_lock_340895` 已删除，`after_lock_340895` 仍保留，`pre_lock_340895` 与 `kill_lock_340895` 均不存在。
+- `resolved.json.initialization` 记录来源 epoch 1、macro-F1 `0.5303632887`，严格加载的 `missing_keys/unexpected_keys` 均为空。
 
 ## 验收与结果
 
 - 启动前必须通过正式 YAML 解析、来源严格初始化、本地机械检查、独立科学审查和严格技术表达审查。
-- 触发后记录首个 global batch 32 更新、有限损失与梯度、显存、数据等待、BEST 时间线和训练命令退出状态。
+- 首个已核实快照为 global step 30：总损失 `1.0011232`、六分类损失 `0.1895230`、ligand/binding 区域损失 `0.6826798/0.5773869`、身份损失 `0.6855935`，身份有效数 13。
+- 同一步裁剪前梯度范数 `2.2862473`，data wait `0.0005100 s`，compute `2.5781285 s`，吞吐 `12.4096 candidate/s`，CUDA 峰值 allocated/reserved 为 `28267852800/39996882944 bytes`；全部为有限值。
+- BEST 时间线、完整 validation 和训练命令退出状态仍待自然事件回填；不建立 heartbeat。
 - 最终只用 validation 与直接基线比较 selection score、六分类、身份层次、区域指标、有效监督数和混淆情况；calibration 禁止读取。

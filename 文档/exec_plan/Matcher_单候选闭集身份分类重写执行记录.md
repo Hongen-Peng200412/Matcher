@@ -935,3 +935,27 @@ A100 与 A800 的第一次控制尝试分别因为前序旧 YAML 缺少后续版
 来源 checkpoint 为 `/storage/penghongen/tmp/Matcher/experiments/batch2_candidate_v_centroid_mean_max_a800/train_experiment_job340894_20260814T093012_a7/batch2_candidate_v_centroid_mean_max_a800/BEST.pt`。18:55:30 用 Git 忽略目录中的一次性脚本完成最终发布关系取证，退出码为 0，报告为 `/storage/penghongen/tmp/Matcher/diagnostics/batch4_source_audit_20260814/batch2_meanmax_job340894_a7_final.json`；完整控制端命令保存在 `文档/记录/批次记录/第4批次/第4批候选预训练初始化.md`。正式 `matcher` 包、YAML 解析值和 `resolved.json` 均不读取该报告或文件摘要。
 
 第 4 批最小矩阵为 oracle、detached、joint 三项完整 Matcher，分别对应 Job `340897/340895/340894`。三项共享 mean/max、V 质心、SMI-TED 289M、五类非背景身份、global batch 32、同一来源 BEST 和 W&B online project/group；A800 两项只把物理批量与梯度累积从 `8×4` 调整为 `16×2`，并把每工作进程缓存上限从 16 GiB 调整为 32 GiB。三份 YAML、三份单任务记录和回归测试已建立；完整 pytest 为 `119 passed`，mypy 检查 45 个 Python 文件零问题，pyflakes、compileall、22 份正式 YAML 解析和 diff-check 通过。科学正确性与严格技术表达两项独立终审均为 PASS，阻断项为零。此时仍为 3 项已决定、0 项已提交，没有同步候选、发布 release、安装动态命令或删除 `try_lock`。
+
+### 第 4 批发布、CPU smoke 与三项运行
+
+第 4 批实现提交为 `704ce849fd8be0dbf27148d7dd23d500e9052070`，等价学习端点为 `e3f9dfad45cde4ecbc09d85ef400c76eccf36406`。安全同步后，远端正式解析 22 份 YAML、compileall、来源 BEST 与三份目标配置全部通过，并创建内容寻址 release `/home/penghongen/Feedback/Matcher/releases/Matcher_ce65027869f4/Matcher`。
+
+CPU-only Job `341902` 已完成候选编码器严格初始化、随机状态不变和非候选分支不变检查，随后因为一次性诊断脚本仍打印旧字段名而退出；这不是模型、数据或初始化失败，也未占 GPU。修正临时输出后的 Job `341903` 在 7 秒内 `COMPLETED/0:0`，逐项确认三份目标配置、同一来源 BEST、来源阶段 `batch2_candidate_v_centroid_mean_max_a800`、epoch 1、global step 894、macro-F1 `0.5303632887186057`、随机状态不变和非候选参数不变。两个诊断根分别为 `/storage/penghongen/tmp/Matcher/diagnostics/batch4_initialization_smoke_20260814T112606Z/` 与 `/storage/penghongen/tmp/Matcher/diagnostics/batch4_initialization_smoke_20260814T113009Z/`。
+
+Git 忽略目录中的一次性激活控制器经科学正确性和严格技术表达两项独立只读审查后均为 PASS。控制端实际执行：
+
+```powershell
+& "$env:USERPROFILE\.codex\tools\Invoke-ProjectSsh.ps1" `
+  -Command 'bash -s' `
+  -InputFile 'C:\Users\15919\Desktop\Matcher\tmp\batch4_launch\activate_batch4.sh'
+```
+
+控制器先完成资源、前序完成、来源、release、三份 YAML、CPU smoke、目标目录和全局查重门禁，再原子安装三份动态命令，最后按 oracle→detached→joint 删除 Job `340897/340895/340894` 的精确 `try_lock`。它没有删除 `after_lock/pre_lock/kill_lock`，没有读取 calibration。三个 allocation runner 各自轮询，因此实际 launch 墙钟顺序为 detached→joint→oracle；这不改变控制顺序或任务科学定义。
+
+| 任务 | Job | launch | W&B run | 首个已核实训练快照 |
+| --- | --- | --- | --- | --- |
+| oracle | `340897` | `train_experiment_job340897_20260814T200348_a3` | `mtsmn19a` | step 29；loss `0.8443033`；preclip `8.8875952`；`9.3206 candidate/s` |
+| detached | `340895` | `train_experiment_job340895_20260814T200131_a5` | `yep6nt4l` | step 30；loss `1.0011232`；preclip `2.2862473`；`12.4096 candidate/s` |
+| joint | `340894` | `train_experiment_job340894_20260814T200250_a9` | `c527adm0` | step 30；loss `0.9081250`；preclip `0.9958403`；`12.3511 candidate/s` |
+
+三项 `resolved.json.initialization` 的来源语义一致，严格加载的 `missing_keys/unexpected_keys` 为空。首批损失、梯度、数据等待、吞吐和显存均为有限值；三项 `after_lock` 全部保留。当前没有活动 heartbeat，后续只在完整 validation、BEST 刷新、自然收口或失败等明确事件发生时回填。第 5 批可以在更早批次非重复任务全部提交后使用自然空闲的受管卡，但必须先完成科学动机、直接对照、配置、测试和独立审查；不得为填卡提交未经准备的实验。
