@@ -6,7 +6,7 @@
 - 直接对照：第 2 批 `batch2_smi_ted_v_centroid_oracle_a100`，BEST selection score `0.6981048482`。
 - 动机：第 1–3 批门值自然学习到约 `0.01–0.03`，首项当时选择同量级 `0.02`，没有把 `0.1` 当作默认或首个探针；后续独立的双门 `0.1` 任务只检验初始化尺度敏感性。
 - 判断方式：优先比较 validation selection score、六分类、五类身份、small_molecule 兼容身份和区域指标；结合 `identity_contribution/validation/*` 判断门控增量相对语言基线的尺度。单个指标波动不构成正负结论。
-- 预定资源：受管 A100 Job `340899`；最多 16 CPU；物理批量 8、梯度累积 4、global batch 32；不设置训练或 Slurm 时间上限。
+- 实际资源：受管 A100 Job `340899`；16 CPU；物理批量 8、梯度累积 4、global batch 32；本任务不设置训练或 Slurm 时间上限。
 - W&B：online project `AdaLigand-Matcher-Batch5`；group `matcher-batch5-gate-initialization`；run [`yd20vpcv`](https://wandb.ai/pencounkdual-111/AdaLigand-Matcher-Batch5/runs/yd20vpcv)。
 - 状态：2026-08-14 23:20（Asia/Shanghai）已在受管 A100 Job `340899` 启动并完成首个 global batch；训练继续运行。
 
@@ -31,7 +31,7 @@
 ## 验收与结果
 
 - 首个 global batch：global step 1、global batch 32、总损失 `3.6084863407`；分类/ligand 区域/binding 区域/身份损失依次为 `1.7836914062/1.7509000003/1.6756209433/1.4821428401`。裁剪前梯度范数 `42.3180923462`，数据等待 `6.7542922919 s`，计算 `24.3319061401 s`，吞吐 `1.0293957323 candidate/s`，身份有效候选数 7；显存峰值 allocated/reserved 为 `14,195,046,400/19,667,091,456` bytes。第一次更新后的 graph/inventory 门值为 `0.0200999994/0.0200999975`。上述值均为有限数，W&B online 已完成写入。
-- 完整 validation 时间线：epoch 0–3 的 selection score 依次为 `0.6388081598/0.6435844626/0.6483033074/0.6773211521`，四轮均严格改善。epoch 3 的六分类 macro-F1、五类固有 Top-1、精确子类条件 Top-1、宽松五类端到端 F1 与 small_molecule 兼容端到端 F1 依次为 `0.5293661687/0.8451568895/0.8536398467/0.6489574407/0.6090828139`；ligand/binding micro Dice 为 `0.2048187709/0.0201932732`。
+- 完整 validation 时间线：epoch 0–6 的 selection score 依次为 `0.6388081598/0.6435844626/0.6483033074/0.6773211521/0.6700148472/0.6858317908/0.6888498731`，当前 BEST 为 epoch 6。epoch 3 的六分类 macro-F1、五类固有 Top-1、精确子类条件 Top-1、宽松五类端到端 F1 与 small_molecule 兼容端到端 F1 依次为 `0.5293661687/0.8451568895/0.8536398467/0.6489574407/0.6090828139`；ligand/binding micro Dice 为 `0.2048187709/0.0201932732`。
 - epoch 3 的 graph/inventory/合计增量相对语言基线中心化 L2 比例为 `0.2174344/0.0457968/0.2068664`，有效多身份候选与语言基线非零候选均为 `1313`。该尺度支持拆分门控因子矩阵，但不是有符号收益。
-- 当前 BEST 比第 2 批最终 BEST 低约 `2.98%`，同时比第 2 批同 epoch 3 高约 `2.24%`；任务继续到自然早停，不用当前轮次提前判正负。
+- 当前 BEST 比第 2 批最终 BEST 低约 `1.33%`；任务继续到自然早停，不用当前轮次提前判正负。
 - 最终结果：待自然早停后回填 BEST/last、W&B、运行产物和与第 2 批 oracle 的头对头判断。

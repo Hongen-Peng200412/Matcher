@@ -1000,6 +1000,28 @@ Git 忽略目录中的 `tmp/batch5_launch/activate_batch5_gate.sh` 经科学正�
 
 本轮不提交 `LR=2e-4`：现有双门任务尚在连续改善，ReduceLROnPlateau 已会在坏验证轮后降低学习率，同时改变裁剪与学习率会削弱归因。mean/max 与 candidate-conditioned attention 两种摘要向量的拼接也按用户要求等待其它代码和实验收口后再评估。
 
-用户新增联合身份 `(object_key, PreparedLigand.smiles)` 契约。当前门与裁剪矩阵继续冻结 `closed_set_v3`，避免改变身份槽、监督数和指标分母后失去与第 2 批的直接可比性；联合身份另升 schema/release，并先建立新契约零门 oracle 基线。仅使用 train/validation：若没有同 PDB 身份拆分，除 schema 与文件摘要外，Dataset 张量、固定权重前向输出和完整评估必须精确一致；若存在拆分，所有未受影响 PDB 仍以单 PDB 或 singleton batch 精确一致，受影响 PDB 逐项报告槽、SMILES、occurrence、target 与监督数变化。calibration 不参与该审计。
+用户新增联合身份 `(object_key, PreparedLigand.smiles)` 契约。当前门与裁剪矩阵继续冻结 `closed_set_v3`，避免改变身份槽、监督数和指标分母后失去与第 2 批的直接可比性；联合身份另升 schema/release，并先建立新契约零门 oracle 基线。仅使用 train/validation：若没有同 PDB 身份拆分，除 schema、路径、文件摘要和新增 SMILES 元数据外，Dataset 科学张量、固定权重前向输出以及评估的 `loss`、`metrics`、`sample_count`、`identity_eligible_count` 必须精确一致；墙钟时间和吞吐不作逐值一致要求。若存在拆分，所有未受影响 PDB 仍以单 PDB 或 singleton batch 精确一致，受影响 PDB 逐项报告槽、SMILES、occurrence、target 与监督数变化。calibration 不参与该审计。
 
-本节点只完成本地配置、测试和三层记录。五个目标 Job 的现有动态命令、`try_lock` 与 `after_lock` 尚未修改；正式 release、远端门禁和受保护激活必须等待双线 Git 与两项独立审查收口。全部触发后六个受管 allocation 都有具名任务，仍不创建 heartbeat。
+该准备节点当时只完成本地配置、测试和三层记录。五个目标 Job 的动态命令、`try_lock` 与 `after_lock` 尚未修改；正式 release、远端门禁和受保护激活仍在等待双线 Git 与两项独立审查收口。
+
+### 第 5 批六项全部接续
+
+五项新增配置的实现提交为 `5548a1021729ac514896cb41a54bfd599cf26517`，等价学习端点为 `62c59f299612f4752f84aafec45916a2ceef602d`；服务器从等价学习树创建并复用内容寻址 release `Matcher_d14dd1c3cee4`。Git 忽略目录中的一次性控制器 `tmp/batch5_launch/activate_batch5_matrix.sh` 先后通过本地 Bash、四段嵌入 Python、科学正确性和严格技术表达门禁；执行快照摘要为 `ce909d15990207f46387e1c299dffbcdaff25a9958549148d218896d015d8a3e`。控制端实际执行：
+
+```powershell
+& "$env:USERPROFILE\.codex\tools\Invoke-ProjectSsh.ps1" `
+  -Command 'bash -s' `
+  -InputFile 'C:\Users\15919\Desktop\Matcher\tmp\batch5_launch\activate_batch5_matrix.sh'
+```
+
+控制器使用共享 `flock`，先共同核对五个 allocation、前序自然收口产物、五份 YAML、release、目标目录、重复任务和 `try/after/pre/kill` 四类控制文件，再安装并逐字节复核全部五份动态命令；只有共同门禁全部通过后，才按 graph-only→inventory-only→双门 `0.1`→clip5→clip200 删除对应 `try_lock`。每个 Job 在删除对应 `try_lock` 前还会再次逐字节复核实时动态命令。五个 runner 独立轮询，所以 launch 墙钟顺序不等于删锁顺序；这不改变科学任务或控制顺序。控制器没有删除 `after_lock/pre_lock/kill_lock`，没有创建 heartbeat，也没有读取 calibration。
+
+| 任务 | Job | launch | W&B run | 首步总损失 / 裁剪前梯度范数 |
+|---|---:|---|---|---:|
+| graph-only `0.02/0.0` | `340893` | `train_experiment_job340893_20260815T032614_a4` | `c78pugvk` | `3.6096024122 / 42.2546005249` |
+| inventory-only `0.0/0.02` | `340898` | `train_experiment_job340898_20260815T032604_a4` | `ri9hh667` | `3.6129506605 / 42.1659736633` |
+| 双门 `0.1/0.1` | `340897` | `train_experiment_job340897_20260815T032605_a4` | `57uwuxb6` | `3.6054730160 / 48.4062690735` |
+| clip5 | `340894` | `train_experiment_job340894_20260815T032512_a10` | `bh2s3lm7` | `3.6789785181 / 46.1340217590` |
+| clip200 | `340895` | `train_experiment_job340895_20260815T032343_a6` | `ufny2evy` | `3.6789785181 / 46.0992240906` |
+
+2026-08-15 03:28 的只读验收确认，五项均完成首个 global batch 32 参数更新，身份有效候选数均为 7（`identity_eligible_count=7`）；六个 Slurm allocation 均为 `RUNNING`，六个 W&B run 均为 `running`，六个 `after_lock` 全部保留，没有 `pre_lock/kill_lock`。继续运行的双门 `0.02` 已完成 epoch 0–6，当前 BEST selection score 为 epoch 6 的 `0.6888498731`。第 5 批至此 6 项全部提交，六张受管 GPU 都有具名任务。
