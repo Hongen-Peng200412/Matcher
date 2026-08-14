@@ -23,19 +23,29 @@ class CandidateMetadata(TypedDict):
 class CandidateItem(TypedDict):
     """描述 ``CandidateDataset`` 返回的一个候选。
 
-    A/P/V/PP 分别为 ``(N,229)/(N,116)/(N,52)/(N,4)`` float32；V/PP 的
-    ``index_zyx`` 为对应 token 在候选实际裁剪 ``48³`` 中的整数索引。体素输入是
-    ``(105,48,48,48)`` float16；两个区域目标是同空间形状的 bool 数组。
-    ``candidate_manual_features`` 是 float32 ``(12,)``，顺序为 A/P/V/PP 各自的 ``(token_count,probability_mean,probability_max)``。
-    ``candidate_manual_features`` 的计数单位为 token 个数，概率是无量纲 Stage1 固化原值，空模态三项均为 0。
-    ``candidate_sampling_features`` 是 float32 ``(4,)``。
-    第 0 项是取值 0/1 的 ``crop_boundary_limited``。
-    第 1 项是 ``crop_center_to_v_centroid_l2_voxels``，单位 voxel。
-    第 2 项是 ``crop_center_to_v_centroid_linf_voxels``，单位 voxel。
-    第 3 项是位于 ``[0,1]`` 的无量纲 ``v_retained_fraction``。
-    ``identity_class_index`` 是 int64 ``(I,)``，与语言表示、配体图和 object_key 逐身份对齐，有效值属于六分类下标 ``[1,5]``。
-    身份语言表示为 ``(I,768)``，配体图和 object_key 均与身份轴一一对应；
-    ``identity_target=-1`` 表示当前语言模型下没有可监督的真实身份。
+    ``metadata`` 是候选标识、匹配身份、划分与训练集可见性元数据。
+    ``voxel_input`` 是 float16 ``(105,48,48,48)`` 候选级体素输入。
+    ``a_tokens`` 是 float32 ``(N_A,229)`` 完整 A token。
+    ``p_tokens`` 是 float32 ``(N_P,116)`` 完整 P token。
+    ``v_tokens`` 是 float32 ``(N_V,52)`` 实际裁剪内 V token。
+    ``v_index_zyx`` 是 int64 ``(N_V,3)``，与 V token 对齐且索引属于 ``[0,48)``。
+    ``pp_tokens`` 是 float32 ``(N_PP,4)`` 实际裁剪内 PP token。
+    ``pp_index_zyx`` 是 int64 ``(N_PP,3)``，与 PP token 对齐且索引属于 ``[0,48)``。
+    ``a_tokens/p_tokens/v_tokens/pp_tokens`` 的共同末四维依次为 ``stage1_probability/relative_x/relative_y/relative_z``。
+    ``stage1_probability`` 是位于 ``[0,1]`` 的无量纲 Stage1 固化概率。
+    A/P 相对 XYZ 按完整 ``80³`` 物理半边长归一化，V/PP 相对 XYZ 按实际 ``48³`` 物理半边长归一化。
+    ``class_target`` 是六分类整数下标。
+    ``ligand_area_target`` 是 bool ``(48,48,48)`` 配体区域目标。
+    ``binding_area_target`` 是 bool ``(48,48,48)`` 结合区域目标。
+    ``full_candidate_voxel_count`` 是裁剪前完整权威 V 的体素数。
+    ``candidate_manual_features`` 是 float32 ``(12,)``，顺序为 A/P/V/PP 各自的 ``token_count/probability_mean/probability_max``。
+    ``candidate_manual_features`` 的计数单位为 token 个数，概率是无量纲 Stage1 固化原值，空模态三项均为零。
+    ``candidate_sampling_features`` 是 float32 ``(4,)``，顺序为边界限制标志、L2 voxel 距离、L∞ voxel 距离和 ``[0,1]`` V 保留比例。
+    ``identity_object_keys`` 是长度 ``I`` 的身份键列表。
+    ``identity_class_index`` 是 int64 ``(I,)``，与身份轴对齐且有效值属于六分类下标 ``[1,5]``。
+    ``language_embeddings`` 是 float32 ``(I,768)`` 身份语言表示。
+    ``ligand_graphs`` 是长度 ``I`` 的配体图列表。
+    ``identity_target`` 是当前候选真实身份在身份轴上的整数下标；``-1`` 表示当前语言模型下没有可监督目标。
     """
 
     metadata: CandidateMetadata
@@ -62,35 +72,43 @@ class CandidateItem(TypedDict):
 class CandidateBatch(TypedDict):
     """描述 ``collate_candidates`` 生成的固定物理批次。
 
-    令 B 为物理批量，N_A/N_P/N_V/N_PP 为四模态各自的批内最大 token 数，
-    I 为批内最大身份数，G/N/E 为连接后的配体图、节点和有向边总数：
-
-    ``voxel_input`` 是 float16 ``(B,105,48,48,48)``。``class_target`` 是
-    int64 ``(B,)``。``full_candidate_voxel_count`` 是 int64 ``(B,)``。
-    ``candidate_manual_features`` 是 float32 ``(B,12)``，顺序为 A/P/V/PP 各自的 ``(token_count,probability_mean,probability_max)``。
-    ``candidate_manual_features`` 的计数单位为 token 个数，概率是无量纲 Stage1 固化原值，空模态三项均为 0。
+    ``B`` 是物理批量；``N_A/N_P/N_V/N_PP`` 是四模态各自的批内最大 token 数。
+    ``I`` 是批内最大身份数；``G/N/E`` 是连接后的配体图、节点和有向边总数。
+    ``metadata`` 是长度 ``B`` 的候选元数据列表。
+    ``voxel_input`` 是 float16 ``(B,105,48,48,48)`` 候选级体素输入。
+    ``class_target`` 是 int64 ``(B,)`` 六分类目标。
+    ``ligand_area_target`` 是 bool ``(B,48,48,48)`` 配体区域目标。
+    ``binding_area_target`` 是 bool ``(B,48,48,48)`` 结合区域目标。
+    ``full_candidate_voxel_count`` 是 int64 ``(B,)`` 裁剪前完整权威 V 体素数。
+    ``candidate_manual_features`` 是 float32 ``(B,12)``，顺序为 A/P/V/PP 各自的 ``token_count/probability_mean/probability_max``。
+    ``candidate_manual_features`` 的计数单位为 token 个数，概率是无量纲 Stage1 固化原值，空模态三项均为零。
     ``candidate_sampling_features`` 是 float32 ``(B,4)``，第二轴顺序和单位与 ``CandidateItem`` 相同。
-    ``ligand_area_target`` 和 ``binding_area_target`` 都是 bool
-    ``(B,48,48,48)``。
-
-    ``a_tokens/p_tokens/v_tokens/pp_tokens`` 分别是 float32
-    ``(B,N_A,229)/(B,N_P,116)/(B,N_V,52)/(B,N_PP,4)``。对应的
-    ``a_mask/p_mask/v_mask/pp_mask`` 是 bool ``(B,N_*)``，补零 token 的掩码
-    为假。``v_index_zyx`` 和 ``pp_index_zyx`` 分别是 int64
-    ``(B,N_V,3)/(B,N_PP,3)``；补零索引为零，只有对应掩码为真时可读取。
-
-    ``language_embeddings`` 是 float32 ``(B,I,768)``。``identity_mask`` 是
-    bool ``(B,I)``。``identity_class_index`` 是 int64 ``(B,I)``，有效槽属于六分类下标 ``[1,5]``，补零槽为 -1。
-    ``identity_target`` 是 int64 ``(B,)``；``-1`` 表示当前
-    语言模型没有可监督目标，否则是该样本身份轴上的有效下标，且该槽类别必须等于 ``class_target``。
-
-    ``graph_element/graph_charge/graph_residue_id`` 是 int64 ``(N,)``。
-    ``graph_node_continuous`` 是 float32 ``(N,15)``。
+    ``a_tokens`` 是 float32 ``(B,N_A,229)`` 补零 A token。
+    ``a_mask`` 是 bool ``(B,N_A)`` A 有效掩码。
+    ``p_tokens`` 是 float32 ``(B,N_P,116)`` 补零 P token。
+    ``p_mask`` 是 bool ``(B,N_P)`` P 有效掩码。
+    ``v_tokens`` 是 float32 ``(B,N_V,52)`` 补零 V token。
+    ``v_mask`` 是 bool ``(B,N_V)`` V 有效掩码。
+    ``v_index_zyx`` 是 int64 ``(B,N_V,3)`` V 局部索引；补零索引为零且仅在 ``v_mask`` 为真时可读。
+    ``pp_tokens`` 是 float32 ``(B,N_PP,4)`` 补零 PP token。
+    ``pp_mask`` 是 bool ``(B,N_PP)`` PP 有效掩码。
+    ``pp_index_zyx`` 是 int64 ``(B,N_PP,3)`` PP 局部索引；补零索引为零且仅在 ``pp_mask`` 为真时可读。
+    ``a_tokens/p_tokens/v_tokens/pp_tokens`` 的共同末四维和数值语义与 ``CandidateItem`` 相同。
+    ``language_embeddings`` 是 float32 ``(B,I,768)`` 身份语言表示。
+    ``identity_mask`` 是 bool ``(B,I)`` 身份有效掩码。
+    ``identity_class_index`` 是 int64 ``(B,I)``，有效槽属于六分类下标 ``[1,5]``，补零槽为 ``-1``。
+    ``identity_target`` 是 int64 ``(B,)``；``-1`` 表示没有可监督目标，否则指向类别等于 ``class_target`` 的有效身份槽。
+    ``identity_object_keys`` 是 ``B`` 个长度 ``I_b`` 的身份键列表。
+    ``graph_to_sample`` 是 int64 ``(G,)``，把每张图映射到样本下标。
+    ``graph_to_identity`` 是 int64 ``(G,)``，把每张图映射到对应样本的身份下标。
+    ``graph_element`` 是 int64 ``(N,)`` 节点元素编号。
+    ``graph_charge`` 是 int64 ``(N,)`` 节点电荷编号。
+    ``graph_residue_id`` 是 int64 ``(N,)`` 节点残基编号。
+    ``graph_node_continuous`` 是 float32 ``(N,15)`` 节点连续特征。
     ``graph_node_graph_index`` 是 int64 ``(N,)``，把节点映射到 ``[0,G)``。
-    ``graph_edge_index`` 是 int64 ``(2,E)``。``graph_edge_features`` 是
-    float32 ``(E,10)``。``graph_to_sample`` 和 ``graph_to_identity`` 都是
-    int64 ``(G,)``，把每张图映射到样本下标和该样本的身份下标。每个有效
-    身份恰好对应一张图；候选预训练时 G/N/E 均可为零。
+    ``graph_edge_index`` 是 int64 ``(2,E)`` 有向边索引。
+    ``graph_edge_features`` 是 float32 ``(E,10)`` 有向边特征。
+    每个有效身份恰好对应一张图；候选预训练时 ``G/N/E`` 均可为零。
     """
 
     metadata: list[CandidateMetadata]

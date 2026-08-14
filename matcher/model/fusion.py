@@ -16,6 +16,7 @@ from ..schema import (
     A_TOKEN_DIM,
     CANDIDATE_MANUAL_FEATURE_DIM,
     CANDIDATE_SAMPLING_FEATURE_DIM,
+    CANDIDATE_TOKEN_ATTENTION_BIAS_FEATURE_DIM,
     LOCAL_CONTEXT_HALF_EXTENT_VOXELS,
     P_TOKEN_DIM,
     PP_TOKEN_DIM,
@@ -137,6 +138,21 @@ def normalize_candidate_sampling_features(features: torch.Tensor) -> torch.Tenso
     )
 
 
+def candidate_token_attention_bias_features(tokens: torch.Tensor) -> torch.Tensor:
+    """从原始模态 token 提取候选—实体注意力偏置输入。
+
+    ``tokens`` 是浮点 ``(B,N,F)``，其中 ``B/N/F`` 分别是批次、token 数和原始特征宽度。
+    ``tokens[..., -4:]`` 依次是有限 ``[0,1]`` Stage1 固化概率与无量纲相对 XYZ。
+    A/P 相对 XYZ 以实际裁剪中心为原点，并按完整 ``80³`` 物理半边长归一化。
+    V/PP 相对 XYZ 以实际裁剪中心为原点，并按实际 ``48³`` 物理半边长归一化。
+    返回浮点 ``(B,N,4)``，与输入 token 轴逐项对齐，末轴顺序为 ``relative_x/relative_y/relative_z/stage1_probability``。
+    """
+
+    if tokens.ndim != 3 or tokens.shape[2] < CANDIDATE_TOKEN_ATTENTION_BIAS_FEATURE_DIM:
+        raise ValueError("原始模态 token 必须为 (B,N,F)，且 F 不得小于 4。")
+    return torch.cat((tokens[..., -3:], tokens[..., -4:-3]), dim=-1)
+
+
 # ================================================================================================
 
 
@@ -165,7 +181,18 @@ class TokenProjector(nn.Module):
 
 
 class CandidateCrossAttention(nn.Module):
-    """以候选摘要查询一种模态。构造参数为模型宽度、头数、dropout 和零输出开关；前向输入 ``(B,D_m)`` query、``(B,N,D_m)`` token 与真值表示有效 token 的 ``(B,N)`` 掩码，输出 ``(B,D_m)`` 增量。"""
+    """以候选摘要查询一种模态。
+
+    ``model_dim`` 是模型宽度 ``D_m``。
+    ``head_count`` 是注意力头数 ``K``，且必须整除 ``D_m``。
+    ``dropout`` 是注意力权重的丢弃概率。
+    ``zero_output`` 决定是否把输出投影权重与偏置初始化为零。
+    ``candidate_query`` 是浮点 ``(B,D_m)`` 候选查询。
+    ``tokens`` 是浮点 ``(B,N,D_m)`` 模态 token。
+    ``mask`` 是 bool ``(B,N)`` 有效掩码，真值 token 参与 softmax。
+    ``attention_bias`` 是可选无量纲 ``(B,K,N)`` softmax 前加性分数。
+    返回浮点 ``(B,D_m)`` 增量；补零 token 在加性分数加入后由掩码排除。
+    """
 
     def __init__(
         self,
@@ -194,8 +221,17 @@ class CandidateCrossAttention(nn.Module):
         candidate_query: torch.Tensor,
         tokens: torch.Tensor,
         mask: torch.Tensor,
+        attention_bias: torch.Tensor | None,
     ) -> torch.Tensor:
-        """在每个 ``B/K`` 内对 query 和 key 的 ``D_m/K`` 通道求点积，对 token 轴 ``N`` 做 softmax 并求 value 加权和；``(B,1,1,N)`` 有效掩码向 ``K`` 广播，无有效 token 时返回 ``(B,D_m)`` 严格零增量。"""
+        """在每个 ``B/K`` 内计算内容分数与可选偏置，再沿 ``N`` 归一化。
+
+        ``candidate_query`` 是浮点 ``(B,D_m)`` 候选查询。
+        ``tokens`` 是浮点 ``(B,N,D_m)`` 模态 token。
+        ``mask`` 是 bool ``(B,N)`` 有效掩码，向注意力头轴广播。
+        ``attention_bias`` 是可选无量纲 ``(B,K,N)`` softmax 前加性分数。
+        query 与 key 的 ``D_m/K`` 通道点积保留 ``B/K/N`` 轴。
+        返回浮点 ``(B,D_m)``；一个样本没有有效 token 时对应增量严格为零。
+        """
 
         if candidate_query.ndim != 2 or candidate_query.shape[1] != self.model_dim:
             raise ValueError("candidate_query 必须为 (B,model_dim)。")
@@ -205,6 +241,12 @@ class CandidateCrossAttention(nn.Module):
             raise TypeError("mask 必须是 bool。")
         if tokens.shape[0] != candidate_query.shape[0] or tokens.shape[2] != self.model_dim:
             raise ValueError("交叉注意力的批次或通道宽度不一致。")
+        if attention_bias is not None and attention_bias.shape != (
+            tokens.shape[0],
+            self.head_count,
+            tokens.shape[1],
+        ):
+            raise ValueError("attention_bias 必须为与 B/K/N 轴对齐的 (B,K,N)。")
         if tokens.shape[1] == 0:
             return torch.zeros_like(candidate_query)
 
@@ -219,6 +261,8 @@ class CandidateCrossAttention(nn.Module):
             batch_size, token_count, self.head_count, self.head_dim
         ).transpose(1, 2)
         score = torch.matmul(query, key.transpose(-2, -1)) / math.sqrt(self.head_dim)
+        if attention_bias is not None:
+            score = score + attention_bias[:, :, None, :].to(dtype=score.dtype)
         valid = mask[:, None, None, :]
         score = score.masked_fill(~valid, torch.finfo(score.dtype).min)
         weight = torch.softmax(score, dim=-1)
@@ -231,12 +275,60 @@ class CandidateCrossAttention(nn.Module):
         return increment * has_token.to(dtype=increment.dtype)
 
 
+class CandidateTokenAttentionBias(nn.Module):
+    """把逐实体 Stage1 概率与相对坐标转换为逐注意力头分数偏置。
+
+    ``model_dim`` 是隐藏宽度 ``D_m``。
+    ``head_count`` 是输出注意力头数 ``K``。
+    ``features`` 是浮点 ``(B,N,4)``，第二轴与一种模态的 token 逐项对齐。
+    ``features[..., :3]`` 是无量纲相对 XYZ。
+    ``features[..., 3]`` 是位于 ``[0,1]`` 的 Stage1 固化概率。
+    返回无量纲 ``(B,K,N)`` softmax 前加性分数。
+    末层权重与偏置采用零初始化，因此初始输出逐元素为零；训练后不承诺继续为零。
+    末层 ``bias`` 对每个注意力头沿 token 轴只产生常数平移，数学上不改变 softmax。
+    末层 ``weight`` 是该层有效的可学习路径。
+    """
+
+    def __init__(self, model_dim: int, head_count: int) -> None:
+        super().__init__()
+        if model_dim <= 0 or head_count <= 0:
+            raise ValueError("注意力偏置的模型宽度和头数必须为正整数。")
+        final = nn.Linear(model_dim, head_count)
+        nn.init.zeros_(final.weight)
+        nn.init.zeros_(final.bias)
+        self.layers = nn.Sequential(
+            nn.Linear(CANDIDATE_TOKEN_ATTENTION_BIAS_FEATURE_DIM, model_dim),
+            nn.SiLU(),
+            final,
+        )
+
+    def forward(self, features: torch.Tensor) -> torch.Tensor:
+        """把 ``(B,N,4)`` 偏置输入转换为 ``(B,K,N)`` 分数。"""
+
+        if (
+            features.ndim != 3
+            or features.shape[2] != CANDIDATE_TOKEN_ATTENTION_BIAS_FEATURE_DIM
+        ):
+            raise ValueError("候选实体注意力偏置输入必须为 (B,N,4)。")
+        return self.layers(features).transpose(1, 2)
+
+
 class MeanMaxAggregator(nn.Module):
     """对四模态取掩码均值/最大值，并按配置拼接模态统计与采样统计。
 
-    构造参数冻结 ``D_m``、dropout 和两个特征开关。前向接收候选 ``(B,D_m)``、
-    四模态 ``(B,N,D_m)`` 与 bool ``(B,N)``、可选手动统计 ``(B,12)`` 和采样统计
-    ``(B,4)``，返回 ``(B,D_m)``。
+    ``model_dim`` 是模型宽度 ``D_m``。
+    ``dropout`` 是融合 MLP 的丢弃概率。
+    ``include_manual`` 决定是否拼接 12 项模态手动统计。
+    ``include_sampling`` 决定是否拼接 4 项候选采样统计。
+    ``candidate_summary`` 是浮点 ``(B,D_m)`` 候选摘要。
+    ``modalities['a']`` 是浮点 ``(B,N_A,D_m)`` token 与 bool ``(B,N_A)`` 掩码。
+    ``modalities['p']`` 是浮点 ``(B,N_P,D_m)`` token 与 bool ``(B,N_P)`` 掩码。
+    ``modalities['v']`` 是浮点 ``(B,N_V,D_m)`` token 与 bool ``(B,N_V)`` 掩码。
+    ``modalities['pp']`` 是浮点 ``(B,N_PP,D_m)`` token 与 bool ``(B,N_PP)`` 掩码。
+    ``manual_features`` 是与开关一致的可选浮点 ``(B,12)`` 模态统计。
+    ``sampling_features`` 是与开关一致的可选浮点 ``(B,4)`` 采样统计。
+    ``attention_bias_features`` 必须为 ``None``。
+    返回浮点 ``(B,D_m)`` 候选表示；各模态假值 token 不参与均值或最大值。
     """
 
     def __init__(
@@ -270,9 +362,20 @@ class MeanMaxAggregator(nn.Module):
         modalities: Mapping[str, tuple[torch.Tensor, torch.Tensor]],
         manual_features: torch.Tensor | None,
         sampling_features: torch.Tensor | None,
+        attention_bias_features: Mapping[str, torch.Tensor] | None,
     ) -> torch.Tensor:
-        """按候选、采样统计及各模态 mean/max/三项统计的固定顺序融合。"""
+        """按候选、采样统计及 A/P/V/PP 各自 mean/max/三项统计的顺序融合。
 
+        ``candidate_summary`` 是浮点 ``(B,D_m)`` 候选摘要。
+        ``modalities`` 的四个键、token 和掩码契约见类说明，四种 ``N_m`` 可以不同。
+        ``manual_features`` 是与 ``include_manual`` 一致的可选浮点 ``(B,12)``。
+        ``sampling_features`` 是与 ``include_sampling`` 一致的可选浮点 ``(B,4)``。
+        ``attention_bias_features`` 必须为 ``None``。
+        返回浮点 ``(B,D_m)`` 候选表示。
+        """
+
+        if attention_bias_features is not None:
+            raise ValueError("mean_max 聚合不得接收候选实体注意力偏置输入。")
         summaries = [candidate_summary]
         if self.include_sampling:
             if sampling_features is None or sampling_features.shape != (
@@ -305,9 +408,25 @@ class MeanMaxAggregator(nn.Module):
 class CandidateConditionedAggregator(nn.Module):
     """用候选摘要分别查询四模态，并按配置拼接模态统计与采样统计。
 
-    构造参数冻结 ``D_m``、注意力头数、dropout 和两个特征开关。前向接收候选
-    ``(B,D_m)``、四模态 ``(B,N,D_m)`` 与 bool ``(B,N)``、可选手动统计
-    ``(B,12)`` 和采样统计 ``(B,4)``，返回 ``(B,D_m)``。
+    ``model_dim`` 是模型宽度 ``D_m``。
+    ``head_count`` 是每个模态分支的注意力头数 ``K``。
+    ``dropout`` 是注意力权重和融合 MLP 的丢弃概率。
+    ``include_manual`` 决定是否拼接 12 项模态手动统计。
+    ``include_sampling`` 决定是否拼接 4 项候选采样统计。
+    ``use_token_attention_bias`` 决定是否启用四套独立候选—实体偏置 MLP。
+    ``candidate_summary`` 是浮点 ``(B,D_m)`` 候选查询。
+    ``modalities['a']`` 是浮点 ``(B,N_A,D_m)`` token 与 bool ``(B,N_A)`` 掩码。
+    ``modalities['p']`` 是浮点 ``(B,N_P,D_m)`` token 与 bool ``(B,N_P)`` 掩码。
+    ``modalities['v']`` 是浮点 ``(B,N_V,D_m)`` token 与 bool ``(B,N_V)`` 掩码。
+    ``modalities['pp']`` 是浮点 ``(B,N_PP,D_m)`` token 与 bool ``(B,N_PP)`` 掩码。
+    ``manual_features`` 是与开关一致的可选浮点 ``(B,12)`` 模态统计。
+    ``sampling_features`` 是与开关一致的可选浮点 ``(B,4)`` 采样统计。
+    ``attention_bias_features['a']`` 是与 A token 逐项对齐的可选浮点 ``(B,N_A,4)``。
+    ``attention_bias_features['p']`` 是与 P token 逐项对齐的可选浮点 ``(B,N_P,4)``。
+    ``attention_bias_features['v']`` 是与 V token 逐项对齐的可选浮点 ``(B,N_V,4)``。
+    ``attention_bias_features['pp']`` 是与 PP token 逐项对齐的可选浮点 ``(B,N_PP,4)``。
+    每种偏置输入末轴依次为无量纲相对 XYZ 和位于 ``[0,1]`` 的 Stage1 固化概率。
+    返回浮点 ``(B,D_m)`` 候选表示；各模态假值 token 不参与注意力。
     """
 
     def __init__(
@@ -317,6 +436,7 @@ class CandidateConditionedAggregator(nn.Module):
         dropout: float,
         include_manual: bool,
         include_sampling: bool,
+        use_token_attention_bias: bool,
     ) -> None:
         super().__init__()
         self.include_manual = include_manual
@@ -345,6 +465,16 @@ class CandidateConditionedAggregator(nn.Module):
             nn.Linear(model_dim * 2, model_dim),
             nn.LayerNorm(model_dim),
         )
+        self.attention_biases: nn.ModuleDict | None = None
+        if use_token_attention_bias:
+            # 新分支使用隔离的初始化随机流，避免改变未增强模型的共同参数初值。
+            with torch.random.fork_rng(devices=[]):
+                self.attention_biases = nn.ModuleDict(
+                    {
+                        name: CandidateTokenAttentionBias(model_dim, head_count)
+                        for name in ("a", "p", "v", "pp")
+                    }
+                )
 
     def forward(
         self,
@@ -352,9 +482,28 @@ class CandidateConditionedAggregator(nn.Module):
         modalities: Mapping[str, tuple[torch.Tensor, torch.Tensor]],
         manual_features: torch.Tensor | None,
         sampling_features: torch.Tensor | None,
+        attention_bias_features: Mapping[str, torch.Tensor] | None,
     ) -> torch.Tensor:
-        """按候选摘要、可选采样统计及各模态注意力增量/三项统计的顺序融合。"""
+        """按候选、采样统计及 A/P/V/PP 各自注意力增量/三项统计的顺序融合。
 
+        ``candidate_summary`` 是浮点 ``(B,D_m)`` 候选查询。
+        ``modalities`` 的四个键、独立 ``N_m``、token 和掩码契约见类说明。
+        ``manual_features`` 是与 ``include_manual`` 一致的可选浮点 ``(B,12)``。
+        ``sampling_features`` 是与 ``include_sampling`` 一致的可选浮点 ``(B,4)``。
+        ``attention_bias_features`` 的四键与同模态 token 逐项对齐，存在性与 ``use_token_attention_bias`` 一致。
+        返回浮点 ``(B,D_m)`` 候选表示。
+        """
+
+        if self.attention_biases is None:
+            if attention_bias_features is not None:
+                raise ValueError("未启用候选实体注意力偏置时对应输入必须为 None。")
+        elif attention_bias_features is None or set(attention_bias_features) != {
+            "a",
+            "p",
+            "v",
+            "pp",
+        }:
+            raise ValueError("启用候选实体注意力偏置时必须提供完整 A/P/V/PP 输入。")
         grouped_manual = None
         if self.include_manual:
             if manual_features is None or manual_features.shape != (
@@ -377,7 +526,16 @@ class CandidateConditionedAggregator(nn.Module):
             raise ValueError("未启用采样特征时 sampling_features 必须为 None。")
         for modality_index, name in enumerate(("a", "p", "v", "pp")):
             tokens, mask = modalities[name]
-            summaries.append(self.branches[name](candidate_summary, tokens, mask))
+            attention_bias = None
+            if self.attention_biases is not None:
+                assert attention_bias_features is not None
+                features = attention_bias_features[name]
+                if features.shape[:2] != tokens.shape[:2]:
+                    raise ValueError(f"{name.upper()} 偏置输入未与对应 token 的 B/N 轴对齐。")
+                attention_bias = self.attention_biases[name](features)
+            summaries.append(
+                self.branches[name](candidate_summary, tokens, mask, attention_bias)
+            )
             if grouped_manual is not None:
                 summaries.append(grouped_manual[:, modality_index, :])
         return self.fusion(torch.cat(summaries, dim=-1))

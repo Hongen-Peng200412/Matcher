@@ -1,5 +1,5 @@
 # matcher.experiment_config.load_experiment_plan 读取本文件，matcher.experiment.run_plan 执行 stages。
-# use_manual_features=false 不拼接四模态 12 项统计；use_sampling_features=false 不拼接候选裁剪 4 项统计。
+# use_manual_features=false 不拼接12项模态统计；use_sampling_features=false 不拼接4项裁剪统计；use_candidate_token_attention_bias=false 不增加实体偏置。
 # 单张 A100 从零训练弱聚合完整 Matcher；使用 MoLFormer 和 oracle 身份门控。
 # null 语义：class_weights=null 表示类别不加权；maximum_epochs=null 表示不设轮数上限；
 # initialize_candidate_from=null 表示从零训练。language_family/identity_variant 仅候选预训练时才可为 null。
@@ -41,6 +41,7 @@ stages:
       aggregation: mean_max
       use_manual_features: false
       use_sampling_features: false
+      use_candidate_token_attention_bias: false
       model_dim: 256
       attention_heads: 8
       dropout: 0.10

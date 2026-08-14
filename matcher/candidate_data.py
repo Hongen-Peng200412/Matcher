@@ -407,6 +407,8 @@ def _candidate_manual_features(
         probability = np.asarray(tokens[:, probability_column], dtype=np.float32)
         if not np.isfinite(probability).all():
             raise ValueError(f"{name} 的 Stage1 固化概率含 NaN 或 Inf。")
+        if np.any((probability < 0.0) | (probability > 1.0)):
+            raise ValueError(f"{name} 的 Stage1 固化概率必须位于 [0,1]。")
         result.extend((float(count), float(probability.mean()), float(probability.max())))
     features = np.asarray(result, dtype=np.float32)
     if features.shape != (CANDIDATE_MANUAL_FEATURE_DIM,):

@@ -15,6 +15,7 @@ from .fusion import (
     MeanMaxAggregator,
     MODALITY_INPUT_DIMS,
     TokenProjector,
+    candidate_token_attention_bias_features,
     gather_voxel_features,
     normalize_candidate_manual_features,
     normalize_candidate_sampling_features,
@@ -23,7 +24,14 @@ from .raunet import RaUnetBackbone
 
 
 class CandidateEncoderOutput(TypedDict):
-    """令 ``B/D_m/C_v`` 为批次、模型宽度和体素特征通道：``candidate_embedding`` 是 ``(B,D_m)`` 候选表示；``class_logits`` 是 ``(B,6)`` 六分类分数；``ligand_area_logits`` 是 ``(B,48,48,48)`` 配体区域分数；``binding_area_logits`` 是 ``(B,48,48,48)`` 结合区域分数；``voxel_features`` 是 ``(B,C_v,48,48,48)`` RAUNet 特征。"""
+    """描述候选编码器输出，其中 ``B/D_m/C_v`` 是批次、模型宽度和体素特征通道。
+
+    ``candidate_embedding`` 是浮点 ``(B,D_m)`` 候选表示。
+    ``class_logits`` 是浮点 ``(B,6)`` 六分类分数。
+    ``ligand_area_logits`` 是浮点 ``(B,48,48,48)`` 配体区域分数。
+    ``binding_area_logits`` 是浮点 ``(B,48,48,48)`` 结合区域分数。
+    ``voxel_features`` 是浮点 ``(B,C_v,48,48,48)`` RAUNet 特征。
+    """
 
     candidate_embedding: torch.Tensor
     class_logits: torch.Tensor
@@ -50,7 +58,12 @@ class VoxelBinaryHead(nn.Module):
 
 
 class CandidateEncoder(nn.Module):
-    """编码单个 Stage1 候选。构造参数 ``config`` 定义 RAUNet、token 投影与聚合器；前向输入 ``CandidateBatch``，输出 ``CandidateEncoderOutput``；不读取配体语言或配体图。"""
+    """编码单个 Stage1 候选。
+
+    ``config`` 定义 RAUNet、token 投影、聚合器、候选统计与可选实体注意力偏置。
+    ``batch`` 是 ``CandidateBatch``，只读取候选体素、A/P/V/PP token、掩码、索引和已启用候选统计。
+    返回 ``CandidateEncoderOutput``，不读取配体语言表示或配体图。
+    """
 
     def __init__(self, config: MatcherModelConfig) -> None:
         super().__init__()
@@ -99,6 +112,7 @@ class CandidateEncoder(nn.Module):
                 config.dropout,
                 config.use_manual_features,
                 config.use_sampling_features,
+                config.use_candidate_token_attention_bias,
             )
         self.class_head = nn.Sequential(
             nn.Linear(config.model_dim, config.model_dim),
@@ -112,9 +126,13 @@ class CandidateEncoder(nn.Module):
     def forward(self, batch: CandidateBatch) -> CandidateEncoderOutput:
         """把候选体素与四模态字段编码为 ``CandidateEncoderOutput``。
 
-        输入读取 ``voxel_input``、A/P/V/PP token 与掩码，以及 V/PP ZYX 索引；
-        ``use_manual_features`` 启用时读取 ``candidate_manual_features``，
-        ``use_sampling_features`` 启用时读取 ``candidate_sampling_features``。
+        ``batch['voxel_input']`` 是浮点 ``(B,105,48,48,48)`` 候选体素输入。
+        ``batch`` 的 A/P/V/PP token 与掩码采用 ``CandidateBatch`` 契约。
+        ``batch`` 的 V/PP ZYX 索引与对应 token、掩码逐项对齐。
+        ``candidate_manual_features`` 仅在 ``use_manual_features`` 启用时读取。
+        ``candidate_sampling_features`` 仅在 ``use_sampling_features`` 启用时读取。
+        A/P/V/PP 原始 token 末四维仅在 ``use_candidate_token_attention_bias`` 启用时重排为每模态偏置输入。
+        每个偏置输入的 ``B/N_m`` 轴与同模态投影 token、掩码逐项对齐。
         返回候选表示、六分类分数、两个区域分数和 U-Net 体素特征。
         """
 
@@ -145,6 +163,14 @@ class CandidateEncoder(nn.Module):
             "v": (v_projected, batch["v_mask"]),
             "pp": (pp_projected, batch["pp_mask"]),
         }
+        attention_bias_features = None
+        if self.config.use_candidate_token_attention_bias:
+            attention_bias_features = {
+                "a": candidate_token_attention_bias_features(batch["a_tokens"]),
+                "p": candidate_token_attention_bias_features(batch["p_tokens"]),
+                "v": candidate_token_attention_bias_features(batch["v_tokens"]),
+                "pp": candidate_token_attention_bias_features(batch["pp_tokens"]),
+            }
 
         normalized_manual = None
         if self.config.use_manual_features:
@@ -161,6 +187,7 @@ class CandidateEncoder(nn.Module):
             modalities,
             normalized_manual,
             normalized_sampling,
+            attention_bias_features,
         )
         return {
             "candidate_embedding": candidate_embedding,

@@ -312,6 +312,7 @@ def start_wandb_tracking(
             "loss",
             "gradient",
             "gate",
+            "attention_bias",
             "learning_rate",
             "performance",
             "memory",

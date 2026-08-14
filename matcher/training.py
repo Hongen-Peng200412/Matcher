@@ -672,13 +672,15 @@ def _train_epoch(
         maximum_gradient_norm = max(maximum_gradient_norm, gradient_norm)
         graph_gradient_norm = _named_gradient_norm(model, "identity_scorer.graph.")
         inventory_gradient_norm = _named_gradient_norm(model, "identity_scorer.inventory.")
+        candidate_encoder_prefix = (
+            "candidate_encoder." if isinstance(model, ClosedSetMatcher) else ""
+        )
         if graph_gradient_norm is not None and inventory_gradient_norm is not None:
             graph_gradient_norm_sum += graph_gradient_norm
             inventory_gradient_norm_sum += inventory_gradient_norm
             identity_gradient_step_count += 1
         scaler.step(optimizer)
         scaler.update()
-        optimizer.zero_grad(set_to_none=True)
         global_step += 1
         is_first_stage_step = global_step == 1
         # CUDA 前向、反向与 AdamW 更新均可能异步；每步同步后才能得到可跨硬件比较的完整耗时。
@@ -755,7 +757,11 @@ def _train_epoch(
         if graph_gate is not None and inventory_gate is not None:
             step_metrics["gate/train_step/graph"] = graph_gate
             step_metrics["gate/train_step/inventory"] = inventory_gate
+        step_metrics.update(
+            _attention_bias_weight_metrics(model, candidate_encoder_prefix)
+        )
         tracker.log_global_step(global_step, step_metrics)
+        optimizer.zero_grad(set_to_none=True)
     # 循环不会额外请求 StopIteration；显式释放迭代器，确保 validation 前回收训练 worker。
     del loader_iterator
     elapsed_seconds = time.perf_counter() - started_at
@@ -835,7 +841,7 @@ def _classification_denominator(
 
 
 def _named_gradient_norm(model: nn.Module, prefix: str) -> float | None:
-    """返回具名前缀下全部现有梯度的 L2 范数；不存在该分支时返回 ``None``。"""
+    """返回具名前缀下全部现有梯度的 L2 范数；没有匹配的现有梯度张量时返回 ``None``。"""
 
     squared_sum = 0.0
     found = False
@@ -844,6 +850,56 @@ def _named_gradient_norm(model: nn.Module, prefix: str) -> float | None:
             squared_sum += float(parameter.grad.detach().float().square().sum())
             found = True
     return math.sqrt(squared_sum) if found else None
+
+
+def _named_parameter_norm(model: nn.Module, prefix: str) -> float:
+    """返回具名前缀下全部参数的有限 L2 范数。"""
+
+    squared_sum = 0.0
+    found = False
+    for name, parameter in model.named_parameters():
+        if name.startswith(prefix):
+            squared_sum += float(parameter.detach().float().square().sum())
+            found = True
+    if not found:
+        raise RuntimeError(f"没有找到参数前缀 {prefix!r}。")
+    norm = math.sqrt(squared_sum)
+    if not math.isfinite(norm):
+        raise FloatingPointError(f"参数前缀 {prefix!r} 的 L2 范数含 NaN 或 Inf。")
+    return norm
+
+
+def _attention_bias_weight_metrics(
+    model: nn.Module,
+    candidate_encoder_prefix: str,
+) -> dict[str, float]:
+    """返回一次更新中候选—实体注意力偏置末层权重的诊断值。
+
+    ``model`` 是候选预训练模型或完整 Matcher。
+    ``candidate_encoder_prefix`` 是候选编码器在 ``model.named_parameters()`` 中的前缀。
+    本函数必须在全局梯度裁剪与 ``optimizer.step`` 之后、清空梯度之前调用。
+    返回键 ``gradient/train_step/{m}_attention_bias_final_weight_postclip_norm`` 记录模态 ``m`` 的裁剪后末层 ``weight.grad`` 范数。
+    返回键 ``attention_bias/train_step/{m}_final_weight_poststep_norm`` 记录模态 ``m`` 的本次更新后末层 ``weight`` 范数。
+    ``m`` 属于 ``a/p/v/pp``；一个模态没有匹配的现有梯度张量时省略该模态的两个键。
+    末层 ``bias`` 是每个注意力头沿 token 轴的常数平移，不在本诊断中记录。
+    """
+
+    metrics: dict[str, float] = {}
+    for name in ("a", "p", "v", "pp"):
+        parameter_prefix = (
+            f"{candidate_encoder_prefix}aggregator.attention_biases."
+            f"{name}.layers.2.weight"
+        )
+        gradient_norm = _named_gradient_norm(model, parameter_prefix)
+        if gradient_norm is None:
+            continue
+        metrics[
+            f"gradient/train_step/{name}_attention_bias_final_weight_postclip_norm"
+        ] = gradient_norm
+        metrics[
+            f"attention_bias/train_step/{name}_final_weight_poststep_norm"
+        ] = _named_parameter_norm(model, parameter_prefix)
+    return metrics
 
 
 def _move_batch(batch: CandidateBatch, device: torch.device) -> CandidateBatch:

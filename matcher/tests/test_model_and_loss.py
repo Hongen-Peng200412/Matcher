@@ -16,6 +16,8 @@ from matcher.model import CandidateEncoder, ClosedSetMatcher, MatcherModelConfig
 from matcher.model.config import AggregationName
 from matcher.model.fusion import (
     CandidateConditionedAggregator,
+    CandidateTokenAttentionBias,
+    candidate_token_attention_bias_features,
     gather_voxel_features,
     normalize_candidate_manual_features,
     normalize_candidate_sampling_features,
@@ -32,13 +34,18 @@ from matcher.model.raunet import RaUnetBackbone
 from .factories import build_synthetic_roots
 
 
-def _small_config(aggregation: AggregationName = "mean_max") -> MatcherModelConfig:
+def _small_config(
+    aggregation: AggregationName = "mean_max",
+    *,
+    use_candidate_token_attention_bias: bool = False,
+) -> MatcherModelConfig:
     """返回适合 CPU 契约测试的窄 RAUNet，空间层级与正式模型相同。"""
 
     return MatcherModelConfig(
         aggregation=aggregation,
         use_manual_features=True,
         use_sampling_features=True,
+        use_candidate_token_attention_bias=use_candidate_token_attention_bias,
         model_dim=16,
         attention_heads=4,
         dropout=0.0,
@@ -93,12 +100,40 @@ def test_candidate_encoder_shapes_and_pp_cross_attention_zero_initialization(tmp
     query = torch.randn(2, 16)
     tokens = torch.randn(2, 3, 16)
     mask = torch.tensor([[True, True, True], [True, False, False]])
-    increment = aggregator.branches["pp"](query, tokens, mask)
+    increment = aggregator.branches["pp"](query, tokens, mask, None)
     assert torch.count_nonzero(increment) == 0
     increment.sum().backward()
     pp_output_gradient = aggregator.branches["pp"].output.weight.grad
     assert pp_output_gradient is not None
     assert torch.count_nonzero(pp_output_gradient) > 0
+
+
+def test_enhanced_candidate_encoder_is_finite_under_bfloat16_autocast(tmp_path) -> None:
+    """实体偏置增强的候选编码器应在 BF16 下完成整条前向与反向传播。"""
+
+    model = CandidateEncoder(
+        _small_config(
+            "candidate_cross_attention",
+            use_candidate_token_attention_bias=True,
+        )
+    ).train()
+    batch = _batch(tmp_path, "candidate_pretrain")
+    with torch.autocast("cpu", dtype=torch.bfloat16):
+        output = model(batch)
+        loss = output["class_logits"].float().square().mean()
+        loss = loss + output["candidate_embedding"].float().square().mean()
+    assert torch.isfinite(loss)
+    loss.backward()
+    aggregator = cast(CandidateConditionedAggregator, model.aggregator)
+    assert aggregator.attention_biases is not None
+    gradients = [
+        parameter.grad
+        for module in aggregator.attention_biases.values()
+        for parameter in module.parameters()
+        if parameter.grad is not None
+    ]
+    assert gradients
+    assert all(torch.isfinite(gradient).all() for gradient in gradients)
 
 
 def test_closed_set_matcher_forward_and_loss_are_finite(tmp_path) -> None:
@@ -201,6 +236,156 @@ def test_sampling_features_use_fixed_geometric_normalization() -> None:
     raw = torch.tensor([[1.0, 24.0 * 3.0**0.5, 24.0, 0.75]])
     normalized = normalize_candidate_sampling_features(raw)
     assert torch.allclose(normalized, torch.tensor([[1.0, 1.0, 1.0, 0.75]]))
+
+
+@pytest.mark.parametrize("feature_width", (229, 116, 52, 4))
+def test_candidate_token_attention_bias_features_keep_xyz_probability_order(
+    feature_width: int,
+) -> None:
+    """A/P/V/PP 四种正式宽度都把末尾概率、XYZ 重排为 XYZ、概率。"""
+
+    tokens = torch.zeros((1, 2, feature_width))
+    tokens[0, 0, -4:] = torch.tensor([0.75, -0.25, 0.50, 1.00])
+    tokens[0, 1, -4:] = torch.tensor([0.20, 0.10, -0.30, 0.40])
+    features = candidate_token_attention_bias_features(tokens)
+    expected = torch.tensor(
+        [[[-0.25, 0.50, 1.00, 0.75], [0.10, -0.30, 0.40, 0.20]]]
+    )
+    assert torch.equal(features, expected)
+
+
+def _attention_aggregator_inputs() -> tuple[
+    torch.Tensor,
+    dict[str, tuple[torch.Tensor, torch.Tensor]],
+    torch.Tensor,
+    torch.Tensor,
+    dict[str, torch.Tensor],
+]:
+    """构造同时覆盖非空、补零和空模态的增强注意力窄测试输入。
+
+    返回第 1 项是浮点 ``(2,16)`` 候选摘要。
+    返回第 2 项是 A/P/V/PP 投影 token 与 bool 掩码字典，各模态 token 数独立。
+    返回第 3 项是浮点 ``(2,12)`` 模态手动统计。
+    返回第 4 项是浮点 ``(2,4)`` 候选采样统计。
+    返回第 5 项是与每种模态 token 逐项对齐的浮点 ``(2,N_m,4)`` 注意力偏置输入字典。
+    """
+
+    candidate = torch.randn(2, 16)
+    modalities = {
+        "a": (torch.randn(2, 3, 16), torch.tensor([[True, True, False], [True, False, False]])),
+        "p": (torch.randn(2, 2, 16), torch.tensor([[True, True], [False, False]])),
+        "v": (torch.randn(2, 1, 16), torch.ones((2, 1), dtype=torch.bool)),
+        "pp": (torch.empty((2, 0, 16)), torch.empty((2, 0), dtype=torch.bool)),
+    }
+    attention_features = {
+        name: torch.randn(tokens.shape[0], tokens.shape[1], 4)
+        for name, (tokens, _) in modalities.items()
+    }
+    return candidate, modalities, torch.randn(2, 12), torch.randn(2, 4), attention_features
+
+
+@pytest.mark.parametrize("autocast_enabled", (False, True))
+def test_zero_initialized_attention_bias_is_exactly_the_unenhanced_aggregator(
+    autocast_enabled: bool,
+) -> None:
+    """零偏置逐值退化，并保留共同参数初值及后续模块可见的随机状态。"""
+
+    torch.manual_seed(90210)
+    baseline = CandidateConditionedAggregator(16, 4, 0.0, True, True, False).eval()
+    baseline_rng_state = torch.get_rng_state()
+    torch.manual_seed(90210)
+    enhanced = CandidateConditionedAggregator(16, 4, 0.0, True, True, True).eval()
+    enhanced_rng_state = torch.get_rng_state()
+    assert torch.equal(baseline_rng_state, enhanced_rng_state)
+    baseline_state = baseline.state_dict()
+    enhanced_state = enhanced.state_dict()
+    assert all(torch.equal(value, enhanced_state[name]) for name, value in baseline_state.items())
+    assert enhanced.attention_biases is not None
+    assert len({id(module) for module in enhanced.attention_biases.values()}) == 4
+    for module in enhanced.attention_biases.values():
+        final = cast(CandidateTokenAttentionBias, module).layers[-1]
+        assert isinstance(final, torch.nn.Linear)
+        assert torch.count_nonzero(final.weight) == 0
+        assert torch.count_nonzero(final.bias) == 0
+
+    inputs = _attention_aggregator_inputs()
+    with torch.no_grad():
+        if autocast_enabled:
+            with torch.autocast("cpu", dtype=torch.bfloat16):
+                baseline_output = baseline(*inputs[:4], None)
+                enhanced_output = enhanced(*inputs)
+        else:
+            baseline_output = baseline(*inputs[:4], None)
+            enhanced_output = enhanced(*inputs)
+    assert torch.equal(baseline_output, enhanced_output)
+
+
+def test_attention_bias_ignores_padding_and_pp_wakes_after_output_projection_step() -> None:
+    """无效 token 偏置不改变输出；PP 零出口更新一次后偏置末层权重获得梯度。"""
+
+    aggregator = CandidateConditionedAggregator(16, 4, 0.0, False, False, True).train()
+    assert aggregator.attention_biases is not None
+    query = torch.randn(2, 16)
+    tokens = torch.randn(2, 3, 16)
+    mask = torch.tensor([[True, True, False], [True, False, False]])
+    features = torch.randn(2, 3, 4)
+
+    a_bias = aggregator.attention_biases["a"]
+    a_final = cast(CandidateTokenAttentionBias, a_bias).layers[-1]
+    assert isinstance(a_final, torch.nn.Linear)
+    with torch.no_grad():
+        a_final.weight.normal_()
+    with torch.no_grad():
+        original = aggregator.branches["a"](query, tokens, mask, a_bias(features))
+        altered_features = features.clone()
+        altered_features[~mask] = 1.0e4
+        altered = aggregator.branches["a"](
+            query,
+            tokens,
+            mask,
+            a_bias(altered_features),
+        )
+    assert torch.equal(original, altered)
+
+    pp_bias = aggregator.attention_biases["pp"]
+    pp_branch = aggregator.branches["pp"]
+    first = pp_branch(query, tokens, mask, pp_bias(features))
+    assert torch.count_nonzero(first) == 0
+    first.sum().backward()
+    assert pp_branch.output.weight.grad is not None
+    assert torch.count_nonzero(pp_branch.output.weight.grad) > 0
+    pp_final = cast(CandidateTokenAttentionBias, pp_bias).layers[-1]
+    assert isinstance(pp_final, torch.nn.Linear)
+    assert pp_final.weight.grad is not None
+    assert torch.count_nonzero(pp_final.weight.grad) == 0
+    with torch.no_grad():
+        pp_branch.output.weight.add_(pp_branch.output.weight.grad, alpha=-0.1)
+    pp_branch.zero_grad(set_to_none=True)
+    pp_bias.zero_grad(set_to_none=True)
+    second = pp_branch(query, tokens, mask, pp_bias(features))
+    second.square().sum().backward()
+    assert pp_final.weight.grad is not None
+    assert torch.count_nonzero(pp_final.weight.grad) > 0
+
+
+def test_nonzero_output_attention_branches_wake_bias_final_weights_on_first_backward() -> None:
+    """A/P/V 含有效 token 且损失回传时，第一次反向传播唤醒各自偏置末层权重。"""
+
+    aggregator = CandidateConditionedAggregator(16, 4, 0.0, False, False, True).train()
+    assert aggregator.attention_biases is not None
+    query = torch.randn(2, 16)
+    tokens = torch.randn(2, 4, 16)
+    mask = torch.tensor([[True, True, True, False], [True, True, False, False]])
+    features = torch.randn(2, 4, 4)
+    target = torch.randn(2, 16)
+    for name in ("a", "p", "v"):
+        bias_module = aggregator.attention_biases[name]
+        increment = aggregator.branches[name](query, tokens, mask, bias_module(features))
+        (increment * target).sum().backward()
+        final = cast(CandidateTokenAttentionBias, bias_module).layers[-1]
+        assert isinstance(final, torch.nn.Linear)
+        assert final.weight.grad is not None
+        assert torch.count_nonzero(final.weight.grad) > 0
 
 
 def test_identity_variants_gate_only_numerator_and_joint_reaches_class_probability() -> None:
@@ -555,6 +740,10 @@ def test_model_config_and_voxel_gather_reject_invalid_contracts() -> None:
     values["raunet_planes"] = [4, 16, 16, 16, 16, 16, 8, 8, 0]
     with pytest.raises(ValueError, match="raunet_planes"):
         MatcherModelConfig.from_dict(values)
+    values = _small_config().to_dict()
+    values["use_candidate_token_attention_bias"] = True
+    with pytest.raises(ValueError, match="candidate_cross_attention"):
+        MatcherModelConfig.from_dict(values)
 
     volume = torch.zeros((1, 2, 4, 4, 4))
     indices = torch.tensor([[[9, 0, 0]]])
@@ -564,18 +753,29 @@ def test_model_config_and_voxel_gather_reject_invalid_contracts() -> None:
     assert torch.count_nonzero(padded) == 0
 
 
-def test_model_config_migrates_batch0_and_batch1_feature_flags() -> None:
-    """第0批缺两个特征开关均关闭；第1批只缺采样开关并保留手动统计。"""
+def test_model_config_migrates_batch0_to_batch2_feature_flags() -> None:
+    """第0–2批历史产物缺少的特征开关应按各批既有结构关闭。"""
 
     legacy_values = _small_config().to_dict()
     del legacy_values["use_manual_features"]
     del legacy_values["use_sampling_features"]
+    del legacy_values["use_candidate_token_attention_bias"]
     migrated = MatcherModelConfig.from_dict(legacy_values)
     assert migrated.use_manual_features is False
     assert migrated.use_sampling_features is False
+    assert migrated.use_candidate_token_attention_bias is False
 
     batch1_values = _small_config().to_dict()
     del batch1_values["use_sampling_features"]
+    del batch1_values["use_candidate_token_attention_bias"]
     migrated_batch1 = MatcherModelConfig.from_dict(batch1_values)
     assert migrated_batch1.use_manual_features is True
     assert migrated_batch1.use_sampling_features is False
+    assert migrated_batch1.use_candidate_token_attention_bias is False
+
+    batch2_values = _small_config("candidate_cross_attention").to_dict()
+    del batch2_values["use_candidate_token_attention_bias"]
+    migrated_batch2 = MatcherModelConfig.from_dict(batch2_values)
+    assert migrated_batch2.use_manual_features is True
+    assert migrated_batch2.use_sampling_features is True
+    assert migrated_batch2.use_candidate_token_attention_bias is False

@@ -6,7 +6,7 @@
 
 - `candidate_pretrain`：对全部 Find_0 候选预测 `background/ion/nucleotide_like/peptide_like/small_molecule/sugar`，同时监督候选配体区域和受体结合区域；不读取配体语言表示或配体图。
 - `full_matcher`：保留相同候选编码器，再读取当前 PDB 的配体语言表示、未池化配体原子图和排除自身的身份清单，输出闭集身份分数。
-- `calibration`：只在 validation 选定唯一方案后读取已完成阶段的 `BEST.pt`；claim 文件保留期间，同一稳定数据指纹只能绑定一个选择，`claimed` 允许同一选择在失败后重试，`completed` 禁止再次评估。该入口不训练、不选模。支持类 macro-F1 只平均真实候选数大于零的类别；固定六类 macro-F1 把零支持类 F1 记为 0 后仍平均全部六类。
+- `calibration`：入口已经实现，但只有全部开发批次结束且用户明确确认最终方案后，才允许读取已完成阶段的 `BEST.pt` 运行一次正式评估。claim 文件保留期间，同一稳定数据指纹只能绑定一个选择，`claimed` 允许同一选择在失败后重试，`completed` 禁止再次评估。该入口不训练、不选模。支持类 macro-F1 只平均真实候选数大于零的类别；固定六类 macro-F1 把零支持类 F1 记为 0 后仍平均全部六类。
 - 候选与真实 occurrence 的全局组件覆盖率和 occurrence 覆盖率都至少为 `0.30` 才命中。多个命中使用两侧覆盖率几何平均的最大值，并采用稳定并列规则。
 - RAUNet 输入候选级 `48³` 的 105 个通道。第 0/1 批固定裁取 `[16,64)³`；第 2 批起可按完整权威 V 的体素质心解析起点。A/P token 保留 Stage1 `80³` 上下文且不受 RAUNet 调制；V/PP 与两个区域目标共享同一 `48³`，只有 V/PP 读取 RAUNet 特征增量。
 - 完整 Matcher 支持 `oracle/detached/joint` 三种身份门控损失；三者都以同一 global batch 中真实类别属于配置身份范围且身份目标有效的候选数为身份损失分母。
@@ -20,6 +20,7 @@
 - `configs/experiments/initial/`：第 0 批七个自包含 YAML；一项 A100 顺序运行两个候选六分类阶段，另外六项定义两种语言表示和三种身份损失。
 - `configs/experiments/batch1/`：第 1 批三个自包含 YAML；固定 SMI-TED、mean/max、五类非背景身份与手动特征，只比较 oracle/detached/joint。
 - `configs/experiments/batch2/`：第 2 批五个自包含 YAML；统一 V 质心 `48³` 与采样统计，比较三种完整 Matcher 损失和两种候选聚合。
+- `configs/experiments/batch3/`：第 3 批四个自包含 YAML；为候选条件注意力加入按模态独立、末层零初始化的实体分数偏置。
 - `训练与运行/`：通用 Slurm、release、launch、四锁控制，以及 Matcher 的预计算、训练和一次性 calibration shell 入口。
 - `与服务器交互/`：只面向 `/home/penghongen/My_Project/Matcher` 的安全同步入口。
 - `文档/exec_plan/`：逐项命令、Job ID、审查发现、临时决定和结果证据。

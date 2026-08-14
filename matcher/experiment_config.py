@@ -211,6 +211,7 @@ def _parse_stage(values: dict[str, Any]) -> StageConfig:
             "aggregation",
             "use_manual_features",
             "use_sampling_features",
+            "use_candidate_token_attention_bias",
             "model_dim",
             "attention_heads",
             "dropout",

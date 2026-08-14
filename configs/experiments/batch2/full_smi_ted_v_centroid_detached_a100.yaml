@@ -2,6 +2,7 @@
 # v_centroid 使用 np.rint(mean(V_zyx)+0.5-24) 的最近偶数规则，起点再逐轴限制到 [0,32]。
 # use_manual_features=true 拼接 A/P/V/PP 各自的 token 数、Stage1 固化概率均值和最大值，共 12 项。
 # use_sampling_features=true 拼接边界限制标志、V 质心偏移 L2/L∞ 距离和 V 保留比例，共 4 项。
+# use_candidate_token_attention_bias=false 不增加第3批候选—实体注意力偏置。
 # p_target_class=softmax(class_logits)[真实身份所属类别]；detached 对该系数切断梯度。
 # null：class_weights 不加权；maximum_epochs 不设轮数上限；initialize_candidate_from 不加载 checkpoint。
 plan_name: batch2_smi_ted_v_centroid_detached_a100
@@ -38,6 +39,7 @@ stages:
       aggregation: mean_max
       use_manual_features: true
       use_sampling_features: true
+      use_candidate_token_attention_bias: false
       model_dim: 256
       attention_heads: 8
       dropout: 0.10

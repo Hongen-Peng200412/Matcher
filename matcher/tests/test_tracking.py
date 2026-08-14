@@ -10,10 +10,13 @@ from pathlib import Path
 from types import ModuleType
 
 import pytest
+import torch
 
 import matcher.tracking as tracking_module
 from matcher.experiment_config import load_experiment_plan
+from matcher.model.fusion import CandidateConditionedAggregator
 from matcher.tracking import MetricValue, start_wandb_tracking
+from matcher.training import _attention_bias_weight_metrics
 
 
 class _FakeWandbSummary:
@@ -173,6 +176,7 @@ def test_wandb_tracker_records_complete_metadata_intervals_nulls_summary_and_exi
     assert ("global_step", None) in run.metric_definitions
     assert ("loss/train_step/*", "global_step") in run.metric_definitions
     assert ("gradient/train_step/*", "global_step") in run.metric_definitions
+    assert ("attention_bias/train_step/*", "global_step") in run.metric_definitions
     assert ("epoch", None) in run.metric_definitions
     assert ("classification_summary/*", "epoch") in run.metric_definitions
     assert ("identity_all_non_background/*", "epoch") in run.metric_definitions
@@ -226,6 +230,57 @@ def test_wandb_tracker_rejects_unexplained_nonfinite_training_metrics(
         tracker.log_global_step(1, {"loss/train_step/total": float("nan")})
     with pytest.raises(FloatingPointError, match="含 Inf"):
         tracker.log_global_step(1, {"loss/train_step/total": float("inf")})
+
+
+def test_attention_bias_telemetry_records_postclip_weight_gradient_and_poststep_weight(
+) -> None:
+    """诊断记录裁剪后梯度与更新后权重，并省略整批无实体的 PP 模态。"""
+
+    model = torch.nn.Module()
+    aggregator = CandidateConditionedAggregator(16, 4, 0.0, False, False, True)
+    model.add_module("aggregator", aggregator)
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
+    query = torch.randn(2, 16)
+    modalities = {
+        name: (torch.randn(2, 3, 16), torch.ones((2, 3), dtype=torch.bool))
+        for name in ("a", "p", "v")
+    }
+    modalities["pp"] = (
+        torch.empty((2, 0, 16)),
+        torch.empty((2, 0), dtype=torch.bool),
+    )
+    bias_features = {
+        name: torch.randn(tokens.shape[0], tokens.shape[1], 4)
+        for name, (tokens, _) in modalities.items()
+    }
+    output = aggregator(query, modalities, None, None, bias_features)
+    output.square().sum().backward()
+    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=0.1)
+    assert aggregator.attention_biases is not None
+    a_final = aggregator.attention_biases["a"].layers[2]
+    assert isinstance(a_final, torch.nn.Linear)
+    a_weight = a_final.weight
+    assert a_weight.grad is not None
+    expected_postclip = float(a_weight.grad.float().square().sum().sqrt())
+    optimizer.step()
+    expected_poststep = float(a_weight.detach().float().square().sum().sqrt())
+
+    metrics = _attention_bias_weight_metrics(model, "")
+    expected_keys = {
+        f"{root}/train_step/{name}_{suffix}"
+        for name in ("a", "p", "v")
+        for root, suffix in (
+            ("gradient", "attention_bias_final_weight_postclip_norm"),
+            ("attention_bias", "final_weight_poststep_norm"),
+        )
+    }
+    assert set(metrics) == expected_keys
+    assert metrics[
+        "gradient/train_step/a_attention_bias_final_weight_postclip_norm"
+    ] == pytest.approx(expected_postclip)
+    assert metrics[
+        "attention_bias/train_step/a_final_weight_poststep_norm"
+    ] == pytest.approx(expected_poststep)
 
 
 def test_wandb_start_rejects_empty_run_id_and_finishes_created_run(

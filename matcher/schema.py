@@ -48,8 +48,10 @@ LOCAL_BOX_MARGIN = (STAGE1_BOX_SIZE - LOCAL_BOX_SIZE) // 2
 LANGUAGE_EMBEDDING_DIM = 768
 BOX_ORIGIN_ABSOLUTE_TOLERANCE_ANGSTROM = 5e-5
 
-# 四种候选模态的最后三维始终是候选裁剪中心相对 XYZ 坐标。A/P 保留完整
-# 80³ 上下文，V/PP 只保留候选级 48³，因此使用不同的物理半边长归一化。
+# A/P/V/PP token 的共同末四维依次是 Stage1 固化概率、relative_x、relative_y、relative_z。
+# Stage1 固化概率有限且位于 [0,1]。
+# A/P 相对 XYZ 以候选实际裁剪中心为原点，并按完整 80³ 物理半边长归一化。
+# V/PP 相对 XYZ 以候选实际裁剪中心为原点，并按候选级 48³ 物理半边长归一化。
 A_TOKEN_DIM = 229
 P_TOKEN_DIM = 116
 V_TOKEN_DIM = 52
@@ -67,6 +69,15 @@ CANDIDATE_SAMPLING_FEATURE_NAMES = (
     "v_retained_fraction",
 )
 CANDIDATE_SAMPLING_FEATURE_DIM = len(CANDIDATE_SAMPLING_FEATURE_NAMES)
+CANDIDATE_TOKEN_ATTENTION_BIAS_FEATURE_NAMES = (
+    "relative_x",
+    "relative_y",
+    "relative_z",
+    "stage1_probability",
+)
+CANDIDATE_TOKEN_ATTENTION_BIAS_FEATURE_DIM = len(
+    CANDIDATE_TOKEN_ATTENTION_BIAS_FEATURE_NAMES
+)
 FULL_CONTEXT_HALF_EXTENT_VOXELS = STAGE1_BOX_SIZE / 2.0
 LOCAL_CONTEXT_HALF_EXTENT_VOXELS = LOCAL_BOX_SIZE / 2.0
 

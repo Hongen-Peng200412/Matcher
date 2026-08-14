@@ -41,7 +41,7 @@
 
 `model.aggregation` 只允许 `mean_max` 或 `candidate_cross_attention`。`raunet_planes` 依次是 `(enc0, enc1, enc2, enc3, bottleneck, dec3, dec2, dec1, dec0)`。`gradient_checkpointing=true` 仅表示训练时激活重计算，不改变前向科学语义。
 
-`identity_scope=null` 表示候选预训练没有身份损失；`identity_scope=small_molecule` 表示完整 Matcher 只在真实小分子且身份目标有效的候选上计算身份损失。`model.use_manual_features=false` 与 `model.use_sampling_features=false` 固定第 0 批结构，不向候选摘要或身份打分 MLP 拼接第 1 批的手动统计或第 2 批的采样统计。第 0 批 checkpoint 缺少两个开关时二者都迁移为 `false`；第 1 批 checkpoint 已含 `use_manual_features=true` 而只缺采样开关时，保留手动统计并仅把 `use_sampling_features` 迁移为 `false`。
+`identity_scope=null` 表示候选预训练没有身份损失；`identity_scope=small_molecule` 表示完整 Matcher 只在真实小分子且身份目标有效的候选上计算身份损失。`model.use_manual_features=false`、`model.use_sampling_features=false` 和 `model.use_candidate_token_attention_bias=false` 固定第 0 批结构，不加入第 1 批手动统计、第 2 批采样统计或第 3 批候选—实体注意力偏置。第 0 批 checkpoint 缺少三个开关时均迁移为 `false`；第 1/2 批 checkpoint 分别保留已经存在的手动/采样开关，仅把缺失的注意力偏置开关迁移为 `false`。
 
 `physical_batch_size × gradient_accumulation` 必须严格等于 `global_batch_size=32`。`maximum_epochs=null` 表示不设 epoch 上限；任务也不设 Slurm 或程序墙钟上限。`patience_bad_epochs=2` 表示连续两个完整 validation epoch 没有改善后结束训练。
 

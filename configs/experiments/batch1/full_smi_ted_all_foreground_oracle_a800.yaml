@@ -36,6 +36,7 @@ stages:
       aggregation: mean_max
       use_manual_features: true  # 候选聚合与身份 MLP 使用计数、固化概率和身份类别概率。
       use_sampling_features: false  # 第1批不读取第2批新增的裁剪几何统计。
+      use_candidate_token_attention_bias: false  # 第1批 mean/max 聚合不使用候选—实体注意力偏置。
       model_dim: 256
       attention_heads: 8
       dropout: 0.10

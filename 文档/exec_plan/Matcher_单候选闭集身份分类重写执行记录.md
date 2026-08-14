@@ -790,3 +790,25 @@ Job `341634` 随后完成全部 `20,807` 个 train/validation 候选，于 07:31
 | joint | `340899` / `train_experiment_job340899_20260814T073303_a2` | `s3lj6298` | `24.4089 s / 25.6375 / 19,442,696,192 bytes` |
 
 三项均连接 W&B project `AdaLigand-Matcher-Batch2`、group `matcher-batch2-full-v-centroid-sampling`，首个参数更新的 global batch 为 32、有效身份目标为 7；事件发生在有限性检查、参数更新和 CUDA 同步之后。未见 OOM、NaN、Traceback 或缓存回退。07:35 复核显示六个受管 allocation 均为 `RUNNING` 且只保留各自 `after_lock`；没有删除或释放任何 `after_lock`。第 2 批两个候选任务继续等待第 1 批 A800 自然产生 `try_lock`，不抢占或中断正在运行的 Job `340894/340895`。
+
+### 第 3 批增强候选条件注意力实现
+
+第 3 批只改变候选条件注意力的实体分数，不改变第 2 批 V 质心视野、12 项模态统计、4 项采样统计、候选集合、监督、global batch 或优化器。一次性结构审计先核对 `Stage1训练与多阈值推理.md`、Pocket_Plus selector 和当前 Matcher token 契约，确定四种模态都已在原始 token 末尾保存 Stage1 固化概率与相对候选实际裁剪中心的归一化 XYZ。因此每模态偏置输入固定为 `(relative_x, relative_y, relative_z, stage1_probability)`，不移植 selector 中 Matcher 不具备的树谱系、最旧候选或框层级字段。
+
+活动实现为 A/P/V/PP 分别建立 `Linear(4,D_m) → SiLU → Linear(D_m,K)`，其中 `K` 是注意力头数。末层权重和偏置采用零初始化，输出的 `(B,K,N)` 偏置在有效 token 掩码生效前加到 softmax 分数；初始化时逐元素退化为原有内容注意力，不增加额外门控。新增分支用隔离的 CPU 随机初始化上下文构造，使后续 class/区域头与未增强模型的共同参数初值不被新增参数的随机采样推进。PP 的注意力输出投影仍采用零初始化：当 PP 含有效 token 且损失沿该分支回传时，第一次反向传播先让该输出投影权重获得非零梯度，更新后下一次反向才把非零梯度传入 PP 偏置末层权重。偏置 MLP 末层的 `bias` 对一个注意力头沿 token 轴只产生常数平移，数学上不改变 softmax，因此不作为可学习路径或监控对象。
+
+正式模型配置新增必填布尔字段 `use_candidate_token_attention_bias`。第 0–2 批全部显式为 `false`，第 3 批四份 YAML 为 `true`；正式 YAML 缺字段立即失败。历史第 0–2 批 checkpoint/resolved 只在 `MatcherModelConfig.from_dict` 恢复入口把缺失字段迁移为 `false`，从而保持严格 state dict 兼容。`true` 只允许与 `aggregation=candidate_cross_attention` 同时使用。
+
+W&B online 在 `gradient/train_step/{a|p|v|pp}_attention_bias_final_weight_postclip_norm` 记录全局梯度裁剪后的偏置末层权重梯度范数，在 `attention_bias/train_step/{a|p|v|pp}_final_weight_poststep_norm` 记录同次优化器更新后的末层权重范数。某模态在整个 global batch 中没有有效 token、末层权重没有梯度时，两项都省略；末层 `bias` 不记录。四项实验使用 project `AdaLigand-Matcher-Batch3`；三个完整 Matcher group 为 `matcher-batch3-full-enhanced-cross-attention`，六分类 group 为 `matcher-batch3-candidate-enhanced-cross-attention`。三份完整 Matcher 以第 2 批相同损失的 mean/max 任务作为预算内基线；增强六分类与第 2 批未增强候选条件注意力直接比较。
+
+首个冻结候选的机械检查为 pytest `86 passed`、mypy 检查 38 个源文件零问题、compileall、pyflakes、19 份正式 YAML 解析与 `git diff --check` 通过。独立科学终审为 PASS；严格技术表达终审发现 W&B 诊断时序、模型张量契约、四份 YAML 自包含性、随机流测试诚实性和三层账本状态五组阻断。集中修订后的当前快照为 pytest `93 passed`、mypy 38 个源文件零问题、compileall、pyflakes、19 份正式 YAML 解析、49 个 shell 的 `bash -n` 与 `git diff --check` 全部通过；现等待科学正确性与严格技术表达两项独立复审。当前没有发布 release、安装动态命令或提交第 3 批 GPU 任务；第 2 批两个候选任务仍拥有更高优先级。
+
+最终复审对集中修订后的冻结快照均给出 PASS。科学复审独立核对四模态概率、FP32/BF16 零退化、PP 两步唤醒、完整模型共同参数与随机流、AdamW 连续两步更新以及 W&B 裁剪后梯度/更新后参数时序；严格技术表达复审核对逐字段张量契约、四份自包含 YAML、诊断键、条件梯度表述和三层账本。最后一处 `CandidateMetadata` 字段说明修正后再次通过窄审。第 3 批由此达到提交条件，但在形成提交并安全同步前仍不作为服务器发布源。
+
+2026-08-14 09:20 后，Job `340894/340895` 的第 1 批 oracle/detached 已分别在 epoch 9/10 自然早停，allocation runner 创建共享根 `try_lock` 并保留各 Job 目录的 `after_lock`。控制端先确认两项 Job 仍为 `RUNNING`、16 CPU、单张 A800，目标实验根不存在，远端 9 个第 2 批源码/配置 SHA-256 与冻结端点一致，正式配置为 W&B online、V 质心视野、4/4 非持久 worker、A800 `16×2=global 32`，且 v2 voxel/PP 缓存计数为 `14,312/6,495` 与 `480/181`。受保护接续脚本为 `tmp/batch2_candidate_handoff_20260814/activate_a800_candidates.sh`，SHA-256 `092a61bdd10e301bd9f23c05cbe269340cdddfeb7358156d37692e23d00093c4`；完整控制端命令为：
+
+```powershell
+& "$env:USERPROFILE\.codex\tools\Invoke-ProjectSsh.ps1" -Command 'bash -s' -InputFile 'C:\Users\15919\Desktop\Matcher\tmp\batch2_candidate_handoff_20260814\activate_a800_candidates.sh'
+```
+
+脚本先原子安装 Job `340894` 的 mean/max 与 Job `340895` 的未增强候选条件注意力命令，动态命令 SHA-256 分别为 `590e4af8133826d0aac0088814dfcc42c6936e00c21763743b5843f28138d1a2` 与 `295046288c5f67fa12aa289073bf8b1fcde0bde76db706d`，再于 09:31:09 一次删除两把 `try_lock`；两个 `after_lock` 未删除。两项均复用 release `Matcher_3cc75993d69e`。mean/max launch 为 `train_experiment_job340894_20260814T093012_a7`、W&B run `79immary`；未增强注意力 launch 为 `train_experiment_job340895_20260814T092853_a4`、W&B run `12oeeshn`。二者首个 global batch 32 更新分别耗时 `61.3182/61.9103 s`，裁剪前梯度范数 `27.0919/81.2901`，峰值保留显存 `39,439,040,512/39,634,075,648 bytes`；候选任务的身份监督数按契约为零。成功事件都在有限性检查、参数更新与 CUDA 同步后出现，未见 OOM、NaN、Traceback 或缓存回退。第 2 批五个非重复任务至此全部提交。

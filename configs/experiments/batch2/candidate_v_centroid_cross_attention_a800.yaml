@@ -2,6 +2,7 @@
 # v_centroid 使用 np.rint(mean(V_zyx)+0.5-24) 的最近偶数规则，起点再逐轴限制到 [0,32]。
 # use_manual_features=true 拼接 A/P/V/PP 各自的 token 数、Stage1 固化概率均值和最大值，共 12 项。
 # use_sampling_features=true 拼接边界限制标志、V 质心偏移 L2/L∞ 距离和 V 保留比例，共 4 项。
+# use_candidate_token_attention_bias=false 保持未增强候选条件注意力，作为第3批直接对照。
 # null：没有语言、身份损失或 checkpoint；class_weights 不加权；maximum_epochs 不设轮数上限。
 plan_name: batch2_candidate_v_centroid_cross_attention_a800
 output_root: /storage/penghongen/tmp/Matcher/experiments  # run、阶段、checkpoint 和指标的根目录。
@@ -37,6 +38,7 @@ stages:
       aggregation: candidate_cross_attention  # 未加入第3批的注意力 bias MLP。
       use_manual_features: true
       use_sampling_features: true
+      use_candidate_token_attention_bias: false
       model_dim: 256
       attention_heads: 8
       dropout: 0.10

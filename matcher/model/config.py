@@ -18,6 +18,7 @@ class MatcherModelConfig:
     ``use_manual_features`` 还控制身份打分是否拼接同一统计与每个身份槽所属类别的六分类概率。
     ``use_sampling_features`` 控制候选聚合是否拼接四项裁剪几何统计。
     ``use_sampling_features`` 还控制三个身份打分 MLP 是否拼接同一四项统计。
+    ``use_candidate_token_attention_bias`` 控制候选条件注意力是否加入每模态独立的实体偏置 MLP。
     ``model_dim`` 是候选、token 和身份表示的共同宽度。
     ``attention_heads`` 是所有多头注意力的头数。
     ``dropout`` 是候选、图和身份分支共同采用的丢弃率。
@@ -32,6 +33,7 @@ class MatcherModelConfig:
     aggregation: AggregationName
     use_manual_features: bool
     use_sampling_features: bool
+    use_candidate_token_attention_bias: bool
     model_dim: int
     attention_heads: int
     dropout: float
@@ -51,6 +53,10 @@ class MatcherModelConfig:
             raise TypeError("use_manual_features 必须是布尔值。")
         if type(self.use_sampling_features) is not bool:
             raise TypeError("use_sampling_features 必须是布尔值。")
+        if type(self.use_candidate_token_attention_bias) is not bool:
+            raise TypeError("use_candidate_token_attention_bias 必须是布尔值。")
+        if self.use_candidate_token_attention_bias and self.aggregation != "candidate_cross_attention":
+            raise ValueError("候选实体注意力偏置只适用于 candidate_cross_attention 聚合。")
         integer_fields = {
             "model_dim": self.model_dim,
             "attention_heads": self.attention_heads,
@@ -91,11 +97,13 @@ class MatcherModelConfig:
 
     @classmethod
     def from_dict(cls, values: dict[str, Any]) -> "MatcherModelConfig":
-        """从配置字典恢复模型参数，并显式迁移第 0/1 批 checkpoint。
+        """从配置字典恢复模型参数，并显式迁移第 0–2 批 checkpoint。
 
         第 0 批缺少两个特征开关，二者都迁移为 ``False``；第 1 批已有
         ``use_manual_features=True`` 而只缺采样开关，因此保留手动统计并仅把
         ``use_sampling_features`` 迁移为 ``False``。
+        第 0–2 批均没有候选—实体注意力偏置，因此缺少
+        ``use_candidate_token_attention_bias`` 时迁移为 ``False``。
         """
 
         normalized = dict(values)
@@ -103,6 +111,8 @@ class MatcherModelConfig:
             normalized["use_manual_features"] = False
         if "use_sampling_features" not in normalized:
             normalized["use_sampling_features"] = False
+        if "use_candidate_token_attention_bias" not in normalized:
+            normalized["use_candidate_token_attention_bias"] = False
         if "raunet_planes" in normalized:
             raw_planes = normalized["raunet_planes"]
             if not isinstance(raw_planes, (list, tuple)):

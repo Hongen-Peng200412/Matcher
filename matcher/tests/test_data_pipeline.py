@@ -308,6 +308,58 @@ def test_manifest_and_dataset_keep_pdb_but_drop_missing_smi_occurrence(tmp_path)
     assert batch["identity_class_index"].tolist() == [[4]]
     assert batch["graph_edge_index"].shape == (2, 2)
     assert batch["graph_edge_features"][:, -1].tolist() == pytest.approx([0.15, 0.15])
+
+
+@pytest.mark.parametrize(
+    ("modality", "field_name", "probability_index"),
+    (
+        ("A", "A_probability", 0),
+        ("P", "P_probability", 0),
+        ("V", "centered_probability", 1),
+        ("PP", None, None),
+    ),
+)
+def test_dataset_rejects_stage1_probability_outside_unit_interval(
+    tmp_path: Path,
+    modality: str,
+    field_name: str | None,
+    probability_index: int | None,
+) -> None:
+    """A/P/V/PP 注意力偏置与手动统计共享的概率都必须位于 [0,1]。"""
+
+    roots = build_synthetic_roots(tmp_path)
+    manifest_path = build_manifest(
+        roots,
+        coverage_threshold=0.30,
+        selection_seed=3407,
+        split_names=("train", "validation"),
+    )
+    if field_name is not None:
+        assert probability_index is not None
+        centered_path = roots.stage1_root / "train/1abc/centered/F1_centered.npz"
+        with np.load(centered_path, allow_pickle=False) as archive:
+            centered = {name: np.asarray(archive[name]).copy() for name in archive.files}
+        centered[field_name][probability_index] = np.float32(1.01)
+        np.savez(centered_path, **centered)
+    else:
+        probability_path = roots.stage1_root / "train/1abc/probability/probability_map.npz"
+        with np.load(probability_path, allow_pickle=False) as archive:
+            probability = {name: np.asarray(archive[name]).copy() for name in archive.files}
+        probability["probability_map"][40, 40, 40] = np.float32(1.01)
+        np.savez(probability_path, **probability)
+    dataset = CandidateDataset(
+        roots=roots,
+        manifest_path=manifest_path,
+        split_name="train",
+        task_name="candidate_pretrain",
+        language_family=None,
+        identity_scope=None,
+        pp_top_k=4,
+        local_crop_strategy="fixed_center",
+        cache_bytes_per_worker=64 * 1024**2,
+    )
+    with pytest.raises(ValueError, match=rf"{modality}.*\[0,1\]"):
+        dataset[0]
     sampler = ShuffledBatchSampler(
         dataset,
         batch_size=1,

@@ -543,6 +543,7 @@ def test_all_initial_experiment_plans_preserve_resource_and_stopping_contracts()
         for stage in plan.stages:
             assert plan.data.local_crop_strategy == "fixed_center"
             assert stage.model.use_sampling_features is False
+            assert stage.model.use_candidate_token_attention_bias is False
             assert stage.training.global_batch_size == 32
             assert stage.training.maximum_epochs is None
             assert stage.training.patience_bad_epochs == 2
@@ -603,6 +604,7 @@ def test_all_batch1_plans_freeze_five_class_manual_feature_comparison() -> None:
         assert stage.model.aggregation == "mean_max"
         assert stage.model.use_manual_features is True
         assert stage.model.use_sampling_features is False
+        assert stage.model.use_candidate_token_attention_bias is False
         assert stage.training.global_batch_size == 32
         assert stage.training.maximum_epochs is None
         assert stage.training.patience_bad_epochs == 2
@@ -631,6 +633,7 @@ def test_all_batch2_plans_freeze_v_centroid_sampling_comparisons() -> None:
         stage = plan.stages[0]
         assert stage.model.use_manual_features is True
         assert stage.model.use_sampling_features is True
+        assert stage.model.use_candidate_token_attention_bias is False
         assert stage.training.global_batch_size == 32
         assert stage.training.maximum_epochs is None
         assert stage.training.patience_bad_epochs == 2
@@ -672,12 +675,108 @@ def test_all_batch2_plans_freeze_v_centroid_sampling_comparisons() -> None:
         assert stage.training.loss_weights.identity == 0.0
 
 
-@pytest.mark.parametrize("missing_key", ("use_manual_features", "use_sampling_features"))
-def test_formal_yaml_requires_both_model_feature_switches(
+def test_all_batch3_plans_freeze_enhanced_attention_comparisons() -> None:
+    """第3批四份 YAML 统一零初始化实体偏置，并冻结三损失与候选直接对照。"""
+
+    config_root = Path(__file__).parents[2] / "configs" / "experiments" / "batch3"
+    paths = sorted(config_root.glob("*.yaml"))
+    assert len(paths) == 4
+    plans = [load_experiment_plan(path) for path in paths]
+    for plan in plans:
+        assert plan.output_root.is_relative_to(Path("/storage/penghongen/tmp/Matcher"))
+        assert plan.tracking.project == "AdaLigand-Matcher-Batch3"
+        assert plan.data.local_crop_strategy == "v_centroid"
+        assert plan.data.train_num_workers == 4
+        assert plan.data.validation_num_workers == 4
+        assert len(plan.stages) == 1
+        stage = plan.stages[0]
+        assert stage.model.aggregation == "candidate_cross_attention"
+        assert stage.model.use_manual_features is True
+        assert stage.model.use_sampling_features is True
+        assert stage.model.use_candidate_token_attention_bias is True
+        assert stage.training.global_batch_size == 32
+        assert stage.training.maximum_epochs is None
+        assert stage.training.patience_bad_epochs == 2
+
+    full_plans = [plan for plan in plans if plan.stages[0].task_name == "full_matcher"]
+    assert len(full_plans) == 3
+    assert {plan.stages[0].identity_variant for plan in full_plans} == {
+        "oracle",
+        "detached",
+        "joint",
+    }
+    for plan in full_plans:
+        stage = plan.stages[0]
+        assert plan.tracking.group == "matcher-batch3-full-enhanced-cross-attention"
+        assert plan.data.cache_gib_per_worker == 16.0
+        assert stage.language_family == "smi_ted_289m"
+        assert stage.identity_scope == "all_non_background"
+        assert stage.training.physical_batch_size == 8
+        assert stage.training.gradient_accumulation == 4
+
+    candidate_plans = [
+        plan for plan in plans if plan.stages[0].task_name == "candidate_pretrain"
+    ]
+    assert len(candidate_plans) == 1
+    candidate_plan = candidate_plans[0]
+    candidate_stage = candidate_plan.stages[0]
+    assert candidate_plan.tracking.group == "matcher-batch3-candidate-enhanced-cross-attention"
+    assert candidate_plan.data.cache_gib_per_worker == 32.0
+    assert candidate_stage.language_family is None
+    assert candidate_stage.identity_variant is None
+    assert candidate_stage.identity_scope is None
+    assert candidate_stage.training.physical_batch_size == 16
+    assert candidate_stage.training.gradient_accumulation == 2
+    assert candidate_stage.training.loss_weights.identity == 0.0
+
+    batch2_root = Path(__file__).parents[2] / "configs" / "experiments" / "batch2"
+    batch2_candidate = load_experiment_plan(
+        batch2_root / "candidate_v_centroid_cross_attention_a800.yaml"
+    )
+    baseline_candidate_stage = batch2_candidate.stages[0]
+    assert asdict(candidate_plan.data) == asdict(batch2_candidate.data)
+    assert asdict(candidate_stage.training) == asdict(baseline_candidate_stage.training)
+    candidate_model = candidate_stage.model.to_dict()
+    baseline_candidate_model = baseline_candidate_stage.model.to_dict()
+    assert candidate_model.pop("use_candidate_token_attention_bias") is True
+    assert baseline_candidate_model.pop("use_candidate_token_attention_bias") is False
+    assert candidate_model == baseline_candidate_model
+
+    batch2_full_plans = [
+        load_experiment_plan(path) for path in batch2_root.glob("full_*.yaml")
+    ]
+    for enhanced_plan in full_plans:
+        enhanced_stage = enhanced_plan.stages[0]
+        baseline_plan = next(
+            plan
+            for plan in batch2_full_plans
+            if plan.stages[0].identity_variant == enhanced_stage.identity_variant
+        )
+        baseline_stage = baseline_plan.stages[0]
+        assert asdict(enhanced_plan.data) == asdict(baseline_plan.data)
+        assert asdict(enhanced_stage.training) == asdict(baseline_stage.training)
+        enhanced_model = enhanced_stage.model.to_dict()
+        baseline_model = baseline_stage.model.to_dict()
+        assert enhanced_model.pop("aggregation") == "candidate_cross_attention"
+        assert baseline_model.pop("aggregation") == "mean_max"
+        assert enhanced_model.pop("use_candidate_token_attention_bias") is True
+        assert baseline_model.pop("use_candidate_token_attention_bias") is False
+        assert enhanced_model == baseline_model
+
+
+@pytest.mark.parametrize(
+    "missing_key",
+    (
+        "use_manual_features",
+        "use_sampling_features",
+        "use_candidate_token_attention_bias",
+    ),
+)
+def test_formal_yaml_requires_all_model_feature_switches(
     tmp_path: Path,
     missing_key: str,
 ) -> None:
-    """正式 YAML 缺任一模型特征开关都必须失败，旧产物迁移不得进入计划解析。"""
+    """正式 YAML 缺任一模型开关都必须失败，旧产物迁移不得进入计划解析。"""
 
     source = (
         Path(__file__).parents[2]
