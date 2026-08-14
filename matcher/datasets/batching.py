@@ -53,7 +53,11 @@ def _pad_index_sequences(arrays: list[np.ndarray]) -> torch.Tensor:
 
 
 def _collate_identities(items: list[CandidateItem]) -> dict[str, Any]:
-    """填充语言表示并连接与每个有效身份一一对应的配体图。"""
+    """填充语言表示并连接与每个联合身份一一对应的配体图。
+
+    每个样本的 ``identity_object_keys`` 与 ``identity_prepared_smiles`` 保持原长度，
+    数值身份轴补零到批内最大 ``I``；相同 object_key 的不同字符串仍各连接一张复用图。
+    """
 
     batch_size = len(items)
     identity_count = max(len(item["identity_object_keys"]) for item in items)
@@ -64,6 +68,7 @@ def _collate_identities(items: list[CandidateItem]) -> dict[str, Any]:
     identity_mask = torch.zeros((batch_size, identity_count), dtype=torch.bool)
     identity_class_index = torch.full((batch_size, identity_count), -1, dtype=torch.long)
     identity_object_keys: list[list[str]] = []
+    identity_prepared_smiles: list[list[str]] = []
 
     elements: list[torch.Tensor] = []
     charges: list[torch.Tensor] = []
@@ -79,20 +84,28 @@ def _collate_identities(items: list[CandidateItem]) -> dict[str, Any]:
 
     for sample_index, item in enumerate(items):
         object_keys = list(item["identity_object_keys"])
+        prepared_smiles_values = list(item["identity_prepared_smiles"])
         graphs = list(item["ligand_graphs"])
         embeddings = np.asarray(item["language_embeddings"], dtype=np.float32)
         class_indices = np.asarray(item["identity_class_index"], dtype=np.int64)
-        if len(object_keys) != len(graphs) or embeddings.shape != (
-            len(object_keys),
-            LANGUAGE_EMBEDDING_DIM,
-        ) or class_indices.shape != (len(object_keys),):
-            raise ValueError("身份名称、类别、语言表示和配体图数量不一致。")
+        if (
+            len(object_keys) != len(prepared_smiles_values)
+            or len(object_keys) != len(graphs)
+            or embeddings.shape != (len(object_keys), LANGUAGE_EMBEDDING_DIM)
+            or class_indices.shape != (len(object_keys),)
+        ):
+            raise ValueError(
+                "身份模板键、PreparedLigand.smiles、类别、语言表示和配体图数量不一致。"
+            )
+        if any(not value.strip() for value in prepared_smiles_values):
+            raise ValueError("有效身份的 PreparedLigand.smiles 必须是非空字符串。")
         target = int(item["identity_target"])
         if target < -1 or target >= len(object_keys):
             raise ValueError(
                 f"identity_target={target} 超出当前样本的 {len(object_keys)} 个身份。"
             )
         identity_object_keys.append(object_keys)
+        identity_prepared_smiles.append(prepared_smiles_values)
         if object_keys:
             language[sample_index, : len(object_keys)] = torch.from_numpy(embeddings)
             identity_mask[sample_index, : len(object_keys)] = True
@@ -131,6 +144,7 @@ def _collate_identities(items: list[CandidateItem]) -> dict[str, Any]:
             dtype=torch.long,
         ),
         "identity_object_keys": identity_object_keys,
+        "identity_prepared_smiles": identity_prepared_smiles,
         "graph_to_sample": torch.tensor(graph_to_sample, dtype=torch.long),
         "graph_to_identity": torch.tensor(graph_to_identity, dtype=torch.long),
         **graph_batch,
