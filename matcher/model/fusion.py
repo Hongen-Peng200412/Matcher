@@ -12,7 +12,7 @@ from collections.abc import Mapping
 import torch
 from torch import nn
 
-from ..schema import (
+from ..data.schema import (
     A_TOKEN_DIM,
     CANDIDATE_MANUAL_FEATURE_DIM,
     CANDIDATE_SAMPLING_FEATURE_DIM,

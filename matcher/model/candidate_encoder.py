@@ -7,8 +7,8 @@ from typing import TypedDict
 import torch
 from torch import nn
 
-from ..contracts import CandidateBatch
-from ..schema import CLASS_NAMES
+from ..data.schema import CLASS_NAMES
+from ..datasets.contracts import CandidateBatch
 from .config import MatcherModelConfig
 from .fusion import (
     CandidateConditionedAggregator,

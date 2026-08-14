@@ -29,23 +29,32 @@ from torch.optim import AdamW
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torch.utils.data import DataLoader
 
-from .batching import (
+from ..data.manifest import ensure_manifest
+from ..data.schema import CLASS_NAMES, IdentityScope
+from ..datasets.batching import (
     DATALOADER_MULTIPROCESSING_CONTEXT,
     ShuffledBatchSampler,
     build_candidate_loader,
 )
-from .candidate_data import CandidateDataset
+from ..datasets.candidate_data import CandidateDataset
+from ..datasets.contracts import CandidateBatch
+from ..evaluation.metrics import (
+    EvaluationAccumulator,
+    EvaluationReport,
+    IdentityScopeMetrics,
+    selection_score,
+)
+from ..model import CandidateEncoder, ClosedSetMatcher
+from ..utils.json_artifacts import append_jsonl, write_json
 from .checkpointing import (
     CHECKPOINT_SCHEMA_VERSION,
     save_checkpoint,
 )
-from .contracts import CandidateBatch
-from .experiment_config import DataConfig, Precision, StageConfig, TrackingConfig
+from .config import DataConfig, Precision, StageConfig, TrackingConfig
 from .initialization import (
     CandidateInitializationRecord,
     initialize_candidate_encoder_from_pretraining,
 )
-from .json_artifacts import append_jsonl, write_json
 from .losses import (
     LossOutput,
     LossWeights,
@@ -53,16 +62,7 @@ from .losses import (
     compute_matcher_loss,
     identity_eligible_mask,
 )
-from .manifest import ensure_manifest
-from .metrics import (
-    EvaluationAccumulator,
-    EvaluationReport,
-    IdentityScopeMetrics,
-    selection_score,
-)
-from .model import CandidateEncoder, ClosedSetMatcher
 from .numeric import configure_random_seeds_and_numeric_backend
-from .schema import CLASS_NAMES, IdentityScope
 from .tracking import MetricValue, WandbTracker, start_wandb_tracking
 
 

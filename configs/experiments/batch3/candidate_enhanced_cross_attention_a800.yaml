@@ -1,4 +1,4 @@
-# matcher.experiment_config.load_experiment_plan 读取本文件；单张 A800 从零训练第3批增强注意力六分类。
+# matcher.training.config.load_experiment_plan 读取本文件；单张 A800 从零训练第3批增强注意力六分类。
 # local_crop_strategy=v_centroid 使用 np.rint(mean(V_zyx)+0.5-24) 的最近偶数规则，起点再逐轴限制到 [0,32]。
 # use_manual_features=true 依次拼接 A/P/V/PP 的 token 数与 Stage1 概率均值/最大值，共 12 项。
 # use_sampling_features=true 拼接边界限制、V 质心偏移 L2/L∞ 距离与 V 保留比例，共 4 项。

@@ -15,9 +15,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol, TypeAlias, TypedDict, cast
 
-from .experiment_config import StageConfig, TrackingConfig
-from .json_artifacts import write_json
-from .schema import CLASS_NAMES, FOREGROUND_CLASS_NAMES
+from ..data.schema import CLASS_NAMES, FOREGROUND_CLASS_NAMES
+from ..utils.json_artifacts import write_json
+from .config import StageConfig, TrackingConfig
 
 
 MetricValue: TypeAlias = float | int | bool | None

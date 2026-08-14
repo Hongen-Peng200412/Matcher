@@ -18,7 +18,7 @@ from torch.utils.data import DataLoader, Sampler
 
 from .candidate_data import CandidateDataset
 from .contracts import CandidateBatch, CandidateItem
-from .schema import (
+from ..data.schema import (
     CANDIDATE_MANUAL_FEATURE_DIM,
     CANDIDATE_SAMPLING_FEATURE_DIM,
     LANGUAGE_EMBEDDING_DIM,

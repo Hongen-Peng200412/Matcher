@@ -13,13 +13,13 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
-from ..contracts import CandidateBatch
-from ..schema import (
+from ..data.schema import (
     CANDIDATE_MANUAL_FEATURE_DIM,
     CANDIDATE_SAMPLING_FEATURE_DIM,
     CLASS_NAMES,
     LANGUAGE_EMBEDDING_DIM,
 )
+from ..datasets.contracts import CandidateBatch
 from .candidate_encoder import CandidateEncoder, CandidateEncoderOutput
 from .config import MatcherModelConfig
 from .fusion import normalize_candidate_manual_features, normalize_candidate_sampling_features

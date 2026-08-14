@@ -1,4 +1,4 @@
-# matcher.experiment_config.load_experiment_plan 读取本文件，matcher.experiment.run_plan 执行唯一 stage。
+# matcher.training.config.load_experiment_plan 读取本文件，matcher.training.experiment.run_plan 执行唯一 stage。
 # 第1批：单张 A100 从零训练五类非背景身份 Matcher；身份损失乘可反向的
 # p_target_class，其中 p_target_class=softmax(class_logits)[真实身份所属类别]。
 # A100 物理批量为8、累积4次；与两个 A800 任务保持 global batch 32。

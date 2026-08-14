@@ -17,10 +17,10 @@ from typing import Any, TypedDict
 
 import numpy as np
 
-from .cache import ByteBudgetLru
+from ..utils.cache import ByteBudgetLru
 from .density import DENSITY_CHANNEL_NAMES, build_density_channels
 from .geometry import crop_local_48, hard_scatter_receptor, validate_crop_start
-from .locking import exclusive_file_lock
+from ..utils.locking import exclusive_file_lock
 from .schema import (
     BOX_ORIGIN_ABSOLUTE_TOLERANCE_ANGSTROM,
     LOCAL_BOX_SIZE,

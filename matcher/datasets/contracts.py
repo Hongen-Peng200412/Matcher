@@ -7,7 +7,7 @@ from typing import Any, TypedDict
 import numpy as np
 import torch
 
-from .ligand_graph import LigandGraph
+from ..data.ligand_graph import LigandGraph
 
 
 class CandidateMetadata(TypedDict):
