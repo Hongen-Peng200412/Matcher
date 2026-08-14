@@ -970,46 +970,138 @@ def test_all_batch4_plans_freeze_mean_max_candidate_pretraining_initialization()
             assert target_cache_gib == 32.0
 
 
-def test_batch5_gate_002_oracle_changes_only_gate_initialization_and_tracking() -> None:
-    """第 5 批首项只改变双门初值、批次命名和 W&B 分组，完整科学基线仍是第 2 批 oracle。"""
+@pytest.mark.parametrize(
+    (
+        "plan_name",
+        "graph_gate",
+        "inventory_gate",
+        "clip_norm",
+        "physical_batch_size",
+        "gradient_accumulation",
+        "cache_gib_per_worker",
+        "tracking_group",
+    ),
+    (
+        (
+            "batch5_smi_ted_v_centroid_gate_002_oracle_a100",
+            0.02,
+            0.02,
+            1.0,
+            8,
+            4,
+            16.0,
+            "matcher-batch5-gate-initialization",
+        ),
+        (
+            "batch5_smi_ted_v_centroid_gate_010_oracle_a100",
+            0.1,
+            0.1,
+            1.0,
+            8,
+            4,
+            16.0,
+            "matcher-batch5-gate-initialization",
+        ),
+        (
+            "batch5_smi_ted_v_centroid_graph_gate_002_oracle_a100",
+            0.02,
+            0.0,
+            1.0,
+            8,
+            4,
+            16.0,
+            "matcher-batch5-gate-initialization",
+        ),
+        (
+            "batch5_smi_ted_v_centroid_inventory_gate_002_oracle_a100",
+            0.0,
+            0.02,
+            1.0,
+            8,
+            4,
+            16.0,
+            "matcher-batch5-gate-initialization",
+        ),
+        (
+            "batch5_smi_ted_v_centroid_clip_5_oracle_a800",
+            0.0,
+            0.0,
+            5.0,
+            16,
+            2,
+            32.0,
+            "matcher-batch5-gradient-clipping",
+        ),
+        (
+            "batch5_smi_ted_v_centroid_clip_200_oracle_a800",
+            0.0,
+            0.0,
+            200.0,
+            16,
+            2,
+            32.0,
+            "matcher-batch5-gradient-clipping",
+        ),
+    ),
+)
+def test_batch5_oracle_matrix_changes_only_declared_variables(
+    plan_name: str,
+    graph_gate: float,
+    inventory_gate: float,
+    clip_norm: float,
+    physical_batch_size: int,
+    gradient_accumulation: int,
+    cache_gib_per_worker: float,
+    tracking_group: str,
+) -> None:
+    """第 5 批六项锁定 0.02 四格、0.1 尺度探针和独立裁剪对照的声明变量。"""
 
     config_root = Path(__file__).parents[2] / "configs" / "experiments"
     baseline = load_experiment_plan(
         config_root / "batch2" / "full_smi_ted_v_centroid_oracle_a100.yaml"
     )
-    target = load_experiment_plan(
-        config_root
-        / "batch5"
-        / "batch5_smi_ted_v_centroid_gate_002_oracle_a100.yaml"
-    )
+    target = load_experiment_plan(config_root / "batch5" / f"{plan_name}.yaml")
     assert len(target.stages) == 1
     baseline_stage = baseline.stages[0]
     target_stage = target.stages[0]
-    expected_name = "batch5_smi_ted_v_centroid_gate_002_oracle_a100"
-    assert target.plan_name == expected_name
-    assert target_stage.name == expected_name
+    assert target.plan_name == target_stage.name == plan_name
     assert target.output_root == baseline.output_root
-    assert asdict(target.data) == asdict(baseline.data)
     assert target_stage.task_name == baseline_stage.task_name == "full_matcher"
     assert target_stage.language_family == baseline_stage.language_family == "smi_ted_289m"
     assert target_stage.identity_variant == baseline_stage.identity_variant == "oracle"
     assert target_stage.identity_scope == baseline_stage.identity_scope == "all_non_background"
-    assert asdict(target_stage.training) == asdict(baseline_stage.training)
     assert target_stage.initialize_candidate_from is None
     assert baseline_stage.initialize_candidate_from is None
 
+    target_data = asdict(target.data)
+    baseline_data = asdict(baseline.data)
+    assert target_data.pop("cache_gib_per_worker") == cache_gib_per_worker
+    baseline_data.pop("cache_gib_per_worker")
+    assert target_data == baseline_data
+
     target_model = target_stage.model.to_dict()
     baseline_model = baseline_stage.model.to_dict()
-    assert target_model.pop("initial_graph_gate") == 0.02
-    assert target_model.pop("initial_inventory_gate") == 0.02
+    assert target_model.pop("initial_graph_gate") == graph_gate
+    assert target_model.pop("initial_inventory_gate") == inventory_gate
     assert baseline_model.pop("initial_graph_gate") == 0.0
     assert baseline_model.pop("initial_inventory_gate") == 0.0
     assert target_model == baseline_model
 
+    target_training = asdict(target_stage.training)
+    baseline_training = asdict(baseline_stage.training)
+    assert target_training.pop("physical_batch_size") == physical_batch_size
+    assert target_training.pop("gradient_accumulation") == gradient_accumulation
+    assert target_training.pop("gradient_clip_norm") == clip_norm
+    baseline_training.pop("physical_batch_size")
+    baseline_training.pop("gradient_accumulation")
+    assert baseline_training.pop("gradient_clip_norm") == 1.0
+    assert target_training == baseline_training
+    assert target_stage.training.global_batch_size == 32
+
     target_tracking = asdict(target.tracking)
     baseline_tracking = asdict(baseline.tracking)
     assert target_tracking.pop("project") == "AdaLigand-Matcher-Batch5"
-    assert target_tracking.pop("group") == "matcher-batch5-gate-initialization"
+    assert target_tracking.pop("group") == tracking_group
     baseline_tracking.pop("project")
     baseline_tracking.pop("group")
     assert target_tracking == baseline_tracking
