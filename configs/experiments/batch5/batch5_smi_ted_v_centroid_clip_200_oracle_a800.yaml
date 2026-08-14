@@ -1,0 +1,69 @@
+# matcher.training.config.load_experiment_plan 读取本文件；单张 A800 从零训练第 5 批近似不裁剪 oracle。
+# v_centroid 使用 np.rint(mean(V_zyx)+0.5-24) 的最近偶数规则，起点再逐轴限制到 [0,32]。
+# use_manual_features=true 拼接 A/P/V/PP 各自的 token 数、Stage1 固化概率均值和最大值，共 12 项。
+# use_sampling_features=true 拼接边界限制标志、V 质心偏移 L2/L∞ 距离和 V 保留比例，共 4 项。
+# use_candidate_token_attention_bias=false 不增加第 3 批候选—实体注意力偏置。
+# gradient_clip_norm=200 高于历史最大值 182.85；只有实际触发率不超过 0.1% 时才称近似不裁剪。
+# null：class_weights 不加权；maximum_epochs 不设轮数上限；initialize_candidate_from 不加载 checkpoint。
+plan_name: batch5_smi_ted_v_centroid_clip_200_oracle_a800
+output_root: /storage/penghongen/tmp/Matcher/experiments  # run、阶段、checkpoint 和指标的根目录。
+tracking:
+  # 每个 stage 建立独立 W&B online run；在线初始化失败即终止，不降级为离线记录。
+  provider: wandb
+  mode: online
+  entity: pencounkdual-111
+  project: AdaLigand-Matcher-Batch5  # 第 5 批独立项目，避免与其它批次曲线混排。
+  group: matcher-batch5-gradient-clipping  # A800 clip5 与 clip200 的同硬件直接比较组。
+  log_every_global_steps: 1  # 每个 global batch 完成一次优化器更新后记录。
+  init_timeout_seconds: 120  # W&B 握手秒数，不是训练或 Slurm 时限。
+data:
+  # data_root 与 stage1_root 只读；output_root 只写版本化清单、体素和 PP token 缓存。
+  data_root: /storage/penghongen/AdaLigand/Ori_Data
+  stage1_root: /storage/penghongen/AdaLigand_stage1_inference/Find_0-CPC1-ligand_PRAUC_0.675477/artifacts/Find_0
+  output_root: /storage/penghongen/tmp/Matcher
+  coverage_threshold: 0.30  # 候选与 occurrence 双向覆盖率均达到该值才命中。
+  selection_seed: 3407  # 固定每个 PDB 内身份采用哪个有效 occurrence 语言表示。
+  pp_top_k: 1024  # 每个候选保留的 Stage1 固化概率 token 上限。
+  local_crop_strategy: v_centroid  # 使用本文件顶部定义的候选级 V 质心视野。
+  train_num_workers: 4  # 每次 train 迭代建立的非持久 DataLoader 工作进程数。
+  validation_num_workers: 4  # train 工作进程退出后再建立 validation 工作进程。
+  prefetch_factor: 2  # 每个工作进程预取的 batch 数。
+  cache_gib_per_worker: 32  # A800 使用物理批量 16 时的每进程缓存上限，单位 GiB。
+stages:
+  - name: batch5_smi_ted_v_centroid_clip_200_oracle_a800
+    task_name: full_matcher
+    language_family: smi_ted_289m
+    identity_variant: oracle
+    identity_scope: all_non_background  # ion、nucleotide_like、peptide_like、small_molecule、sugar。
+    model:
+      aggregation: mean_max
+      use_manual_features: true
+      use_sampling_features: true
+      use_candidate_token_attention_bias: false
+      initial_graph_gate: 0.0  # 裁剪对照不混入门初值变化。
+      initial_inventory_gate: 0.0
+      model_dim: 256
+      attention_heads: 8
+      dropout: 0.10
+      voxel_feature_channels: 48
+      # enc0、enc1、enc2、enc3、bottleneck、dec3、dec2、dec1、dec0。
+      raunet_planes: [64, 256, 256, 256, 256, 256, 128, 64, 64]
+      recycle_iterations: 3
+      gradient_checkpointing: true
+      bottleneck_attention_layers: 4
+      graph_layers: 4
+    training:
+      seed: 3407
+      physical_batch_size: 16
+      gradient_accumulation: 2
+      global_batch_size: 32  # 16 个候选 × 2 次梯度累积；与同卡 clip5 完全一致。
+      learning_rate: 1.0e-4
+      weight_decay: 1.0e-4
+      maximum_epochs: null
+      patience_bad_epochs: 2  # 连续两轮完整 validation 未严格改善后停止。
+      precision: bf16
+      gradient_clip_norm: 200.0
+      class_weights: null  # 六分类交叉熵不做类别重加权。
+      # 四项权重依次作用于六分类、配体区域、结合区域和 oracle 身份损失。
+      loss_weights: {classification: 1.0, ligand_area: 0.10, binding_area: 0.10, identity: 1.0}
+    initialize_candidate_from: null
