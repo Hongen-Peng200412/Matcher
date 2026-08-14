@@ -766,6 +766,101 @@ def test_all_batch3_plans_freeze_enhanced_attention_comparisons() -> None:
         assert enhanced_model == baseline_model
 
 
+def test_all_batch4_plans_freeze_mean_max_candidate_pretraining_initialization() -> None:
+    """第4批只增加候选初始化，并锁定批次命名、W&B与A800资源适配。"""
+
+    project_root = Path(__file__).parents[2]
+    config_root = project_root / "configs" / "experiments"
+    batch4_paths = sorted((config_root / "batch4").glob("*.yaml"))
+    assert len(batch4_paths) == 3
+    plans = [load_experiment_plan(path) for path in batch4_paths]
+    source_plan = load_experiment_plan(
+        config_root / "batch2" / "candidate_v_centroid_mean_max_a800.yaml"
+    )
+    source_stage = source_plan.stages[0]
+    baseline_plans = {
+        plan.stages[0].identity_variant: plan
+        for plan in (
+            load_experiment_plan(
+                config_root / "batch2" / "full_smi_ted_v_centroid_oracle_a100.yaml"
+            ),
+            load_experiment_plan(
+                config_root / "batch2" / "full_smi_ted_v_centroid_detached_a100.yaml"
+            ),
+            load_experiment_plan(
+                config_root / "batch2" / "full_smi_ted_v_centroid_joint_a100.yaml"
+            ),
+        )
+    }
+    source_checkpoint = (
+        "/storage/penghongen/tmp/Matcher/experiments/"
+        "batch2_candidate_v_centroid_mean_max_a800/"
+        "train_experiment_job340894_20260814T093012_a7/"
+        "batch2_candidate_v_centroid_mean_max_a800/BEST.pt"
+    )
+    expected_names = {
+        "oracle": "batch4_smi_ted_v_centroid_pretrained_mean_max_oracle_a100",
+        "detached": "batch4_smi_ted_v_centroid_pretrained_mean_max_detached_a800",
+        "joint": "batch4_smi_ted_v_centroid_pretrained_mean_max_joint_a800",
+    }
+    assert {plan.stages[0].identity_variant for plan in plans} == {
+        "oracle",
+        "detached",
+        "joint",
+    }
+    for plan in plans:
+        assert len(plan.stages) == 1
+        stage = plan.stages[0]
+        identity_variant = stage.identity_variant
+        assert identity_variant is not None
+        baseline_plan = baseline_plans[identity_variant]
+        baseline_stage = baseline_plan.stages[0]
+        assert plan.plan_name == expected_names[identity_variant]
+        assert stage.name == plan.plan_name
+        assert plan.tracking.project == "AdaLigand-Matcher-Batch4"
+        assert plan.tracking.group == "matcher-batch4-pretrained-mean-max"
+        target_tracking = asdict(plan.tracking)
+        baseline_tracking = asdict(baseline_plan.tracking)
+        for field in ("project", "group"):
+            target_tracking.pop(field)
+            baseline_tracking.pop(field)
+        assert target_tracking == baseline_tracking
+        assert plan.output_root == baseline_plan.output_root
+        assert stage.task_name == "full_matcher"
+        assert stage.language_family == "smi_ted_289m"
+        assert stage.identity_scope == "all_non_background"
+        assert stage.identity_variant == baseline_stage.identity_variant
+        assert stage.model.to_dict() == source_stage.model.to_dict()
+        assert stage.model.to_dict() == baseline_stage.model.to_dict()
+        assert stage.initialize_candidate_from == source_checkpoint
+
+        target_data = asdict(plan.data)
+        baseline_data = asdict(baseline_plan.data)
+        target_cache_gib = target_data.pop("cache_gib_per_worker")
+        baseline_data.pop("cache_gib_per_worker")
+        assert target_data == baseline_data
+
+        target_training = asdict(stage.training)
+        baseline_training = asdict(baseline_stage.training)
+        target_physical_batch = target_training.pop("physical_batch_size")
+        target_accumulation = target_training.pop("gradient_accumulation")
+        baseline_training.pop("physical_batch_size")
+        baseline_training.pop("gradient_accumulation")
+        assert target_training == baseline_training
+
+        if plan.plan_name.endswith("_a100"):
+            assert stage.identity_variant == "oracle"
+            assert target_physical_batch == 8
+            assert target_accumulation == 4
+            assert target_cache_gib == 16.0
+        else:
+            assert plan.plan_name.endswith("_a800")
+            assert stage.identity_variant in ("detached", "joint")
+            assert target_physical_batch == 16
+            assert target_accumulation == 2
+            assert target_cache_gib == 32.0
+
+
 @pytest.mark.parametrize(
     "missing_key",
     (
