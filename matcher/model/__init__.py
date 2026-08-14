@@ -2,12 +2,13 @@
 
 from .candidate_encoder import CandidateEncoder, CandidateEncoderOutput
 from .config import MatcherModelConfig
-from .ligand_matcher import ClosedSetMatcher, FullMatcherOutput
+from .ligand_matcher import ClosedSetMatcher, FullMatcherOutput, IdentityScoreComponents
 
 __all__ = [
     "CandidateEncoder",
     "CandidateEncoderOutput",
     "ClosedSetMatcher",
     "FullMatcherOutput",
+    "IdentityScoreComponents",
     "MatcherModelConfig",
 ]

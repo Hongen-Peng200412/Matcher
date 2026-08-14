@@ -33,13 +33,47 @@ class IdentityRepresentations(TypedDict):
     inventory: torch.Tensor
 
 
+class IdentityScoreComponents(TypedDict):
+    """身份打分的三个 ``(B,I)`` 组件。
+
+    ``B`` 是候选批次大小，``I`` 是批内最大身份数。
+    ``native`` 是浮点 ``(B,I)`` 语言表示基线分数。
+    ``graph_increment`` 是浮点 ``(B,I)`` 已乘图门分数增量。
+    ``inventory_increment`` 是浮点 ``(B,I)`` 已乘清单门分数增量。
+    三个组件的 dtype 由当前自动混合精度上下文决定，device 与本次模型前向一致。
+    三个组件均与 ``identity_mask`` 逐槽对齐；补零槽尚未屏蔽，调用方不得读取其数值。
+    """
+
+    native: torch.Tensor
+    graph_increment: torch.Tensor
+    inventory_increment: torch.Tensor
+
+
+class IdentityScorerOutput(TypedDict):
+    """身份打分器的一次正式前向结果。
+
+    ``logits`` 是已用 ``identity_mask`` 屏蔽补零槽的浮点 ``(B,I)`` 身份分数。
+    ``components`` 是同次前向产生且尚未屏蔽补零槽的 ``IdentityScoreComponents``。
+    """
+
+    logits: torch.Tensor
+    components: IdentityScoreComponents
+
+
 class FullMatcherOutput(CandidateEncoderOutput):
-    """完整输出：继承候选输出五个字段；``identity_logits`` 是 ``(B,I)`` 闭集分数；``identity_native/graph/inventory`` 是三个 ``(B,I,D_m)`` 身份表示。"""
+    """完整 Matcher 的正式前向输出。
+
+    ``identity_logits`` 是浮点 ``(B,I)`` 身份分数，补零槽为相应 dtype 的最小有限值。
+    ``identity_score_native`` 是浮点 ``(B,I)`` 语言基线分数，补零槽尚未屏蔽且不得读取。
+    ``identity_score_graph_increment`` 是浮点 ``(B,I)`` 已乘图门增量，补零槽尚未屏蔽且不得读取。
+    ``identity_score_inventory_increment`` 是浮点 ``(B,I)`` 已乘清单门增量，补零槽尚未屏蔽且不得读取。
+    四个字段均与输入 ``identity_mask`` 逐槽对齐；dtype 由当前自动混合精度上下文决定，device 与本次模型前向一致。
+    """
 
     identity_logits: torch.Tensor
-    identity_native: torch.Tensor
-    identity_graph: torch.Tensor
-    identity_inventory: torch.Tensor
+    identity_score_native: torch.Tensor
+    identity_score_graph_increment: torch.Tensor
+    identity_score_inventory_increment: torch.Tensor
 
 
 class GraphMessageLayer(nn.Module):
@@ -408,10 +442,15 @@ class PairScorer(nn.Module):
 class IdentityScorer(nn.Module):
     """合并三条候选—身份分支。
 
-    构造参数包括模型宽度 ``D_m``、dropout、12 维手动统计开关和 4 维采样统计开关。
-    前向接收候选 ``(B,D_m)``、三组身份 ``(B,I,D_m)``、bool 掩码 ``(B,I)``、
-    六分类 ``(B,6)``、身份类别 ``(B,I)``、候选手动统计 ``(B,12)`` 和采样统计
-    ``(B,4)``，返回 ``(B,I)``。native 始终参与，graph/inventory 出口门从零开始。
+    ``model_dim`` 是候选与身份表示宽度 ``D_m``。
+    ``dropout`` 是三个配对打分器的丢弃率。
+    ``use_manual_features`` 控制是否拼接 12 维候选统计与不回传的身份类别概率。
+    ``use_sampling_features`` 控制是否拼接 4 维候选裁剪统计。
+    ``initial_graph_gate`` 是图分数增量的有限初始标量门。
+    ``initial_inventory_gate`` 是清单分数增量的有限初始标量门。
+    前向输入含候选 ``(B,D_m)``、三组身份 ``(B,I,D_m)`` 与布尔掩码 ``(B,I)``。
+    前向还接收六分类分数 ``(B,6)``、身份类别 ``(B,I)``、手动统计 ``(B,12)`` 与采样统计 ``(B,4)``。
+    前向输出是 ``IdentityScorerOutput``：``logits`` 保存已屏蔽的 ``(B,I)`` 分数，``components`` 保存同次未屏蔽三组件。
     """
 
     def __init__(
@@ -420,6 +459,8 @@ class IdentityScorer(nn.Module):
         dropout: float,
         use_manual_features: bool,
         use_sampling_features: bool,
+        initial_graph_gate: float,
+        initial_inventory_gate: float,
     ) -> None:
         super().__init__()
         self.use_manual_features = use_manual_features
@@ -433,10 +474,10 @@ class IdentityScorer(nn.Module):
         self.inventory = PairScorer(
             model_dim, dropout, use_manual_features, use_sampling_features
         )
-        self.graph_gate = nn.Parameter(torch.zeros(()))
-        self.inventory_gate = nn.Parameter(torch.zeros(()))
+        self.graph_gate = nn.Parameter(torch.tensor(float(initial_graph_gate)))
+        self.inventory_gate = nn.Parameter(torch.tensor(float(initial_inventory_gate)))
 
-    def forward(
+    def score_components(
         self,
         candidate: torch.Tensor,
         identities: IdentityRepresentations,
@@ -445,8 +486,8 @@ class IdentityScorer(nn.Module):
         identity_class_index: torch.Tensor,
         candidate_manual_features: torch.Tensor,
         candidate_sampling_features: torch.Tensor,
-    ) -> torch.Tensor:
-        """合并三条分支；按开关拼接 12 维手动统计、4 维采样统计和切断梯度的身份类别概率。"""
+    ) -> IdentityScoreComponents:
+        """返回语言基线与两个已乘门值的 ``(B,I)`` 增量；调用方用 ``identity_mask`` 忽略补零槽。"""
 
         if candidate.shape[0] != identity_mask.shape[0]:
             raise ValueError("候选和身份掩码的批次轴不一致。")
@@ -458,7 +499,12 @@ class IdentityScorer(nn.Module):
         if identities["native"].shape[:2] != identity_mask.shape:
             raise ValueError("三种身份表示必须与 (B,I) 掩码对齐。")
         if identity_mask.shape[1] == 0:
-            return candidate.new_empty((candidate.shape[0], 0))
+            empty = candidate.new_empty((candidate.shape[0], 0))
+            return {
+                "native": empty,
+                "graph_increment": empty,
+                "inventory_increment": empty,
+            }
         normalized_manual: torch.Tensor | None = None
         normalized_sampling: torch.Tensor | None = None
         identity_class_probability: torch.Tensor | None = None
@@ -487,14 +533,14 @@ class IdentityScorer(nn.Module):
             normalized_sampling = normalize_candidate_sampling_features(
                 candidate_sampling_features
             )
-        logits = self.native(
+        native = self.native(
             candidate,
             identities["native"],
             normalized_manual,
             identity_class_probability,
             normalized_sampling,
         )
-        logits = logits + self.graph_gate * self.graph(
+        graph_increment = self.graph_gate * self.graph(
             candidate,
             identities["graph"],
             normalized_manual,
@@ -512,7 +558,51 @@ class IdentityScorer(nn.Module):
         inventory_increment = inventory_increment * has_other_identity.to(
             dtype=inventory_increment.dtype
         )
-        logits = logits + self.inventory_gate * inventory_increment
+        inventory_increment = self.inventory_gate * inventory_increment
+        return {
+            "native": native,
+            "graph_increment": graph_increment,
+            "inventory_increment": inventory_increment,
+        }
+
+    def forward(
+        self,
+        candidate: torch.Tensor,
+        identities: IdentityRepresentations,
+        identity_mask: torch.Tensor,
+        class_logits: torch.Tensor,
+        identity_class_index: torch.Tensor,
+        candidate_manual_features: torch.Tensor,
+        candidate_sampling_features: torch.Tensor,
+    ) -> IdentityScorerOutput:
+        """完成一次正式身份打分，返回已屏蔽 logits 与同次产生的未屏蔽三组件。"""
+
+        components = self.score_components(
+            candidate,
+            identities,
+            identity_mask,
+            class_logits,
+            identity_class_index,
+            candidate_manual_features,
+            candidate_sampling_features,
+        )
+        return {
+            "logits": self._masked_logits(components, identity_mask),
+            "components": components,
+        }
+
+    @staticmethod
+    def _masked_logits(
+        components: IdentityScoreComponents,
+        identity_mask: torch.Tensor,
+    ) -> torch.Tensor:
+        """合并三个 ``(B,I)`` 组件，并把补零身份槽屏蔽为相应 dtype 的最小有限值。"""
+
+        logits = (
+            components["native"]
+            + components["graph_increment"]
+            + components["inventory_increment"]
+        )
         return logits.masked_fill(~identity_mask, torch.finfo(logits.dtype).min)
 
 
@@ -532,7 +622,35 @@ class ClosedSetMatcher(nn.Module):
             config.dropout,
             config.use_manual_features,
             config.use_sampling_features,
+            config.initial_graph_gate,
+            config.initial_inventory_gate,
         )
+
+    def identity_score_components(
+        self,
+        batch: CandidateBatch,
+        output: FullMatcherOutput,
+    ) -> IdentityScoreComponents:
+        """在评估模式下读取同一 ``batch`` 的正式前向 ``output`` 已保存的三个 ``(B,I)`` 分数组件。"""
+
+        if self.training:
+            raise RuntimeError("身份分数贡献诊断只允许在 eval 模式下读取。")
+        expected_shape = batch["identity_mask"].shape
+        components: IdentityScoreComponents = {
+            "native": output["identity_score_native"],
+            "graph_increment": output["identity_score_graph_increment"],
+            "inventory_increment": output["identity_score_inventory_increment"],
+        }
+        if any(
+            component.shape != expected_shape
+            for component in (
+                components["native"],
+                components["graph_increment"],
+                components["inventory_increment"],
+            )
+        ):
+            raise ValueError("正式前向身份分数组件必须与当前 batch 的 (B,I) 身份掩码对齐。")
+        return components
 
     def forward(self, batch: CandidateBatch) -> FullMatcherOutput:
         """编码候选与 PDB 内身份，并返回 ``FullMatcherOutput``。
@@ -544,7 +662,7 @@ class ClosedSetMatcher(nn.Module):
 
         candidate_output = self.candidate_encoder(batch)
         identities = self.identity_encoder(batch)
-        identity_logits = self.identity_scorer(
+        identity_scores = self.identity_scorer(
             candidate_output["candidate_embedding"],
             identities,
             batch["identity_mask"],
@@ -553,9 +671,14 @@ class ClosedSetMatcher(nn.Module):
             batch["candidate_manual_features"],
             batch["candidate_sampling_features"],
         )
+        identity_score_components = identity_scores["components"]
         output = dict(candidate_output)
-        output["identity_logits"] = identity_logits
-        output["identity_native"] = identities["native"]
-        output["identity_graph"] = identities["graph"]
-        output["identity_inventory"] = identities["inventory"]
+        output["identity_logits"] = identity_scores["logits"]
+        output["identity_score_native"] = identity_score_components["native"]
+        output["identity_score_graph_increment"] = identity_score_components[
+            "graph_increment"
+        ]
+        output["identity_score_inventory_increment"] = identity_score_components[
+            "inventory_increment"
+        ]
         return cast(FullMatcherOutput, output)
