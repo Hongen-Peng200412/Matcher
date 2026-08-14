@@ -180,6 +180,7 @@ def test_wandb_tracker_records_complete_metadata_intervals_nulls_summary_and_exi
     assert ("epoch", None) in run.metric_definitions
     assert ("classification_summary/*", "epoch") in run.metric_definitions
     assert ("identity_all_non_background/*", "epoch") in run.metric_definitions
+    assert ("identity_contribution/validation/*", "epoch") in run.metric_definitions
     assert ("selection/*", "epoch") in run.metric_definitions
 
     tracker.log_global_step(1, {"loss/train_step/total": 1.0})

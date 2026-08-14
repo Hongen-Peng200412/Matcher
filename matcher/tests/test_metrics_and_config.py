@@ -24,6 +24,7 @@ from matcher.evaluation.calibration import (
     _validate_checkpoint_for_stage,
 )
 from matcher.evaluation.metrics import EvaluationAccumulator, EvaluationBatch, selection_score
+from matcher.model import IdentityScoreComponents
 from matcher.training import engine as training_module
 from matcher.training import experiment
 from matcher.training import tracking as tracking_module
@@ -324,6 +325,104 @@ def test_five_class_identity_metrics_keep_small_compatibility_and_per_class_coun
     assert not any(name.startswith("identity_") for name in candidate_only_metrics)
 
 
+def test_validation_identity_contribution_uses_centered_multi_identity_ranking_scale() -> None:
+    """贡献诊断只统计有目标的多身份候选，并以去均值 L2 排名尺度计算门控增量比例。"""
+
+    components = cast(
+        IdentityScoreComponents,
+        {
+            "native": torch.tensor(
+                [
+                    [0.0, 2.0, 4.0],
+                    [1.0, 3.0, float("nan")],
+                    [2.0, 4.0, 6.0],
+                    [1.0, 2.0, 3.0],
+                ]
+            ),
+            "graph_increment": torch.tensor(
+                [
+                    [0.0, 1.0, 2.0],
+                    [0.0, 2.0, float("nan")],
+                    [1.0, 1.0, 1.0],
+                    [1.0, 1.0, 1.0],
+                ]
+            ),
+            "inventory_increment": torch.tensor(
+                [
+                    [0.0, -1.0, -2.0],
+                    [1.0, 1.0, float("nan")],
+                    [2.0, 2.0, 2.0],
+                    [0.0, 0.0, 0.0],
+                ]
+            ),
+        },
+    )
+    batch = cast(
+        MatcherLossBatch,
+        {
+            "class_target": torch.tensor(
+                [SMALL_MOLECULE_INDEX, 1, SMALL_MOLECULE_INDEX, 0]
+            ),
+            "identity_target": torch.tensor([0, 1, -1, -1]),
+            "identity_mask": torch.tensor(
+                [
+                    [True, True, True],
+                    [True, True, False],
+                    [True, True, True],
+                    [True, True, True],
+                ]
+            ),
+        },
+    )
+    statistics = training_module._IdentityContributionStatistics()
+    statistics.update(components, batch, "all_non_background")
+    diagnostics = statistics.compute()
+    assert diagnostics["multi_identity_eligible_count"] == 2
+    assert diagnostics["nonzero_native_count"] == 2
+    assert diagnostics["native_centered_l2_mean"] == pytest.approx(3.0 / 2.0**0.5)
+    assert diagnostics["graph_increment_centered_l2_mean"] == pytest.approx(2.0**0.5)
+    assert diagnostics["inventory_increment_centered_l2_mean"] == pytest.approx(
+        1.0 / 2.0**0.5
+    )
+    assert diagnostics["graph_to_native_ratio_mean"] == pytest.approx(0.75)
+    assert diagnostics["inventory_to_native_ratio_mean"] == pytest.approx(0.25)
+    assert diagnostics["combined_to_native_ratio_mean"] == pytest.approx(0.5)
+    wandb = training_module._identity_contribution_wandb_metrics(diagnostics)
+    assert wandb[
+        "identity_contribution/validation/graph_to_native_ratio_mean"
+    ] == pytest.approx(0.75)
+    assert wandb["identity_contribution/validation/multi_identity_eligible_count"] == 2
+
+
+def test_validation_identity_contribution_omits_ratios_without_native_scale() -> None:
+    """语言基线没有候选内排序尺度时，W&B 只保留支持数与可定义的绝对范数。"""
+
+    components = cast(
+        IdentityScoreComponents,
+        {
+            "native": torch.tensor([[2.0, 2.0]]),
+            "graph_increment": torch.tensor([[0.0, 1.0]]),
+            "inventory_increment": torch.tensor([[0.0, 0.0]]),
+        },
+    )
+    batch = cast(
+        MatcherLossBatch,
+        {
+            "class_target": torch.tensor([SMALL_MOLECULE_INDEX]),
+            "identity_target": torch.tensor([0]),
+            "identity_mask": torch.tensor([[True, True]]),
+        },
+    )
+    statistics = training_module._IdentityContributionStatistics()
+    statistics.update(components, batch, "all_non_background")
+    diagnostics = statistics.compute()
+    metrics = training_module._identity_contribution_wandb_metrics(diagnostics)
+    assert diagnostics["multi_identity_eligible_count"] == 1
+    assert diagnostics["nonzero_native_count"] == 0
+    assert diagnostics["graph_to_native_ratio_mean"] is None
+    assert "identity_contribution/validation/graph_to_native_ratio_mean" not in metrics
+
+
 def test_all_foreground_end_to_end_treats_subclass_as_an_auxiliary_label() -> None:
     """五类端到端只以背景/前景为门，逐类预测由最终身份所属类别归桶。"""
 
@@ -546,6 +645,8 @@ def test_all_initial_experiment_plans_preserve_resource_and_stopping_contracts()
             assert plan.data.local_crop_strategy == "fixed_center"
             assert stage.model.use_sampling_features is False
             assert stage.model.use_candidate_token_attention_bias is False
+            assert stage.model.initial_graph_gate == 0.0
+            assert stage.model.initial_inventory_gate == 0.0
             assert stage.training.global_batch_size == 32
             assert stage.training.maximum_epochs is None
             assert stage.training.patience_bad_epochs == 2
@@ -607,6 +708,8 @@ def test_all_batch1_plans_freeze_five_class_manual_feature_comparison() -> None:
         assert stage.model.use_manual_features is True
         assert stage.model.use_sampling_features is False
         assert stage.model.use_candidate_token_attention_bias is False
+        assert stage.model.initial_graph_gate == 0.0
+        assert stage.model.initial_inventory_gate == 0.0
         assert stage.training.global_batch_size == 32
         assert stage.training.maximum_epochs is None
         assert stage.training.patience_bad_epochs == 2
@@ -636,6 +739,8 @@ def test_all_batch2_plans_freeze_v_centroid_sampling_comparisons() -> None:
         assert stage.model.use_manual_features is True
         assert stage.model.use_sampling_features is True
         assert stage.model.use_candidate_token_attention_bias is False
+        assert stage.model.initial_graph_gate == 0.0
+        assert stage.model.initial_inventory_gate == 0.0
         assert stage.training.global_batch_size == 32
         assert stage.training.maximum_epochs is None
         assert stage.training.patience_bad_epochs == 2
@@ -696,6 +801,8 @@ def test_all_batch3_plans_freeze_enhanced_attention_comparisons() -> None:
         assert stage.model.use_manual_features is True
         assert stage.model.use_sampling_features is True
         assert stage.model.use_candidate_token_attention_bias is True
+        assert stage.model.initial_graph_gate == 0.0
+        assert stage.model.initial_inventory_gate == 0.0
         assert stage.training.global_batch_size == 32
         assert stage.training.maximum_epochs is None
         assert stage.training.patience_bad_epochs == 2
@@ -832,6 +939,8 @@ def test_all_batch4_plans_freeze_mean_max_candidate_pretraining_initialization()
         assert stage.identity_variant == baseline_stage.identity_variant
         assert stage.model.to_dict() == source_stage.model.to_dict()
         assert stage.model.to_dict() == baseline_stage.model.to_dict()
+        assert stage.model.initial_graph_gate == 0.0
+        assert stage.model.initial_inventory_gate == 0.0
         assert stage.initialize_candidate_from == source_checkpoint
 
         target_data = asdict(plan.data)
@@ -861,19 +970,66 @@ def test_all_batch4_plans_freeze_mean_max_candidate_pretraining_initialization()
             assert target_cache_gib == 32.0
 
 
+def test_batch5_gate_002_oracle_changes_only_gate_initialization_and_tracking() -> None:
+    """第 5 批首项只改变双门初值、批次命名和 W&B 分组，完整科学基线仍是第 2 批 oracle。"""
+
+    config_root = Path(__file__).parents[2] / "configs" / "experiments"
+    baseline = load_experiment_plan(
+        config_root / "batch2" / "full_smi_ted_v_centroid_oracle_a100.yaml"
+    )
+    target = load_experiment_plan(
+        config_root
+        / "batch5"
+        / "batch5_smi_ted_v_centroid_gate_002_oracle_a100.yaml"
+    )
+    assert len(target.stages) == 1
+    baseline_stage = baseline.stages[0]
+    target_stage = target.stages[0]
+    expected_name = "batch5_smi_ted_v_centroid_gate_002_oracle_a100"
+    assert target.plan_name == expected_name
+    assert target_stage.name == expected_name
+    assert target.output_root == baseline.output_root
+    assert asdict(target.data) == asdict(baseline.data)
+    assert target_stage.task_name == baseline_stage.task_name == "full_matcher"
+    assert target_stage.language_family == baseline_stage.language_family == "smi_ted_289m"
+    assert target_stage.identity_variant == baseline_stage.identity_variant == "oracle"
+    assert target_stage.identity_scope == baseline_stage.identity_scope == "all_non_background"
+    assert asdict(target_stage.training) == asdict(baseline_stage.training)
+    assert target_stage.initialize_candidate_from is None
+    assert baseline_stage.initialize_candidate_from is None
+
+    target_model = target_stage.model.to_dict()
+    baseline_model = baseline_stage.model.to_dict()
+    assert target_model.pop("initial_graph_gate") == 0.02
+    assert target_model.pop("initial_inventory_gate") == 0.02
+    assert baseline_model.pop("initial_graph_gate") == 0.0
+    assert baseline_model.pop("initial_inventory_gate") == 0.0
+    assert target_model == baseline_model
+
+    target_tracking = asdict(target.tracking)
+    baseline_tracking = asdict(baseline.tracking)
+    assert target_tracking.pop("project") == "AdaLigand-Matcher-Batch5"
+    assert target_tracking.pop("group") == "matcher-batch5-gate-initialization"
+    baseline_tracking.pop("project")
+    baseline_tracking.pop("group")
+    assert target_tracking == baseline_tracking
+
+
 @pytest.mark.parametrize(
     "missing_key",
     (
         "use_manual_features",
         "use_sampling_features",
         "use_candidate_token_attention_bias",
+        "initial_graph_gate",
+        "initial_inventory_gate",
     ),
 )
-def test_formal_yaml_requires_all_model_feature_switches(
+def test_formal_yaml_requires_all_model_scientific_fields(
     tmp_path: Path,
     missing_key: str,
 ) -> None:
-    """正式 YAML 缺任一模型开关都必须失败，旧产物迁移不得进入计划解析。"""
+    """正式 YAML 缺任一特征开关或身份门初值都必须失败，旧产物迁移不得进入计划解析。"""
 
     source = (
         Path(__file__).parents[2]
@@ -937,6 +1093,16 @@ def test_experiment_config_rejects_output_escape_and_non_best_initialization(
     with pytest.raises(ValueError, match="只允许用于 full_matcher"):
         load_experiment_plan(candidate)
 
+    candidate_values = yaml.safe_load(candidate_source.read_text(encoding="utf-8"))
+    candidate_values["stages"][0]["model"]["initial_graph_gate"] = 0.02
+    nonzero_candidate_gate = tmp_path / "nonzero_candidate_gate.yaml"
+    nonzero_candidate_gate.write_text(
+        yaml.safe_dump(candidate_values, sort_keys=False),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="candidate_pretrain.*两个初始身份门必须为 0"):
+        load_experiment_plan(nonzero_candidate_gate)
+
 
 def test_calibration_requires_matching_stage_checkpoint_and_safe_output(tmp_path: Path) -> None:
     """保留集入口必须绑定同阶段配置，并拒绝规范化后越过 Matcher 根的产物路径。"""
@@ -954,8 +1120,11 @@ def test_calibration_requires_matching_stage_checkpoint_and_safe_output(tmp_path
     checkpoint_path.parent.mkdir(parents=True)
     checkpoint_bytes = b"calibration-checkpoint-evidence"
     checkpoint_path.write_bytes(checkpoint_bytes)
+    historical_model_config = stage.model.to_dict()
+    historical_model_config.pop("initial_graph_gate")
+    historical_model_config.pop("initial_inventory_gate")
     stage_record = asdict(stage)
-    stage_record["model"] = stage.model.to_dict()
+    stage_record["model"] = historical_model_config
     resolved_path = checkpoint_path.parent / "resolved.json"
     resolved_path.write_text(
         json.dumps(
@@ -983,7 +1152,7 @@ def test_calibration_requires_matching_stage_checkpoint_and_safe_output(tmp_path
         "best_epoch": 7,
         "global_step": 3576,
         "best_score": 0.65,
-        "model_config": stage.model.to_dict(),
+        "model_config": historical_model_config,
         "training_config": asdict(stage.training),
         "epoch_record": {
             "epoch": 7,
@@ -1011,6 +1180,8 @@ def test_calibration_requires_matching_stage_checkpoint_and_safe_output(tmp_path
     assert evidence["epoch"] == 7
     assert evidence["global_step"] == 3576
     assert evidence["sha256"] == hashlib.sha256(checkpoint_bytes).hexdigest()
+    assert evidence["model_config"]["initial_graph_gate"] == 0.0
+    assert evidence["model_config"]["initial_inventory_gate"] == 0.0
     with pytest.raises(ValueError, match="stage_name"):
         _validate_checkpoint_for_stage(
             checkpoint_path,

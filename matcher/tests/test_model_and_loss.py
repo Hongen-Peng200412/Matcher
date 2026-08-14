@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import cast
 
 import pytest
@@ -38,6 +39,8 @@ def _small_config(
     aggregation: AggregationName = "mean_max",
     *,
     use_candidate_token_attention_bias: bool = False,
+    initial_graph_gate: float = 0.0,
+    initial_inventory_gate: float = 0.0,
 ) -> MatcherModelConfig:
     """返回适合 CPU 契约测试的窄 RAUNet，空间层级与正式模型相同。"""
 
@@ -46,6 +49,8 @@ def _small_config(
         use_manual_features=True,
         use_sampling_features=True,
         use_candidate_token_attention_bias=use_candidate_token_attention_bias,
+        initial_graph_gate=initial_graph_gate,
+        initial_inventory_gate=initial_inventory_gate,
         model_dim=16,
         attention_heads=4,
         dropout=0.0,
@@ -143,9 +148,9 @@ def test_closed_set_matcher_forward_and_loss_are_finite(tmp_path) -> None:
     model = ClosedSetMatcher(_small_config()).train()
     output = model(batch)
     assert output["identity_logits"].shape == (1, 1)
-    assert output["identity_native"].shape == (1, 1, 16)
-    assert output["identity_graph"].shape == (1, 1, 16)
-    assert output["identity_inventory"].shape == (1, 1, 16)
+    assert output["identity_score_native"].shape == (1, 1)
+    assert output["identity_score_graph_increment"].shape == (1, 1)
+    assert output["identity_score_inventory_increment"].shape == (1, 1)
     loss = compute_matcher_loss(
         output,
         batch,
@@ -158,6 +163,47 @@ def test_closed_set_matcher_forward_and_loss_are_finite(tmp_path) -> None:
     assert loss["identity_eligible_count"].item() == 1
     loss["total"].backward()
     assert any(parameter.grad is not None for parameter in model.parameters())
+
+
+def test_validation_identity_score_components_reuse_forward_without_syncing_checks(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """评估诊断直接读取正式前向组件，不得重跑打分校验或改变 Torch 随机状态。"""
+
+    batch = _batch(tmp_path, "full_matcher")
+    model = ClosedSetMatcher(_small_config()).eval()
+    with torch.inference_mode():
+        output = model(batch)
+        rng_before = torch.random.get_rng_state().clone()
+        monkeypatch.setattr(
+            type(model.identity_scorer),
+            "score_components",
+            lambda *_args, **_kwargs: pytest.fail("诊断不得重跑 score_components"),
+        )
+        components = model.identity_score_components(batch, output)
+        rng_after = torch.random.get_rng_state().clone()
+    assert components["native"].data_ptr() == output["identity_score_native"].data_ptr()
+    assert components["graph_increment"].data_ptr() == output[
+        "identity_score_graph_increment"
+    ].data_ptr()
+    assert components["inventory_increment"].data_ptr() == output[
+        "identity_score_inventory_increment"
+    ].data_ptr()
+    expected = (
+        components["native"]
+        + components["graph_increment"]
+        + components["inventory_increment"]
+    ).masked_fill(
+        ~batch["identity_mask"],
+        torch.finfo(output["identity_logits"].dtype).min,
+    )
+    assert torch.equal(output["identity_logits"], expected)
+    assert torch.equal(rng_before, rng_after)
+
+    model.train()
+    with pytest.raises(RuntimeError, match="只允许在 eval 模式"):
+        model.identity_score_components(batch, output)
 
 
 def test_graph_message_layer_accumulates_safely_under_bfloat16_autocast() -> None:
@@ -181,12 +227,12 @@ def test_closed_set_matcher_bfloat16_autocast_forward_and_backward(tmp_path) -> 
     """整条完整 Matcher 在 BF16 自动混合精度下不得出现原地归约 dtype 冲突。"""
 
     batch = _batch(tmp_path, "full_matcher")
-    model = ClosedSetMatcher(_small_config()).train()
+    model = ClosedSetMatcher(_small_config(initial_graph_gate=0.1)).train()
     with torch.autocast("cpu", dtype=torch.bfloat16):
         output = model(batch)
         loss = output["class_logits"].float().square().mean()
         loss = loss + output["identity_logits"].float().square().mean()
-        loss = loss + output["identity_graph"].float().square().mean()
+        loss = loss + output["identity_score_graph_increment"].float().square().mean()
     assert torch.isfinite(loss)
     loss.backward()
     gradients = [parameter.grad for parameter in model.parameters() if parameter.grad is not None]
@@ -501,6 +547,8 @@ def test_identity_manual_and_sampling_features_are_learnable_but_class_probabili
         dropout=0.0,
         use_manual_features=True,
         use_sampling_features=True,
+        initial_graph_gate=0.0,
+        initial_inventory_gate=0.0,
     ).train()
     candidate = torch.randn(2, 16, requires_grad=True)
     representations = cast(
@@ -519,7 +567,7 @@ def test_identity_manual_and_sampling_features_are_learnable_but_class_probabili
         [[1.0, 12.0, 8.0, 0.75], [0.0, 0.5, 0.5, 1.0]],
         requires_grad=True,
     )
-    logits = scorer(
+    scores = scorer(
         candidate,
         representations,
         identity_mask,
@@ -528,7 +576,7 @@ def test_identity_manual_and_sampling_features_are_learnable_but_class_probabili
         manual_features,
         sampling_features,
     )
-    logits.sum().backward()
+    scores["logits"].sum().backward()
     assert class_logits.grad is None or torch.count_nonzero(class_logits.grad) == 0
     assert manual_features.grad is not None
     assert torch.count_nonzero(manual_features.grad) > 0
@@ -664,6 +712,8 @@ def test_identity_graph_and_inventory_scores_start_as_exact_zero_increments() ->
         dropout=0.0,
         use_manual_features=False,
         use_sampling_features=False,
+        initial_graph_gate=0.0,
+        initial_inventory_gate=0.0,
     ).train()
     candidate = torch.randn(2, 16)
     representations = cast(
@@ -676,7 +726,7 @@ def test_identity_graph_and_inventory_scores_start_as_exact_zero_increments() ->
     )
     mask = torch.ones((2, 3), dtype=torch.bool)
     native_only = scorer.native(candidate, representations["native"], None, None, None)
-    logits = scorer(
+    scores = scorer(
         candidate,
         representations,
         mask,
@@ -685,12 +735,70 @@ def test_identity_graph_and_inventory_scores_start_as_exact_zero_increments() ->
         torch.zeros((2, 12)),
         torch.zeros((2, 4)),
     )
-    assert torch.equal(logits, native_only)
-    logits.sum().backward()
+    assert torch.equal(scores["logits"], native_only)
+    scores["logits"].sum().backward()
     assert scorer.graph_gate.grad is not None
     assert scorer.inventory_gate.grad is not None
     assert torch.isfinite(scorer.graph_gate.grad)
     assert torch.isfinite(scorer.inventory_gate.grad)
+
+
+def test_identity_score_components_preserve_configured_gates_and_sum_to_logits() -> None:
+    """非零初始门必须逐值进入两个增量，三组件之和必须等于正式身份分数。"""
+
+    torch.manual_seed(3407)
+    scorer = IdentityScorer(
+        model_dim=16,
+        dropout=0.0,
+        use_manual_features=False,
+        use_sampling_features=False,
+        initial_graph_gate=0.2,
+        initial_inventory_gate=0.3,
+    ).eval()
+    candidate = torch.randn(2, 16)
+    representations = cast(
+        IdentityRepresentations,
+        {
+            "native": torch.randn(2, 3, 16),
+            "graph": torch.randn(2, 3, 16),
+            "inventory": torch.randn(2, 3, 16),
+        },
+    )
+    mask = torch.ones((2, 3), dtype=torch.bool)
+    class_logits = torch.zeros((2, 6))
+    identity_class_index = torch.full((2, 3), 4, dtype=torch.long)
+    manual = torch.zeros((2, 12))
+    sampling = torch.zeros((2, 4))
+    with torch.inference_mode():
+        scores = scorer(
+            candidate,
+            representations,
+            mask,
+            class_logits,
+            identity_class_index,
+            manual,
+            sampling,
+        )
+        components = scores["components"]
+        logits = scores["logits"]
+        raw_graph = scorer.graph(candidate, representations["graph"], None, None, None)
+        raw_inventory = scorer.inventory(
+            candidate,
+            representations["inventory"],
+            None,
+            None,
+            None,
+        )
+    assert float(scorer.graph_gate) == pytest.approx(0.2)
+    assert float(scorer.inventory_gate) == pytest.approx(0.3)
+    assert torch.allclose(components["graph_increment"], 0.2 * raw_graph)
+    assert torch.allclose(components["inventory_increment"], 0.3 * raw_inventory)
+    assert torch.equal(
+        logits,
+        components["native"]
+        + components["graph_increment"]
+        + components["inventory_increment"],
+    )
 
 
 def test_single_identity_inventory_score_stays_zero_after_gate_opens() -> None:
@@ -701,9 +809,12 @@ def test_single_identity_inventory_score_stays_zero_after_gate_opens() -> None:
         dropout=0.0,
         use_manual_features=False,
         use_sampling_features=False,
+        initial_graph_gate=0.0,
+        initial_inventory_gate=0.0,
     ).eval()
-    scorer.inventory_gate.data.fill_(1.0)
-    scorer.graph_gate.data.zero_()
+    with torch.no_grad():
+        scorer.inventory_gate.fill_(1.0)
+        scorer.graph_gate.zero_()
     candidate = torch.randn(2, 16)
     native = torch.randn(2, 1, 16)
     representations = cast(
@@ -716,7 +827,7 @@ def test_single_identity_inventory_score_stays_zero_after_gate_opens() -> None:
     )
     mask = torch.ones((2, 1), dtype=torch.bool)
     with torch.no_grad():
-        logits = scorer(
+        scores = scorer(
             candidate,
             representations,
             mask,
@@ -726,7 +837,7 @@ def test_single_identity_inventory_score_stays_zero_after_gate_opens() -> None:
             torch.zeros((2, 4)),
         )
         native_only = scorer.native(candidate, native, None, None, None)
-    assert torch.equal(logits, native_only)
+    assert torch.equal(scores["logits"], native_only)
 
 
 def test_model_config_and_voxel_gather_reject_invalid_contracts() -> None:
@@ -744,6 +855,14 @@ def test_model_config_and_voxel_gather_reject_invalid_contracts() -> None:
     values["use_candidate_token_attention_bias"] = True
     with pytest.raises(ValueError, match="candidate_cross_attention"):
         MatcherModelConfig.from_dict(values)
+    values = _small_config().to_dict()
+    values["initial_graph_gate"] = -0.01
+    with pytest.raises(ValueError, match="initial_graph_gate"):
+        MatcherModelConfig.from_dict(values)
+    values = _small_config().to_dict()
+    values["initial_inventory_gate"] = 1.01
+    with pytest.raises(ValueError, match="initial_inventory_gate"):
+        MatcherModelConfig.from_dict(values)
 
     volume = torch.zeros((1, 2, 4, 4, 4))
     indices = torch.tensor([[[9, 0, 0]]])
@@ -753,29 +872,41 @@ def test_model_config_and_voxel_gather_reject_invalid_contracts() -> None:
     assert torch.count_nonzero(padded) == 0
 
 
-def test_model_config_migrates_batch0_to_batch2_feature_flags() -> None:
-    """第0–2批历史产物缺少的特征开关应按各批既有结构关闭。"""
+def test_model_config_migrates_historical_feature_flags_and_identity_gates() -> None:
+    """历史产物缺少的特征开关和身份门初值应按既有零增量结构迁移。"""
 
     legacy_values = _small_config().to_dict()
     del legacy_values["use_manual_features"]
     del legacy_values["use_sampling_features"]
     del legacy_values["use_candidate_token_attention_bias"]
+    del legacy_values["initial_graph_gate"]
+    del legacy_values["initial_inventory_gate"]
     migrated = MatcherModelConfig.from_dict(legacy_values)
     assert migrated.use_manual_features is False
     assert migrated.use_sampling_features is False
     assert migrated.use_candidate_token_attention_bias is False
+    assert migrated.initial_graph_gate == 0.0
+    assert migrated.initial_inventory_gate == 0.0
 
     batch1_values = _small_config().to_dict()
     del batch1_values["use_sampling_features"]
     del batch1_values["use_candidate_token_attention_bias"]
+    del batch1_values["initial_graph_gate"]
+    del batch1_values["initial_inventory_gate"]
     migrated_batch1 = MatcherModelConfig.from_dict(batch1_values)
     assert migrated_batch1.use_manual_features is True
     assert migrated_batch1.use_sampling_features is False
     assert migrated_batch1.use_candidate_token_attention_bias is False
+    assert migrated_batch1.initial_graph_gate == 0.0
+    assert migrated_batch1.initial_inventory_gate == 0.0
 
     batch2_values = _small_config("candidate_cross_attention").to_dict()
     del batch2_values["use_candidate_token_attention_bias"]
+    del batch2_values["initial_graph_gate"]
+    del batch2_values["initial_inventory_gate"]
     migrated_batch2 = MatcherModelConfig.from_dict(batch2_values)
     assert migrated_batch2.use_manual_features is True
     assert migrated_batch2.use_sampling_features is True
     assert migrated_batch2.use_candidate_token_attention_bias is False
+    assert migrated_batch2.initial_graph_gate == 0.0
+    assert migrated_batch2.initial_inventory_gate == 0.0
