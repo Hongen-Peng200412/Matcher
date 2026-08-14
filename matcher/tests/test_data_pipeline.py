@@ -10,25 +10,25 @@ from typing import cast
 import numpy as np
 import pytest
 
-from matcher import locking
-from matcher.batching import ShuffledBatchSampler, collate_candidates
-from matcher.cache import ByteBudgetLru
-from matcher.candidate_data import CandidateDataset
-from matcher.contracts import CandidateItem
-from matcher.geometry import (
+from matcher.data.geometry import (
     candidate_sampling_features,
     crop_local_48,
     hard_scatter_receptor,
     keep_local_48_at,
     resolve_candidate_crop,
 )
-from matcher.labels import OccurrenceMask, assign_candidate_target
-from matcher.ligand_graph import LigandGraphStore
-from matcher.manifest import build_manifest, ensure_manifest, load_jsonl, require_manifest
-from matcher.precompute import precompute_inputs
-from matcher.pp_input import _build_pp_tokens
-from matcher.schema import LocalCropStrategy, SourceRoots
-from matcher.voxel_input import VoxelInputStore
+from matcher.data.labels import OccurrenceMask, assign_candidate_target
+from matcher.data.ligand_graph import LigandGraphStore
+from matcher.data.manifest import build_manifest, ensure_manifest, load_jsonl, require_manifest
+from matcher.data.pp_input import _build_pp_tokens
+from matcher.data.precompute import precompute_inputs
+from matcher.data.schema import LocalCropStrategy, SourceRoots
+from matcher.data.voxel_input import VoxelInputStore
+from matcher.datasets.batching import ShuffledBatchSampler, collate_candidates
+from matcher.datasets.candidate_data import CandidateDataset
+from matcher.datasets.contracts import CandidateItem
+from matcher.utils import locking
+from matcher.utils.cache import ByteBudgetLru
 
 from .factories import build_synthetic_roots
 

@@ -12,11 +12,11 @@ from types import ModuleType
 import pytest
 import torch
 
-import matcher.tracking as tracking_module
-from matcher.experiment_config import load_experiment_plan
+import matcher.training.tracking as tracking_module
 from matcher.model.fusion import CandidateConditionedAggregator
-from matcher.tracking import MetricValue, start_wandb_tracking
-from matcher.training import _attention_bias_weight_metrics
+from matcher.training.config import load_experiment_plan
+from matcher.training.engine import _attention_bias_weight_metrics
+from matcher.training.tracking import MetricValue, start_wandb_tracking
 
 
 class _FakeWandbSummary:

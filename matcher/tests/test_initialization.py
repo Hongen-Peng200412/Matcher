@@ -10,10 +10,10 @@ import torch
 import yaml  # type: ignore[import-untyped]
 from torch import nn
 
-from matcher.checkpointing import CHECKPOINT_SCHEMA_VERSION, save_checkpoint
-from matcher.experiment_config import DataConfig, StageConfig, load_experiment_plan
-from matcher.initialization import initialize_candidate_encoder_from_pretraining
-from matcher.json_artifacts import write_json
+from matcher.training.checkpointing import CHECKPOINT_SCHEMA_VERSION, save_checkpoint
+from matcher.training.config import DataConfig, StageConfig, load_experiment_plan
+from matcher.training.initialization import initialize_candidate_encoder_from_pretraining
+from matcher.utils.json_artifacts import write_json
 
 
 class _FullModelStub(nn.Module):
