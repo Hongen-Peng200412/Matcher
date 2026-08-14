@@ -1,6 +1,6 @@
 # Matcher
 
-本仓库独立承载 AdaLigand 的单候选闭集配体身份分类阶段。AdaLigand 生产 A–G 解析产物、密度图和 Stage1 Find_0 候选；Matcher 对每个候选执行六分类，并按配置从同一 PDB 的去重配体身份清单中选择身份。身份范围可限定为 `small_molecule`，也可覆盖 `ion/nucleotide_like/peptide_like/small_molecule/sugar` 五类非背景配体；当前语言表示或配体图缺失的候选仍保留六分类和区域监督。
+本仓库独立承载 AdaLigand 的单候选闭集配体身份分类阶段。AdaLigand 生产 A–G 解析产物、密度图和 Stage1 Find_0 候选；Matcher 对每个候选执行六分类，并按配置从同一 PDB 的去重配体身份清单中选择身份。清单 v4 用 `(object_key, PreparedLigand.smiles)` 联合定义一个身份槽：前者定位 LigandObject 模板图，后者逐字采用交给语言模型公开接口的顶层字符串。身份范围可限定为 `small_molecule`，也可覆盖 `ion/nucleotide_like/peptide_like/small_molecule/sugar` 五类非背景配体；当前联合身份、语言表示或配体图不可用的候选仍保留六分类和区域监督。
 
 ## 当前科学入口
 

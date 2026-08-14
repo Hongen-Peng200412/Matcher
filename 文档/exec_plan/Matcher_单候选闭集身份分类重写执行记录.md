@@ -1025,3 +1025,15 @@ Git 忽略目录中的 `tmp/batch5_launch/activate_batch5_gate.sh` 经科学正�
 | clip200 | `340895` | `train_experiment_job340895_20260815T032343_a6` | `ufny2evy` | `3.6789785181 / 46.0992240906` |
 
 2026-08-15 03:28 的只读验收确认，五项均完成首个 global batch 32 参数更新，身份有效候选数均为 7（`identity_eligible_count=7`）；六个 Slurm allocation 均为 `RUNNING`，六个 W&B run 均为 `running`，六个 `after_lock` 全部保留，没有 `pre_lock/kill_lock`。继续运行的双门 `0.02` 已完成 epoch 0–6，当前 BEST selection score 为 epoch 6 的 `0.6888498731`。第 5 批至此 6 项全部提交，六张受管 GPU 都有具名任务。
+
+### 联合身份 v4 实现候选与等价审计准备
+
+用户要求把模型可见身份改为 `(object_key,PreparedLigand.smiles)`，其中第二项只能取 AdaLigand `prepared_smiles.jsonl` 顶层公开模型接口字符串。第 5 批六项已经冻结并运行 v3，故本轮从累计端点另开 `codex/matcher-joint-identity-v4`，不修改任何运行命令、release、Job 或锁。
+
+清单 schema 提升为 4。新实现按联合键分组身份、定位候选真值、选择同字符串 occurrence 的语言表示并计算 train seen；LigandObject 图仍按 `object_key` 复用。显式 `smiles=null` 保留候选但令身份目标不可用，整个 PreparedLigand 文件缺失用独立状态留证，已有文件缺记录或字段损坏失败关闭。同一联合键跨 PDB、跨已物化划分类别不一致时在正式清单发布前失败。为保护没有拆分的身份，固定 occurrence 选择继续沿用 v3 的 `(pdb_id,object_key,language_family)` 盐值。
+
+两轮独立审查发现并已修正任意非空 `PreparedLigand.kind`、持久联合键字段隐式转换、扩展路径类型漂移，以及一次性审计器的源真值和跨类别覆盖等边界。第二轮修订后的本地全套为 `162 passed in 152.31s`，mypy 检查 45 个 Python 文件零问题，compileall、pyflakes 和 diff-check 通过；一次性审计器另有 8 项回归通过。科学正确性与严格技术表达两项独立复审均为 PASS，阻断项为零。正式测试包含同模板不同字符串拆槽、同字符串不同模板不合并、显式空值不借用、来源缺失独立状态、语言归档字符串类型与内容不一致、跨划分类别漂移和同数值批次前向隔离。该结果仅证明合成契约与代码接口；真实数据等价尚未执行。
+
+Git 忽略目录 `tmp/joint_identity_v4_audit/` 已准备一次性清单比较工具，只读取显式传入的 v3/v4 train/validation JSONL 与 PreparedLigand 记录。后续先构建独立 `closed_set_v4`，逐 PDB 报告拆槽、固定语言 occurrence、seen 和候选监督变化；再对未受影响 PDB 比较 Dataset 科学张量、固定权重前向和 `loss/metrics/sample_count/identity_eligible_count`。calibration、墙钟与吞吐均不进入该等价判断。两项独立代码复审已通过；真实审计完成前，不创建或触发 v4 零门训练任务。
+
+双线 Git 随后从同一 `Learn/CUMULATIVE` 基点收口。实现分支保留真实实现提交；学习分支按文档契约、schema、清单构造、Dataset 和测试的顺序形成五个线性提交。两端树逐文件相同，学习端点重跑 `162 passed`、mypy、compileall、pyflakes 和 diff-check 后，累计学习分支快进到学习端点。一次性审计器仍位于 Git 忽略目录，不进入两条正式历史。
