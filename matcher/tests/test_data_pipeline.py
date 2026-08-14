@@ -21,6 +21,7 @@ from matcher.data.labels import OccurrenceMask, assign_candidate_target
 from matcher.data.ligand_graph import LigandGraphStore
 from matcher.data.manifest import (
     _annotate_seen,
+    _joint_identity_cross_pdb_class_variants,
     _validate_joint_identity_classes,
     build_manifest,
     ensure_manifest,
@@ -394,6 +395,7 @@ def test_manifest_and_dataset_keep_pdb_but_drop_missing_smi_occurrence(tmp_path)
     assert {item["reason"] for item in exclusions} == {"blob_exceed"}
     assert manifest["available_splits"] == ["train", "validation"]
     assert manifest["deferred_splits"] == ["calibration"]
+    assert manifest["cross_pdb_joint_identity_class_variants"] == []
     identities = load_jsonl(manifest_path.parent / "train_identities.jsonl")
     candidates = load_jsonl(manifest_path.parent / "train_candidates.jsonl")
     smi = identities[0]["language"]["smi_ted_289m"]
@@ -715,10 +717,64 @@ def test_dataset_rechecks_language_prepared_smiles_scalar_type(tmp_path: Path) -
         dataset[0]
 
 
-def test_joint_identity_rejects_cross_split_class_drift() -> None:
-    """同一联合身份跨 PDB 或划分映射到多个类别时必须失败关闭。"""
+def test_joint_identity_allows_cross_pdb_class_variants_as_diagnostics() -> None:
+    """不同 PDB 不共享身份轴，联合键的局部类别差异只形成诊断。"""
 
-    with pytest.raises(ValueError, match="联合身份跨 PDB 或划分类别不一致"):
+    records = {
+        "train": [
+            {
+                "pdb_id": "1abc",
+                "object_key": "CCD:LIG",
+                "prepared_smiles": "CC",
+                "class_name": "peptide_like",
+                "class_index": 3,
+                "occurrence_candidate_ids": [0, 1],
+            }
+        ],
+        "validation": [
+            {
+                "pdb_id": "2def",
+                "object_key": "CCD:LIG",
+                "prepared_smiles": "CC",
+                "class_name": "small_molecule",
+                "class_index": 4,
+                "occurrence_candidate_ids": [2],
+            }
+        ],
+    }
+    _validate_joint_identity_classes(records)
+    assert _joint_identity_cross_pdb_class_variants(records) == [
+        {
+            "object_key": "CCD:LIG",
+            "prepared_smiles": "CC",
+            "classes": [
+                {"class_name": "peptide_like", "class_index": 3},
+                {"class_name": "small_molecule", "class_index": 4},
+            ],
+            "locations": [
+                {
+                    "split": "train",
+                    "pdb_id": "1abc",
+                    "class_name": "peptide_like",
+                    "class_index": 3,
+                    "occurrence_count": 2,
+                },
+                {
+                    "split": "validation",
+                    "pdb_id": "2def",
+                    "class_name": "small_molecule",
+                    "class_index": 4,
+                    "occurrence_count": 1,
+                },
+            ],
+        }
+    ]
+
+
+def test_joint_identity_rejects_class_drift_within_one_pdb() -> None:
+    """同一 PDB 的一个联合身份不能同时占用多个六分类类别。"""
+
+    with pytest.raises(ValueError, match="同一 PDB 内的联合身份类别不一致"):
         _validate_joint_identity_classes(
             {
                 "train": [
@@ -728,19 +784,99 @@ def test_joint_identity_rejects_cross_split_class_drift() -> None:
                         "prepared_smiles": "CC",
                         "class_name": "small_molecule",
                         "class_index": 4,
-                    }
-                ],
-                "validation": [
+                    },
                     {
-                        "pdb_id": "2def",
+                        "pdb_id": "1abc",
                         "object_key": "CCD:LIG",
                         "prepared_smiles": "CC",
                         "class_name": "sugar",
                         "class_index": 5,
+                    },
+                ]
+            }
+        )
+
+
+def test_joint_identity_rejects_class_drift_for_the_same_pdb_across_splits() -> None:
+    """split 不得成为同一物理 PDB 的联合身份类别豁免项。"""
+
+    with pytest.raises(ValueError, match="同一 PDB 内的联合身份类别不一致"):
+        _validate_joint_identity_classes(
+            {
+                "train": [
+                    {
+                        "pdb_id": "1abc",
+                        "object_key": "CCD:LIG",
+                        "prepared_smiles": "CC",
+                        "class_name": "peptide_like",
+                        "class_index": 3,
+                    }
+                ],
+                "validation": [
+                    {
+                        "pdb_id": "1abc",
+                        "object_key": "CCD:LIG",
+                        "prepared_smiles": "CC",
+                        "class_name": "small_molecule",
+                        "class_index": 4,
                     }
                 ],
             }
         )
+
+
+def test_cross_pdb_diagnostic_ignores_a_single_pdb_across_splits() -> None:
+    """诊断 helper 不得把同一 PDB 的跨划分漂移伪装成跨 PDB 变体。"""
+
+    assert _joint_identity_cross_pdb_class_variants(
+        {
+            "train": [
+                {
+                    "pdb_id": "1abc",
+                    "object_key": "CCD:LIG",
+                    "prepared_smiles": "CC",
+                    "class_name": "peptide_like",
+                    "class_index": 3,
+                    "occurrence_candidate_ids": [0],
+                }
+            ],
+            "validation": [
+                {
+                    "pdb_id": "1abc",
+                    "object_key": "CCD:LIG",
+                    "prepared_smiles": "CC",
+                    "class_name": "small_molecule",
+                    "class_index": 4,
+                    "occurrence_candidate_ids": [1],
+                }
+            ],
+        }
+    ) == []
+
+
+def test_manifest_rejects_pdb_overlap_across_materialized_splits(tmp_path: Path) -> None:
+    """train/validation 即使类别相同也不得复用同一 PDB 标识。"""
+
+    roots = build_synthetic_roots(tmp_path)
+    shutil.copytree(
+        roots.stage1_root / "train/1abc",
+        roots.stage1_root / "validation/1abc",
+    )
+    with pytest.raises(ValueError, match="同一 PDB 的候选记录不得同时发布到多个划分"):
+        build_manifest(roots, 0.30, 3407, ("train", "validation"))
+
+
+def test_manifest_allows_excluded_pdb_overlap_across_splits(tmp_path: Path) -> None:
+    """两个划分中均被整 PDB 排除的同名源目录不构成已物化数据重叠。"""
+
+    roots = build_synthetic_roots(tmp_path)
+    (roots.stage1_root / "train/2bad").mkdir()
+    (roots.stage1_root / "train/2bad/_BLOB_EXCEED").touch()
+    manifest_path = build_manifest(roots, 0.30, 3407, ("train", "validation"))
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+    assert manifest["split_pdb_counts"]["train"]["excluded"] == 1
+    assert manifest["split_pdb_counts"]["validation"]["excluded"] == 1
 
 
 @pytest.mark.parametrize(
@@ -941,10 +1077,6 @@ def test_manifest_explicitly_extends_calibration_without_rewriting_train_semanti
     """准备入口只在显式请求后补建 calibration，且既有 train 记录逐字节不变。"""
 
     roots = build_synthetic_roots(tmp_path)
-    shutil.copytree(
-        roots.stage1_root / "train/1abc",
-        roots.stage1_root / "calibration/1abc",
-    )
     manifest_path = ensure_manifest(
         roots,
         coverage_threshold=0.30,

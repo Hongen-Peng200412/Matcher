@@ -44,6 +44,14 @@ from .schema import (
 
 
 SPLIT_NAMES = ("train", "validation", "calibration")
+IDENTITY_CLASS_RULE = (
+    "同一 PDB 内的 (object_key, prepared_smiles) 只能映射到一个局部类别；"
+    "不同 PDB 不共享身份轴，跨 PDB 类别差异只作诊断。"
+)
+SPLIT_PDB_RULE = (
+    "同一小写 pdb_id 的候选记录不得同时发布到多个划分；"
+    "仅出现在 excluded_pdb.jsonl 的整 PDB 排除记录不构成候选重叠。"
+)
 
 
 def ensure_manifest(
@@ -160,6 +168,7 @@ def build_manifest(
             "excluded": len(pdb_directories) - included_pdb,
         }
 
+    _validate_materialized_split_pdb_disjointness(split_candidates)
     _validate_joint_identity_classes(split_identities)
     _annotate_seen(split_candidates, split_identities)
     return _publish_manifest(
@@ -222,6 +231,7 @@ def _extend_manifest(
             "included": included_pdb,
             "excluded": len(pdb_directories) - included_pdb,
         }
+    _validate_materialized_split_pdb_disjointness(split_candidates)
     _validate_joint_identity_classes(split_identities)
     _annotate_seen(split_candidates, split_identities)
     return _publish_manifest(
@@ -276,25 +286,52 @@ def _annotate_seen(
             }
 
 
+def _validate_materialized_split_pdb_disjointness(
+    split_candidates: dict[str, list[dict[str, Any]]],
+) -> None:
+    """拒绝同一 PDB 的候选记录同时进入多个准备发布的划分。"""
+
+    splits_by_pdb: dict[str, set[str]] = defaultdict(set)
+    for split_name, candidates in split_candidates.items():
+        for record_index, candidate in enumerate(candidates):
+            pdb_id = candidate.get("pdb_id")
+            if type(pdb_id) is not str or not pdb_id:
+                raise ValueError(
+                    f"{split_name}_candidates.jsonl[{record_index}].pdb_id 必须是非空字符串。"
+                )
+            splits_by_pdb[pdb_id.lower()].add(split_name)
+    overlaps = {
+        pdb_id: sorted(split_names_for_pdb)
+        for pdb_id, split_names_for_pdb in sorted(splits_by_pdb.items())
+        if len(split_names_for_pdb) > 1
+    }
+    if overlaps:
+        raise ValueError(f"同一 PDB 的候选记录不得同时发布到多个划分：{overlaps}")
+
+
 def _validate_joint_identity_classes(
     split_identities: dict[str, list[dict[str, Any]]],
 ) -> None:
-    """要求已物化划分中的同一联合身份始终映射到一个六分类类别。
+    """要求每个 PDB 内的同一联合身份只映射到一个六分类类别。
 
-    ``split_identities`` 包含本次准备发布的全部划分身份记录。函数跨 PDB、跨划分
-    聚合 ``(object_key,prepared_smiles)``；同一键出现多个 ``(class_name,class_index)``
-    时在写任何正式清单前失败，否则不修改输入且不返回值。
+    ``split_identities`` 包含本次准备发布的全部划分身份记录。函数按
+    ``(pdb_id,object_key,prepared_smiles)`` 聚合；同一 PDB 的同一键出现多个
+    ``(class_name,class_index)`` 时在写任何正式清单前失败。不同 PDB
+    不共享身份轴，跨 PDB 的六分类差异由独立诊断记录而不阻断清单。
     """
 
-    classes_by_identity: dict[tuple[str, str], set[tuple[str, int]]] = defaultdict(set)
-    locations_by_identity: dict[tuple[str, str], list[str]] = defaultdict(list)
+    classes_by_identity: dict[tuple[str, str, str], set[tuple[str, int]]] = defaultdict(set)
+    locations_by_identity: dict[tuple[str, str, str], list[str]] = defaultdict(list)
     for split_name, identities in split_identities.items():
         for record_index, identity in enumerate(identities):
             prefix = f"{split_name}_identities.jsonl[{record_index}]"
+            pdb_id = identity.get("pdb_id")
             object_key = identity.get("object_key")
             prepared_smiles = identity.get("prepared_smiles")
             class_name = identity.get("class_name")
             class_index = identity.get("class_index")
+            if type(pdb_id) is not str or not pdb_id:
+                raise ValueError(f"{prefix}.pdb_id 必须是非空字符串。")
             if type(object_key) is not str or not object_key:
                 raise ValueError(f"{prefix}.object_key 必须是非空字符串。")
             if type(prepared_smiles) is not str or not prepared_smiles.strip():
@@ -303,9 +340,9 @@ def _validate_joint_identity_classes(
                 raise ValueError(f"{prefix}.class_name 必须属于五类非背景类别。")
             if type(class_index) is not int or class_index != CLASS_TO_INDEX[class_name]:
                 raise ValueError(f"{prefix}.class_index 与 class_name 不一致。")
-            key = (object_key, prepared_smiles)
+            key = (pdb_id, object_key, prepared_smiles)
             classes_by_identity[key].add((class_name, class_index))
-            locations_by_identity[key].append(f"{split_name}/{identity['pdb_id']}")
+            locations_by_identity[key].append(f"{split_name}/{pdb_id}")
     conflicts = {
         key: {
             "classes": sorted(classes),
@@ -315,7 +352,47 @@ def _validate_joint_identity_classes(
         if len(classes) > 1
     }
     if conflicts:
-        raise ValueError(f"联合身份跨 PDB 或划分类别不一致：{conflicts}")
+        raise ValueError(f"同一 PDB 内的联合身份类别不一致：{conflicts}")
+
+
+def _joint_identity_cross_pdb_class_variants(
+    split_identities: dict[str, list[dict[str, Any]]],
+) -> list[dict[str, Any]]:
+    """列出同一联合键在不同 PDB 中采用多个局部六分类类别的诊断记录。"""
+
+    classes_by_identity: dict[tuple[str, str], set[tuple[str, int]]] = defaultdict(set)
+    pdb_ids_by_identity: dict[tuple[str, str], set[str]] = defaultdict(set)
+    locations_by_identity: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
+    for split_name, identities in split_identities.items():
+        for identity in identities:
+            key = (identity["object_key"], identity["prepared_smiles"])
+            classes_by_identity[key].add((identity["class_name"], identity["class_index"]))
+            pdb_ids_by_identity[key].add(identity["pdb_id"])
+            locations_by_identity[key].append(
+                {
+                    "split": split_name,
+                    "pdb_id": identity["pdb_id"],
+                    "class_name": identity["class_name"],
+                    "class_index": identity["class_index"],
+                    "occurrence_count": len(identity["occurrence_candidate_ids"]),
+                }
+            )
+    return [
+        {
+            "object_key": key[0],
+            "prepared_smiles": key[1],
+            "classes": [
+                {"class_name": class_name, "class_index": class_index}
+                for class_name, class_index in sorted(classes_by_identity[key])
+            ],
+            "locations": sorted(
+                locations_by_identity[key],
+                key=lambda item: (item["split"], item["pdb_id"]),
+            ),
+        }
+        for key in sorted(classes_by_identity)
+        if len(classes_by_identity[key]) > 1 and len(pdb_ids_by_identity[key]) > 1
+    ]
 
 
 def _publish_manifest(
@@ -354,8 +431,10 @@ def _publish_manifest(
             "prepared_smiles 逐字采用 PreparedLigand 顶层 smiles；显式 null 不建立身份；"
             "PreparedLigand 文件缺失单独标记，已有文件不完整时失败。"
         ),
-        "identity_class_rule": (
-            "同一 (object_key, prepared_smiles) 在全部已物化划分中只能映射到一个类别。"
+        "identity_class_rule": IDENTITY_CLASS_RULE,
+        "split_pdb_rule": SPLIT_PDB_RULE,
+        "cross_pdb_joint_identity_class_variants": (
+            _joint_identity_cross_pdb_class_variants(split_identities)
         ),
         "language_selection_rule": (
             "对每个 (pdb_id, object_key, prepared_smiles, language_family) 的有效 occurrence "
@@ -1015,6 +1094,8 @@ def _validate_existing_manifest(
         "coverage_threshold": coverage_threshold,
         "selection_seed": selection_seed,
         "identity_key_fields": list(IDENTITY_KEY_FIELDS),
+        "identity_class_rule": IDENTITY_CLASS_RULE,
+        "split_pdb_rule": SPLIT_PDB_RULE,
         "class_names": list(CLASS_NAMES),
     }
     mismatches = {

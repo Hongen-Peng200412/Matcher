@@ -329,7 +329,9 @@ Matcher 的正式任务只从 `/home/penghongen/My_Project/Matcher` 冻结 relea
 | `selection_seed` | 同一身份存在多个有效 occurrence 时的确定性选择种子。 |
 | `identity_key_fields` | 固定为字符串数组 `["object_key","prepared_smiles"]`；两项共同定义身份。 |
 | `prepared_smiles_rule` | 顶层 PreparedLigand.smiles 的逐字读取、显式 `null` 与缺失来源处理说明。 |
-| `identity_class_rule` | 同一联合身份在全部已物化划分中只能映射到一个六分类类别。 |
+| `identity_class_rule` | 同一 PDB 内的联合身份只能映射到一个局部六分类类别；不同 PDB 不共享身份轴，跨 PDB 类别差异只作诊断。 |
+| `cross_pdb_joint_identity_class_variants` | JSON 数组；列出同一 `(object_key,prepared_smiles)` 在不同 PDB 中采用多个局部类别时的联合键、类别、split/PDB 位置及各位置 occurrence 数。空数组表示没有该诊断。 |
+| `split_pdb_rule` | 同一小写 `pdb_id` 的候选记录不得同时发布到多个划分；发现 train/validation 候选重叠时在清单发布前失败。仅出现在 `excluded_pdb.jsonl` 的整 PDB 排除记录不构成候选重叠。 |
 | `language_selection_rule` | 在联合身份内按 occurrence 编号排序，并沿用 v3 的 `(pdb_id,object_key,language_family)` 选择盐值。 |
 | `seen_identity_rule` | 按语言模型与 `(object_key,prepared_smiles)` 判定 train seen 的中文说明。 |
 | `class_names` | 固定六分类顺序，必须是 `background/ion/nucleotide_like/peptide_like/small_molecule/sugar`。 |
@@ -339,6 +341,22 @@ Matcher 的正式任务只从 `/home/penghongen/My_Project/Matcher` 冻结 relea
 | `excluded_pdb` | 整 PDB 排除记录 JSONL 的文件名。 |
 | `split_pdb_counts` | 每个划分的 `discovered/included/excluded` PDB 数。 |
 | `summary` | 下表定义的逐划分计数与整 PDB 排除原因计数。 |
+
+`cross_pdb_joint_identity_class_variants` 只在一个联合键涉及至少两个不同 `pdb_id` 且出现至少两个局部类别时产生条目。外层数组按 `object_key,prepared_smiles` 排序；每个条目的字段如下：
+
+| 字段 | 类型与语义 |
+| --- | --- |
+| `object_key` | 非空字符串；联合身份使用的 LigandObject 模板键。 |
+| `prepared_smiles` | 非空字符串；逐字取自顶层 `PreparedLigand.smiles`。 |
+| `classes` | 至少两个元素的 JSON 数组，按 `class_name,class_index` 排序且不重复。 |
+| `classes[].class_name` | 五类非背景类别字符串。 |
+| `classes[].class_index` | 与 `class_name` 对应的整数六分类下标，取值为 1–5。 |
+| `locations` | 非空 JSON 数组，按 `split,pdb_id` 排序；每项对应一个 PDB 内的局部身份槽。 |
+| `locations[].split` | 已物化划分名称。 |
+| `locations[].pdb_id` | 小写 PDB 标识。 |
+| `locations[].class_name` | 该 PDB 局部身份槽的五类非背景类别。 |
+| `locations[].class_index` | 与局部 `class_name` 对应的整数六分类下标。 |
+| `locations[].occurrence_count` | 正整数；该局部身份槽的 `occurrence_candidate_ids` 元素数量。 |
 
 `summary.splits.<split>` 的字段如下；`summary.excluded_pdb_reason_counts` 是整 PDB 排除原因到数量的映射。
 
@@ -379,7 +397,7 @@ Matcher 的正式任务只从 `/home/penghongen/My_Project/Matcher` 冻结 relea
 | `language_target_available` | 按语言家族记录“身份图和所选语言表示同时可用”的布尔值。 |
 | `identity_seen_in_train_by_language` | 按语言家族记录前景正身份是否曾作为 train 可监督目标；背景或没有前景身份时为 `null`。 |
 
-每个 `<split>_identities.jsonl` 对应一个 PDB 内 `(object_key,prepared_smiles)` 五类前景身份。`class_name/class_index` 是联合身份属性；同一联合键在全部已物化划分中只能映射到一个类别。字段如下：
+每个 `<split>_identities.jsonl` 对应一个 PDB 内 `(object_key,prepared_smiles)` 五类前景身份。`class_name/class_index` 是该 PDB 身份槽的局部属性；同一 PDB 的联合键只能映射到一个类别，不同 PDB 的类别差异只进入 manifest 诊断。字段如下：
 
 | 字段 | 类型与语义 |
 | --- | --- |
