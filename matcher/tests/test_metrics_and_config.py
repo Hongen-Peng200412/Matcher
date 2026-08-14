@@ -1107,6 +1107,42 @@ def test_batch5_oracle_matrix_changes_only_declared_variables(
     assert target_tracking == baseline_tracking
 
 
+def test_joint_identity_v4_zero_gate_config_matches_batch2_oracle() -> None:
+    """v4 零门计划的解析配置仅在任务命名和 W&B 隔离字段上不同。"""
+
+    config_root = Path(__file__).parents[2] / "configs" / "experiments"
+    baseline = load_experiment_plan(
+        config_root / "batch2" / "full_smi_ted_v_centroid_oracle_a100.yaml"
+    )
+    target = load_experiment_plan(
+        config_root
+        / "joint_identity_v4"
+        / "joint_identity_v4_zero_gate_oracle_a100.yaml"
+    )
+    assert len(baseline.stages) == len(target.stages) == 1
+    baseline_stage = baseline.stages[0]
+    target_stage = target.stages[0]
+    assert baseline.plan_name == baseline_stage.name == "batch2_smi_ted_v_centroid_oracle_a100"
+    assert target.plan_name == target_stage.name == "joint_identity_v4_zero_gate_oracle_a100"
+    assert target.output_root == baseline.output_root
+    assert target.data == baseline.data
+    assert target_stage.task_name == baseline_stage.task_name == "full_matcher"
+    assert target_stage.language_family == baseline_stage.language_family == "smi_ted_289m"
+    assert target_stage.identity_variant == baseline_stage.identity_variant == "oracle"
+    assert target_stage.identity_scope == baseline_stage.identity_scope == "all_non_background"
+    assert target_stage.model == baseline_stage.model
+    assert target_stage.training == baseline_stage.training
+    assert target_stage.initialize_candidate_from is baseline_stage.initialize_candidate_from is None
+
+    target_tracking = asdict(target.tracking)
+    baseline_tracking = asdict(baseline.tracking)
+    assert target_tracking.pop("project") == "AdaLigand-Matcher-JointIdentityV4"
+    assert target_tracking.pop("group") == "joint-identity-v4-zero-gate-baseline"
+    baseline_tracking.pop("project")
+    baseline_tracking.pop("group")
+    assert target_tracking == baseline_tracking
+
+
 @pytest.mark.parametrize(
     "missing_key",
     (
@@ -1352,6 +1388,10 @@ def test_calibration_data_fingerprint_binds_one_selection_while_claim_is_retaine
         json.dumps(
             {
                 "created_at_utc": "2026-08-14T00:00:00+00:00",
+                "split_pdb_rule": (
+                    "同一小写 pdb_id 的候选记录不得同时发布到多个划分；"
+                    "仅出现在 excluded_pdb.jsonl 的整 PDB 排除记录不构成候选重叠。"
+                ),
                 "split_pdb_counts": {"train": {"included": 2}, "calibration": {"included": 1}},
                 "summary": {
                     "splits": {
@@ -1377,6 +1417,16 @@ def test_calibration_data_fingerprint_binds_one_selection_while_claim_is_retaine
     rebuilt_data = _calibration_data_evidence(manifest_path)
     assert rebuilt_data["manifest_sha256"] != data["manifest_sha256"]
     assert rebuilt_data["fingerprint"] == data["fingerprint"]
+    manifest_values["split_pdb_rule"] = "被篡改的划分互斥规则"
+    manifest_path.write_text(json.dumps(manifest_values), encoding="utf-8")
+    changed_rule_data = _calibration_data_evidence(manifest_path)
+    assert changed_rule_data["manifest_sha256"] != rebuilt_data["manifest_sha256"]
+    assert changed_rule_data["fingerprint"] != rebuilt_data["fingerprint"]
+    manifest_values["split_pdb_rule"] = (
+        "同一小写 pdb_id 的候选记录不得同时发布到多个划分；"
+        "仅出现在 excluded_pdb.jsonl 的整 PDB 排除记录不构成候选重叠。"
+    )
+    manifest_path.write_text(json.dumps(manifest_values), encoding="utf-8")
     checkpoint: CalibrationCheckpointEvidence = {
         "path": "/storage/penghongen/tmp/Matcher/run/stage/BEST.pt",
         "sha256": "a" * 64,
