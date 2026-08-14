@@ -24,4 +24,5 @@ exec bash "${TASK_PROJECT_ROOT}/训练与运行/sh/train_experiment.sh" \
 - W&B：run ID `s3lj6298`；[在线曲线](https://wandb.ai/pencounkdual-111/AdaLigand-Matcher-Batch2/runs/s3lj6298)。
 - 首步验收：global batch 32；有效身份目标 7；计算 `24.4089 s`；裁剪前梯度范数 `25.6375`；峰值已分配/保留显存 `14,195,192,320 / 19,442,696,192 bytes`。参数更新与 CUDA 同步均已完成，未见 OOM、NaN 或 Traceback。
 - 2026-08-14 09:52:15 的 epoch 3 validation 刷新当前最好值：selection score `0.6543584471`，六分类 macro-F1 `0.4532580851`，五类固有 Top-1 `0.8437926330`，精确子类条件 Top-1 `0.9113082040`，宽松五类端到端 F1 `0.5985090522`，小分子兼容端到端 F1 `0.5632183908`，有效身份数 `1,466`。该轮仍为改善轮，不据此提前判定相对第 1 批的方向。
+- 2026-08-14 10:26:38 的 epoch 4 validation 明显收复六分类并刷新 BEST：selection score `0.6840046283`，六分类 macro-F1 `0.5056822360`，五类固有 Top-1 `0.8362892224`，精确子类条件 Top-1 `0.9014598540`，宽松五类端到端 F1 `0.6448717949`，小分子兼容端到端 F1 `0.6302521008`。该 BEST 相对第 1 批 joint 当前 BEST 仅低约 `1.28%`；任务继续运行。
 - 状态：训练中；最终 validation 与第 1 批 joint 头对头结果待自然收口后追加。

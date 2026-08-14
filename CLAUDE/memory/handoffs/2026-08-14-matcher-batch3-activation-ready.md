@@ -4,7 +4,7 @@ Date: 2026-08-14
 
 ## Current State
 
-活动 Goal 是 Matcher 第 1–5 批开发、validation 头对头比较与六张受管 GPU 调度。当前分支为 `codex/matcher-closed-set-rewrite`，本地 HEAD 为 `4fb6c7b832c112961a2394cb21d69742266c6bb7`；第 3 批科学实现端点是 `495e7de54dca88ab3464fe0a667dcce5a540ef72`。冻结 release 为 `/home/penghongen/Feedback/Matcher/releases/Matcher_d15132948a18/Matcher`，内容摘要为 `d15132948a1885bae9a2019ac55175503c5c15459f043145147fe4a6d3598f89`。
+活动 Goal 是 Matcher 第 1–5 批开发、validation 头对头比较与六张受管 GPU 调度。当前分支为 `codex/matcher-closed-set-rewrite`，恢复时以 `git log -1` 和 `git status` 为当前本地端点；第 3 批科学实现端点是 `495e7de54dca88ab3464fe0a667dcce5a540ef72`。冻结 release 为 `/home/penghongen/Feedback/Matcher/releases/Matcher_d15132948a18/Matcher`，内容摘要为 `d15132948a1885bae9a2019ac55175503c5c15459f043145147fe4a6d3598f89`。
 
 2026-08-14 10:44:47 的只读状态为：Job `340893/340894/340895/340897/340898/340899` 全部 `RUNNING`，每项 `after_lock=1`，`try_lock/pre_lock/kill_lock=0`。第 1 批 joint 与第 2 批五项继续运行；没有执行第 3 批控制器，没有安装新动态命令，也没有删除任何锁。
 
@@ -23,6 +23,8 @@ calibration 清单或缓存可以作为不参与判断的准备产物；在全�
 - 生成的动态命令在训练前断言 `TASK_PROJECT_ROOT` 精确等于冻结 release；控制器只删除当前 Job 的 `try_lock`，永不删除 `after_lock`。
 - 两个控制器分别通过科学部署终审与严格 Bash/技术表达终审；`bash -n`、内嵌 Python 编译、编码与换行、哈希、正常安装、冲突、空洞、重复和半触发恢复探针全部通过。
 - heartbeat `matcher-1-5` 已处于 `ACTIVE`，其权限白名单、禁删 `after_lock`、禁读 calibration 推理和固定 release 接续要求均已写入持久提示。
+- 10:50 的新 validation 已归档：第 1 批 joint BEST 仍是 epoch 9 `0.6928435444`；第 2 批 oracle/detached/joint BEST 为 `0.6699438211/0.6739567888/0.6840046283`；第 2 批 mean/max 与未增强交叉注意力六分类 BEST 为 `0.5303632887/0.5146977235`。六项均未自然收口。
+- 第 5 批已有两条证据方向：先补裁剪触发比例与裁剪前分位数，再决定阈值；非零 graph/inventory 初始门值应围绕当前自然学习到的约 `0.01–0.03` 量级设计，而不是直接固定为 `0.1`。
 
 ## Decisions
 

@@ -856,3 +856,7 @@ bash '/home/penghongen/My_Project/Matcher/训练与运行/runtime/create_release
 2026-08-14 10:44:47 再次只读核验六个受管 Job：全部为 `RUNNING`，每项 `after_lock=1`，`try_lock/pre_lock/kill_lock=0`。因此两个控制器均未执行，没有安装第 3 批命令、删除锁、同步服务器或读取 calibration。修订说明：本节只记录未来自然空闲时可恢复且失败关闭的接续协议，不把第 3 批四项记作已提交。
 
 为落实低频监控而不让当前任务依赖人工轮询，随后创建 30 分钟 heartbeat `matcher-1-5`，目标仍是本 active Goal。其持久提示要求每次先重读目标草案与本批 handoff，只读检查六个白名单 Job；状态无变化时不写日志或重复通知，只有自然出现 `try_lock`、完整 validation、自然收口或失败时才执行相称动作和回填记录。该 heartbeat 不是 Slurm 或训练时间上限，不允许删除 `after_lock`、释放 GPU、触碰用户任务或执行 calibration 模型推理。
+
+10:50 的第一次后续事件检查没有出现 `try_lock`，但六项都产生了新的完整 validation。第 1 批 joint 的 epoch 10 selection score 为 `0.6841031473`，没有刷新 epoch 9 BEST `0.6928435444`；坏验证轮数为 1，任务继续。第 2 批 oracle/joint 在 epoch 4 改善至 `0.6699438211/0.6840046283`，detached 的 epoch 4 回落至 `0.6594240440`、BEST 仍是 epoch 3 的 `0.6739567888`。第 2 批 mean/max 六分类 BEST 为 epoch 1 的 `0.5303632887`，未增强交叉注意力在 epoch 2 改善至 `0.5146977235`。
+
+当前第 2 批三个完整 Matcher BEST 相对第 1 批同损失约低 `3.29%/2.82%/1.28%`；mean/max 与第 0 批同聚合几乎相同，未增强交叉注意力低约 `2.32%`。没有多个核心指标共同约 10% 下降，不提前判负或改任务。另一方面，六项最新 epoch 的平均裁剪前梯度范数为 `2.28–7.70`，均高于显式阈值 `1.0`，最大值达 `9.92–94.08`；第 5 批先补逐 optimizer step 的裁剪触发比例和裁剪前分位数，再决定阈值对照。四个完整 Matcher 的 graph/inventory 门值仅约 `0.0148–0.0325/0.0102–0.0220`，因此未来非零门值实验应围绕真实学习量级设计，不把 `0.1` 当作无条件默认。
