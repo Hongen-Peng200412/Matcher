@@ -258,7 +258,7 @@ Matcher 的正式任务只从 `/home/penghongen/My_Project/Matcher` 冻结 relea
 
 `stage.initialize_candidate_from` 只接受另一项已完成运行中以 `BEST.pt` 结尾的服务器绝对路径，只允许用于 `full_matcher`。它不接受 `LAST.pt`、相对路径或候选预训练阶段继续继承参数。目标优化器构造前，入口要求来源 `task_name=candidate_pretrain`、checkpoint 最佳轮次自洽、阶段摘要与运行根摘要已经发布、W&B run ID/HTTPS 地址存在，并核对来源训练 YAML、`resolved.json`、checkpoint 与运行记录中的阶段、模型、训练、数据和追踪配置。来源与目标还必须具有相容的候选编码器结构，以及相同的 `data_root/stage1_root/output_root/coverage_threshold/selection_seed/pp_top_k/local_crop_strategy`。工作进程数、预取量和单工作进程缓存只影响 I/O，不参与来源—目标科学配置比较，但来源 YAML 与来源 `resolved.json` 仍须自洽。
 
-训练主线不读取 `launch.json`、`run_cmd.sh` 或 release manifest，也不计算文件 SHA-256。选定第 4 批来源 BEST 后，提交者使用 `tmp/batch4_source_audit/audit_candidate_pretrain_source.py` 记录发布路径、release manifest 声明的内容摘要和关键文件当时的字节摘要，并把报告写入 Matcher diagnostics 和批次记录。该一次性脚本不独立重算或证明整棵 release 目录的内容摘要，也不进入训练包、模型输入、损失、选模或 `resolved.json`。
+训练主线不读取 `launch.json`、`run_cmd.sh` 或 release manifest，也不计算文件 SHA-256。选定第 4 批来源 BEST 后，提交者在该次任务专用的 `tmp/<task-id>/` 工作区生成一次性审计脚本，用它记录发布路径、release manifest 声明的内容摘要和关键文件当时的字节摘要，并把报告写入 Matcher diagnostics 和批次记录。该脚本只由实现历史与任务记录保存，不进入累计学习主线；它不独立重算或证明整棵 release 目录的内容摘要，也不进入训练包、模型输入、损失、选模或 `resolved.json`。
 
 非 `null` 的 `initialization` 字段如下：
 
