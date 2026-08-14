@@ -1,37 +1,48 @@
 # Matcher
 
-本仓库独立承载 AdaLigand 大项目的 Stage2 Matcher。AdaLigand 负责生产 A–G 与 Stage1 推理产物；Matcher 读取这些正式输入，训练候选—occurrence 匹配模型，并把 checkpoint、指标和推理结果写入独立结果目录。
+本仓库独立承载 AdaLigand 的单候选闭集配体身份分类阶段。AdaLigand 生产 A–G 解析产物、密度图和 Stage1 Find_0 候选；Matcher 对每个候选执行六分类，并按配置从同一 PDB 的去重配体身份清单中选择身份。身份范围可限定为 `small_molecule`，也可覆盖 `ion/nucleotide_like/peptide_like/small_molecule/sugar` 五类非背景配体；当前语言表示或配体图缺失的候选仍保留六分类和区域监督。
 
-## 当前实现
+## 当前科学入口
 
-正式 Python 包只有 `matcher/`，同时支持两个明确模式：
+- `candidate_pretrain`：对全部 Find_0 候选预测 `background/ion/nucleotide_like/peptide_like/small_molecule/sugar`，同时监督候选配体区域和受体结合区域；不读取配体语言表示或配体图。
+- `full_matcher`：保留相同候选编码器，再读取当前 PDB 的配体语言表示、未池化配体原子图和排除自身的身份清单，输出闭集身份分数。
+- `calibration`：入口已经实现，但只有全部开发批次结束且用户明确确认最终方案后，才允许读取已完成阶段的 `BEST.pt` 运行一次正式评估。claim 文件保留期间，同一稳定数据指纹只能绑定一个选择，`claimed` 允许同一选择在失败后重试，`completed` 禁止再次评估。该入口不训练、不选模。支持类 macro-F1 只平均真实候选数大于零的类别；固定六类 macro-F1 把零支持类 F1 记为 0 后仍平均全部六类。
+- 候选与真实 occurrence 的全局组件覆盖率和 occurrence 覆盖率都至少为 `0.30` 才命中。多个命中使用两侧覆盖率几何平均的最大值，并采用稳定并列规则。
+- RAUNet 输入候选级 `48³` 的 105 个通道。第 0/1 批固定裁取 `[16,64)³`；第 2 批起可按完整权威 V 的体素质心解析起点。A/P token 保留 Stage1 `80³` 上下文且不受 RAUNet 调制；V/PP 与两个区域目标共享同一 `48³`，只有 V/PP 读取 RAUNet 特征增量。
+- 完整 Matcher 支持 `oracle/detached/joint` 三种身份门控损失；三者都以同一 global batch 中真实类别属于配置身份范围且身份目标有效的候选数为身份损失分母。
 
-- `ground_truth_context`：不读取 Stage1 推理产物，每个真实 occurrence 产生一个 GT 候选；当前正式训练、推理和评估使用此模式。
-- `stage1_context`：读取 Stage1 F1-centered 候选、V、P、A 与完整概率图，PP 在内存中按概率 top-k 产生；当前已有 Dataset、共同模型前向和真实数据 smoke。
-
-两种模式共享同一模型。Stage1 专属条件不存在时，对应参数分支产生严格零增量；模式二可以从模式一 checkpoint 初始化后继续训练基础参数和新增参数。详细科学契约见 `文档/规划文档/Matcher_双模式ABO实施计划.md` 与 `文档/规划文档/Matcher_双模式数据契约.md`。
+旧的双模式 Matcher 实现已从活动 Python 入口移除，但仍保留在 Git 历史中，不能把旧规划或旧实验结果解释为当前实现。
 
 ## 目录
 
-- `matcher/`：数据契约、两个 Dataset、模型、损失、训练和模式一推理。
-- `configs/mode1/`：模式一 Phase1、Phase2 正式配置。
-- `训练与运行/sh/mode1/`：正式清单生成和端到端训练入口。
-- `与服务器交互/`：只面向 `/home/penghongen/My_Project/Matcher` 的同步入口。
-- `文档/`：科学计划、数据契约、执行记录与计划—实现映射。
-- `licenses/`：PocketXMol 派生图网络与细配对算子的许可证和来源说明。
-- `grill_with_memory/07-28-17-50.md`：本轮 Matcher 决策账本的历史来源。
+- `matcher/`：冻结清单、Dataset、批处理、105 通道体素缓存、RAUNet、四模态候选聚合、闭集身份模型、损失、指标、正式训练与保留集评估入口。
+- `matcher/tests/`：数据、空模态、模型与监督、global-batch 等价、指标、配置、checkpoint 和产物边界回归测试。
+- `configs/experiments/initial/`：第 0 批七个自包含 YAML；一项 A100 顺序运行两个候选六分类阶段，另外六项定义两种语言表示和三种身份损失。
+- `configs/experiments/batch1/`：第 1 批三个自包含 YAML；固定 SMI-TED、mean/max、五类非背景身份与手动特征，只比较 oracle/detached/joint。
+- `configs/experiments/batch2/`：第 2 批五个自包含 YAML；统一 V 质心 `48³` 与采样统计，比较三种完整 Matcher 损失和两种候选聚合。
+- `configs/experiments/batch3/`：第 3 批四个自包含 YAML；为候选条件注意力加入按模态独立、末层零初始化的实体分数偏置。
+- `训练与运行/`：通用 Slurm、release、launch、四锁控制，以及 Matcher 的预计算、训练和一次性 calibration shell 入口。
+- `与服务器交互/`：只面向 `/home/penghongen/My_Project/Matcher` 的安全同步入口。
+- `文档/exec_plan/`：逐项命令、Job ID、审查发现、临时决定和结果证据。
+- `文档/记录/`：按单任务、批次和全局三个层次维护 validation 结果、对照结论与后续决策。
+- `文档/mapping/`：规划、活动实现和历史实现之间的映射。
 
 ## 本地验证
 
 ```powershell
-D:\Anaconda\envs\Pocket_Plus_windows\python.exe -m pytest matcher\tests -q
+python -m compileall -q matcher
+python -m mypy matcher
+python -m pytest matcher\tests -q
+git diff --check
 ```
+
+本地测试不代替服务器真实数据、CUDA 显存和吞吐验收。
 
 ## 服务器边界
 
-- 代码：`/home/penghongen/My_Project/Matcher`
-- release、launch 与锁证据：`/home/penghongen/Feedback/Matcher`
-- 训练和推理结果：`/storage/penghongen/Matcher/Results`
-- A–G 与 Stage1 输入：继续读取 `/storage/penghongen/AdaLigand/...`
+- 正式源码：`/home/penghongen/My_Project/Matcher`
+- release、launch、Slurm 日志和锁：`/home/penghongen/Feedback/Matcher`
+- Matcher 清单、缓存、checkpoint、指标与评估结果：`/storage/penghongen/tmp/Matcher/`
+- 只读 A–G 与 Stage1 输入：`/storage/penghongen/AdaLigand/...` 和 `/storage/penghongen/AdaLigand_stage1_inference/...`
 
-安全同步不会删除远端 Matcher 目录；删除式同步只允许人类手动运行。正式 GPU 任务必须在用户审阅最终 YAML、shell 与提交命令后再提交。
+安全同步不会删除远端 Matcher 目录；删除式同步只允许人类手动运行。正式任务通过 `训练与运行/submit_task.sh` 申请资源，并由 `pre_lock/try_lock/kill_lock/after_lock` 控制开始、复用、终止当前命令和释放 allocation。
