@@ -7,7 +7,7 @@ from pathlib import Path
 
 import numpy as np
 
-from .cache import ByteBudgetLru
+from ..utils.cache import ByteBudgetLru
 from .schema import safe_object_filename
 
 

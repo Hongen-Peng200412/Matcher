@@ -1,4 +1,4 @@
-# matcher.experiment_config.load_experiment_plan 读取本文件，matcher.experiment.run_plan 执行 stages。
+# matcher.training.config.load_experiment_plan 读取本文件，matcher.training.experiment.run_plan 执行 stages。
 # use_manual_features=false 不拼接12项模态统计；use_sampling_features=false 不拼接4项裁剪统计；use_candidate_token_attention_bias=false 不增加实体偏置。
 # 单张 A800 从零训练弱聚合完整 Matcher；身份项使用 stopgrad(p_small) 门控。
 # null 语义：class_weights=null 表示类别不加权；maximum_epochs=null 表示不设轮数上限；

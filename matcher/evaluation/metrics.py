@@ -15,14 +15,14 @@ from typing import Literal, TypedDict
 import numpy as np
 import torch
 
-from .contracts import CandidateMetadata
-from .schema import (
+from ..data.schema import (
     CLASS_NAMES,
     FOREGROUND_CLASS_INDICES,
     FOREGROUND_CLASS_NAMES,
     SMALL_MOLECULE_INDEX,
     IdentityScope,
 )
+from ..datasets.contracts import CandidateMetadata
 
 
 class EvaluationBatch(TypedDict):

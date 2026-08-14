@@ -1,28 +1,35 @@
 # Matcher 模块结构概览
 
+本文说明当前单候选闭集 Matcher 的正式 Python 包。历史双模式设计已经退出活动代码；需要追溯历史时读取 Git 历史与 `文档/mapping/计划执行映射.md`，不要把旧模块名解释为当前入口。
+
 ## 冷读顺序
 
-建议按以下顺序阅读首版 Matcher：
-
-1. `matcher/README.md`：当前正式数据与模型接口。
-2. `matcher/contracts.py`：两个模式共同使用的内存样本与批次字段。
-3. `matcher/data_ground_truth.py` 与 `matcher/data_stage1.py`：两个显式 Dataset；二者不共享盘上扫描或推理后处理。
-4. `matcher/batching.py`：以 occurrence 为预算的 PDB 装箱和批量合并。
-5. `matcher/graph.py`、`matcher/map.py` 与 `matcher/context.py`：图网络、密度骨干和 Stage1 条件叶子。
-6. `matcher/model_core.py` 与 `matcher/model.py`：共享科学算子、两阶段装配和六个预测头。
-7. `matcher/objectives.py`：身份内 Hungarian、六头主损失与辅助损失。
-8. `matcher/train.py`：双模式装配、模式一训练与验证、checkpoint 和恢复；`matcher/infer_ground_truth.py` 只负责模式一推理与评估。
+1. `matcher/data/schema.py`：类别顺序、语言家族、局部裁剪策略、缓存版本和来源根目录。
+2. `matcher/datasets/contracts.py`：单候选样本、批次张量和候选 metadata 的内存字段。
+3. `matcher/data/`：Stage1 与 A–G 来源适配、标签、候选几何、冻结清单以及 voxel/PP 缓存。
+4. `matcher/datasets/candidate_data.py` 与 `matcher/datasets/batching.py`：样本装配、全局随机批次、批量合并和工作进程生命周期。
+5. `matcher/model/`：105 通道 RAUNet、A/P/V/PP 融合、候选辅助头和三条闭集身份分支。
+6. `matcher/training/losses.py` 与 `matcher/evaluation/metrics.py`：训练目标、validation 指标和选模分数。
+7. `matcher/training/engine.py`：阶段运行环境、训练 epoch、完整划分评估、BEST/LAST 和早停。
+8. `matcher/training/experiment.py`：按 YAML 顺序运行训练计划；`matcher/evaluation/calibration.py` 只负责最终确认后的一次性评估。
 
 ## 依赖方向
 
-两个 Dataset 和 `batching.py` 不导入模型。`graph.py`、`map.py`、`context.py` 不扫描盘上训练清单。模型只消费 `contracts.py` 定义的内存对象；`objectives.py` 消费模型原始输出与标签。模式一解码只位于 `decode_ground_truth.py`，模式二未来增加独立推理入口。`train.py` 是唯一把正式 Dataset、模型、目标函数和验证连接成训练流程的入口。
+`matcher/utils` 不读取科学模块；`matcher/data` 可以读取 `utils`；`matcher/datasets` 可以读取 `data`；`matcher/model` 只消费数据 schema 和 Dataset 批次契约；`matcher/training` 连接数据、模型、损失、指标、checkpoint 与 W&B；`matcher/evaluation/calibration.py` 可以复用训练引擎的完整划分评估，但 `matcher/evaluation/__init__.py` 不反向导出 calibration。
 
-模式二未来新增明确命名的训练验证和推理文件，不能把模式一 decoder 改成通用注册系统。
+各子包的 `__init__.py` 只说明职责。稳定模型入口继续由 `matcher.model` 导出；其余正式入口使用完整模块路径，不建立旧顶层模块的兼容转发层。
+
+## 正式命令入口
+
+- `python -m matcher.data.manifest`：构建 train/validation 等明确允许划分的冻结清单。
+- `python -m matcher.data.precompute`：按 PDB 预计算 voxel 与 PP 候选缓存。
+- `python -m matcher.training.experiment`：执行一份正式实验 YAML。
+- `python -m matcher.evaluation.calibration`：仅在用户最终确认后执行一次 calibration。
 
 ## 可读性约束
 
-- 每个长期模块只保留真实职责入口；只转发一次或只映射一行字段的函数直接内联。
-- 不创建 `utils.py/common.py/base.py`、DataModule、Trainer、Callback、Provider、Registry 或 Factory 层级。
-- 训练主调用链直接展示：读一份 YAML → 明确 Dataset → 装箱 → Matcher → loss → 对应模式 evaluation → checkpoint。
-- 外部文件和配置只在入口集中校验；模型内部信任 Dataset/Collator 已建立的契约。
-- 临时分析、smoke 和画像产物进入 `tmp/<任务名>/`，不能混入正式清单、配置或运行目录。
+- 数据来源适配不导入模型或训练状态；Dataset 不扫描配置目录。
+- 训练主链保持可直读：YAML → Dataset/loader → model → loss → validation → checkpoint。
+- validation 指标与 calibration 复用同一累计器，但 calibration 结果不回流训练或选模。
+- 发布字节摘要、launch/release 路径取证和一次性诊断留在 `tmp/` 或具名 `ops/`，不进入正式 `matcher` 包。
+- 临时分析、smoke 和画像产物进入任务专属临时目录，不能混入正式清单、配置或运行目录。

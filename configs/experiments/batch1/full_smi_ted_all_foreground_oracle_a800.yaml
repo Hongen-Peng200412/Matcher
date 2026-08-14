@@ -1,4 +1,4 @@
-# matcher.experiment_config.load_experiment_plan 读取本文件，matcher.experiment.run_plan 执行唯一 stage。
+# matcher.training.config.load_experiment_plan 读取本文件，matcher.training.experiment.run_plan 执行唯一 stage。
 # 第1批：单张 A800 从零训练五类非背景身份 Matcher；mean/max 聚合显式拼接固化手动特征。
 # null 语义：class_weights=null 表示六分类不加权；maximum_epochs=null 表示不设轮数上限；
 # initialize_candidate_from=null 表示不加载候选预训练 checkpoint。

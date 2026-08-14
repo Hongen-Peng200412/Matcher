@@ -19,9 +19,9 @@ import yaml  # type: ignore[import-untyped]
 from torch import nn
 
 from .checkpointing import load_checkpoint
-from .experiment_config import DataConfig, StageConfig
-from .model.config import AggregationName, MatcherModelConfig
-from .schema import LocalCropStrategy
+from ..data.schema import LocalCropStrategy
+from ..model.config import AggregationName, MatcherModelConfig
+from .config import DataConfig, StageConfig
 
 
 _CANDIDATE_ENCODER_CONFIG_FIELDS = (

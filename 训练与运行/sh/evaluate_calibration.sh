@@ -18,4 +18,4 @@ export OPENBLAS_NUM_THREADS="${OPENBLAS_NUM_THREADS:-1}"
 export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-max_split_size_mb:256}"
 
 cd "${TASK_PROJECT_ROOT}"
-exec python -m matcher.calibration "$@"
+exec python -m matcher.evaluation.calibration "$@"

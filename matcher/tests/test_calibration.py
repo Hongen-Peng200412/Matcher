@@ -11,14 +11,14 @@ import pytest
 import torch
 from torch import nn
 
-from matcher import calibration as calibration_module
-from matcher.calibration import run_calibration
-from matcher.experiment_config import load_experiment_plan
-from matcher.json_artifacts import write_json
-from matcher.metrics import EvaluationAccumulator, EvaluationBatch
-from matcher.numeric import NumericBackendRecord
-from matcher.schema import SourceRoots
-from matcher.training import EvaluationResult
+from matcher.data.schema import SourceRoots
+from matcher.evaluation import calibration as calibration_module
+from matcher.evaluation.calibration import run_calibration
+from matcher.evaluation.metrics import EvaluationAccumulator, EvaluationBatch
+from matcher.training.config import load_experiment_plan
+from matcher.training.engine import EvaluationResult
+from matcher.training.numeric import NumericBackendRecord
+from matcher.utils.json_artifacts import write_json
 
 
 class _CalibrationDatasetStub:

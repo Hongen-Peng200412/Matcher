@@ -1,6 +1,6 @@
 """执行一个正式 YAML 计划，并在唯一运行目录内顺序训练全部阶段。
 
-``run_plan`` 是程序化主入口，``main`` 是 ``python -m matcher.experiment`` 命令入口。
+``run_plan`` 是程序化主入口，``main`` 是 ``python -m matcher.training.experiment`` 命令入口。
 运行目录固定为 ``plan.output_root / plan.plan_name / run_stamp``。
 ``run.json`` 保存计划路径、计划名、W&B 配置、运行时间戳、主机、Slurm 任务和 launch 信息。
 ``summary.json`` 复用 ``run.json`` 字段，并增加完成时间和各阶段 ``StageSummary``。
@@ -17,9 +17,9 @@ from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .experiment_config import load_experiment_plan, validate_run_stamp
-from .json_artifacts import write_json
-from .training import run_training_stage
+from ..utils.json_artifacts import write_json
+from .config import load_experiment_plan, validate_run_stamp
+from .engine import run_training_stage
 
 
 def run_plan(plan_path: Path) -> Path:

@@ -7,7 +7,7 @@ from pathlib import Path
 
 import numpy as np
 
-from matcher.schema import LANGUAGE_MODEL_NAMES, SourceRoots
+from matcher.data.schema import LANGUAGE_MODEL_NAMES, SourceRoots
 
 
 def build_synthetic_roots(root: Path) -> SourceRoots:

@@ -19,8 +19,7 @@ from typing import Any, Literal, cast
 import yaml  # type: ignore[import-untyped]
 
 from .losses import IdentityLossVariant, LossWeights
-from .model import MatcherModelConfig
-from .schema import (
+from ..data.schema import (
     IDENTITY_SCOPES,
     LANGUAGE_FAMILIES,
     LOCAL_CROP_STRATEGIES,
@@ -28,6 +27,7 @@ from .schema import (
     LocalCropStrategy,
     SourceRoots,
 )
+from ..model import MatcherModelConfig
 
 
 TaskName = Literal["candidate_pretrain", "full_matcher"]

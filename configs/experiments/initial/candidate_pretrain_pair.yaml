@@ -1,4 +1,4 @@
-# matcher.experiment_config.load_experiment_plan 读取本文件，matcher.experiment.run_plan 顺序执行 stages。
+# matcher.training.config.load_experiment_plan 读取本文件，matcher.training.experiment.run_plan 顺序执行 stages。
 # use_manual_features=false 不拼接12项模态统计；use_sampling_features=false 不拼接4项裁剪统计；use_candidate_token_attention_bias=false 不增加实体偏置。
 # 单张 A100 顺序运行两个相互独立的候选六分类实验；第二阶段不继承第一阶段参数。
 plan_name: candidate_pretrain_pair

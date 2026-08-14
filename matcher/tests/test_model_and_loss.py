@@ -7,11 +7,10 @@ from typing import cast
 import pytest
 import torch
 
-from matcher.batching import collate_candidates
-from matcher.candidate_data import CandidateDataset
-from matcher.contracts import CandidateBatch, CandidateItem
-from matcher.losses import IdentityLossVariant, LossWeights, MatcherLossBatch, compute_matcher_loss
-from matcher.manifest import build_manifest
+from matcher.data.manifest import build_manifest
+from matcher.datasets.batching import collate_candidates
+from matcher.datasets.candidate_data import CandidateDataset
+from matcher.datasets.contracts import CandidateBatch, CandidateItem
 from matcher.model import CandidateEncoder, ClosedSetMatcher, MatcherModelConfig
 from matcher.model.config import AggregationName
 from matcher.model.fusion import (
@@ -30,6 +29,7 @@ from matcher.model.ligand_matcher import (
     SelfExcludingInventoryAttention,
 )
 from matcher.model.raunet import RaUnetBackbone
+from matcher.training.losses import IdentityLossVariant, LossWeights, MatcherLossBatch, compute_matcher_loss
 
 from .factories import build_synthetic_roots
 

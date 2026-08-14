@@ -12,7 +12,7 @@ from typing import Literal, TypedDict
 import torch
 from torch.nn import functional as F
 
-from .schema import CLASS_NAMES, IdentityScope, identity_scope_class_indices
+from ..data.schema import CLASS_NAMES, IdentityScope, identity_scope_class_indices
 
 
 IdentityLossVariant = Literal["oracle", "detached", "joint"]

@@ -17,4 +17,4 @@ export MKL_NUM_THREADS=1
 export OPENBLAS_NUM_THREADS=1
 
 cd "${TASK_PROJECT_ROOT}"
-exec python -m matcher.manifest "$@"
+exec python -m matcher.data.manifest "$@"

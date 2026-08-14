@@ -15,9 +15,9 @@ from typing import TypedDict
 
 import numpy as np
 
-from .cache import ByteBudgetLru
+from ..utils.cache import ByteBudgetLru
 from .geometry import resolve_candidate_crop, voxel_zyx_to_crop_centered_world
-from .locking import exclusive_file_lock
+from ..utils.locking import exclusive_file_lock
 from .schema import (
     LOCAL_BOX_SIZE,
     LOCAL_CROP_STRATEGIES,

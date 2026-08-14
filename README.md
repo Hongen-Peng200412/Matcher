@@ -15,7 +15,12 @@
 
 ## 目录
 
-- `matcher/`：冻结清单、Dataset、批处理、105 通道体素缓存、RAUNet、四模态候选聚合、闭集身份模型、损失、指标、正式训练与保留集评估入口。
+- `matcher/data/`：Stage1 与 A–G 来源适配、标签、候选几何、冻结清单、105 通道体素缓存和 PP token 缓存。
+- `matcher/datasets/`：`CandidateDataset`、样本与批次字段、全局随机采样器、批量合并和 `DataLoader` 构造。
+- `matcher/model/`：RAUNet、A/P/V/PP 四模态候选聚合、候选辅助头和闭集身份模型。
+- `matcher/training/`：实验配置、损失、候选预训练初始化、checkpoint、W&B online 追踪、阶段训练和实验计划入口。
+- `matcher/evaluation/`：validation/calibration 共用指标、validation 选模分数和一次性 calibration 编排。
+- `matcher/utils/`：不决定科学语义的进程内缓存、严格 JSON 写入和跨进程文件锁。
 - `matcher/tests/`：数据、空模态、模型与监督、global-batch 等价、指标、配置、checkpoint 和产物边界回归测试。
 - `configs/experiments/initial/`：第 0 批七个自包含 YAML；一项 A100 顺序运行两个候选六分类阶段，另外六项定义两种语言表示和三种身份损失。
 - `configs/experiments/batch1/`：第 1 批三个自包含 YAML；固定 SMI-TED、mean/max、五类非背景身份与手动特征，只比较 oracle/detached/joint。

@@ -14,19 +14,17 @@ from typing import Any, cast
 import numpy as np
 from torch.utils.data import Dataset
 
-from .cache import ByteBudgetLru
-from .contracts import CandidateItem, CandidateMetadata
-from .geometry import (
+from ..data.geometry import (
     candidate_sampling_features,
     keep_local_48_at,
     local_xyz_to_crop_centered_world,
     resolve_candidate_crop,
     voxel_zyx_to_crop_centered_world,
 )
-from .ligand_graph import LigandGraphStore
-from .manifest import load_jsonl
-from .pp_input import PpCandidateInput, PpInputStore
-from .schema import (
+from ..data.ligand_graph import LigandGraphStore
+from ..data.manifest import load_jsonl
+from ..data.pp_input import PpCandidateInput, PpInputStore
+from ..data.schema import (
     CLASS_NAMES,
     A_TOKEN_DIM,
     BOX_ORIGIN_ABSOLUTE_TOLERANCE_ANGSTROM,
@@ -44,7 +42,9 @@ from .schema import (
     LocalCropStrategy,
     identity_scope_class_indices,
 )
-from .voxel_input import VoxelInputStore
+from ..data.voxel_input import VoxelInputStore
+from ..utils.cache import ByteBudgetLru
+from .contracts import CandidateItem, CandidateMetadata
 
 
 TASK_NAMES = ("candidate_pretrain", "full_matcher")

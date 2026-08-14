@@ -1,6 +1,6 @@
 """在 validation 选定方案后，对一个 BEST checkpoint 执行一次 calibration 评估。
 
-``run_calibration`` 是编程入口，``main`` 是 ``python -m matcher.calibration`` 命令入口。
+``run_calibration`` 是编程入口，``main`` 是 ``python -m matcher.evaluation.calibration`` 命令入口。
 入口只读取 calibration 清单，不训练、不更新 checkpoint，也不计算新的选模分数。
 评估输出是调用方指定的严格 JSON 文件；数据根还会保存按 calibration 数据指纹命名的
 一次性 claim 和空互斥锁文件。claim 的 ``status`` 才是完成状态，锁文件没有科学语义。
@@ -25,26 +25,26 @@ from typing import Any, Literal, NoReturn, TypedDict, cast
 
 import torch
 
-from .batching import (
+from ..data.manifest import require_manifest
+from ..data.schema import LocalCropStrategy
+from ..datasets.batching import (
     DATALOADER_MULTIPROCESSING_CONTEXT,
     ShuffledBatchSampler,
     build_candidate_loader,
 )
-from .candidate_data import CandidateDataset
-from .checkpointing import load_checkpoint
-from .experiment_config import (
+from ..datasets.candidate_data import CandidateDataset
+from ..model import CandidateEncoder, ClosedSetMatcher, MatcherModelConfig
+from ..training.checkpointing import load_checkpoint
+from ..training.config import (
     ExperimentPlan,
     StageConfig,
     load_experiment_plan,
     validate_matcher_output_path,
 )
-from .json_artifacts import write_json
-from .locking import exclusive_file_lock
-from .manifest import require_manifest
-from .model import CandidateEncoder, ClosedSetMatcher, MatcherModelConfig
-from .numeric import NumericBackendRecord, configure_random_seeds_and_numeric_backend
-from .schema import LocalCropStrategy
-from .training import EvaluationResult, evaluate_model
+from ..training.engine import EvaluationResult, evaluate_model
+from ..training.numeric import NumericBackendRecord, configure_random_seeds_and_numeric_backend
+from ..utils.json_artifacts import write_json
+from ..utils.locking import exclusive_file_lock
 
 
 CALIBRATION_SCHEMA_VERSION = 2

@@ -14,38 +14,40 @@ import torch
 import yaml  # type: ignore[import-untyped]
 from torch import nn
 
-from matcher import experiment, tracking as tracking_module, training as training_module
-from matcher.batching import collate_candidates
-from matcher.calibration import (
+from matcher.data.schema import CLASS_TO_INDEX, SMALL_MOLECULE_INDEX
+from matcher.datasets.batching import collate_candidates
+from matcher.evaluation.calibration import (
     CalibrationCheckpointEvidence,
     _calibration_data_evidence,
     _claim_calibration,
     _select_stage,
     _validate_checkpoint_for_stage,
 )
-from matcher.checkpointing import (
+from matcher.evaluation.metrics import EvaluationAccumulator, EvaluationBatch, selection_score
+from matcher.training import engine as training_module
+from matcher.training import experiment
+from matcher.training import tracking as tracking_module
+from matcher.training.checkpointing import (
     CHECKPOINT_SCHEMA_VERSION,
     load_candidate_encoder_checkpoint,
     load_checkpoint,
     save_checkpoint,
 )
-from matcher.experiment_config import (
+from matcher.training.config import (
     DataConfig,
     StageConfig,
     TrackingConfig,
     load_experiment_plan,
     validate_matcher_output_path,
 )
-from matcher.json_artifacts import append_jsonl, write_json
-from matcher.losses import LossOutput, LossWeights, MatcherLossBatch, compute_matcher_loss
-from matcher.metrics import EvaluationAccumulator, EvaluationBatch, selection_score
-from matcher.schema import CLASS_TO_INDEX, SMALL_MOLECULE_INDEX
-from matcher.training import (
+from matcher.training.engine import (
     _LossStatistics,
     StageSummary,
     _accumulation_backward_loss,
     _resolve_initial_checkpoint,
 )
+from matcher.training.losses import LossOutput, LossWeights, MatcherLossBatch, compute_matcher_loss
+from matcher.utils.json_artifacts import append_jsonl, write_json
 
 from .factories import build_synthetic_roots
 

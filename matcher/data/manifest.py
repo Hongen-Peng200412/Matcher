@@ -25,7 +25,7 @@ from typing import Any, Iterable
 import numpy as np
 
 from .labels import OccurrenceMask, assign_candidate_target
-from .locking import exclusive_file_lock
+from ..utils.locking import exclusive_file_lock
 from .schema import (
     CLASS_NAMES,
     CLASS_TO_INDEX,
