@@ -123,6 +123,26 @@ def _write_language_outputs(data_root: Path, pdb_id: str) -> None:
     """写入两套语言模型的有效/缺失 occurrence 组合。"""
 
     language_root = data_root / "stage1_preparation_box_pool_2/ligand_language_models"
+    prepared_directory = language_root / "prepared" / pdb_id
+    prepared_directory.mkdir(parents=True)
+    prepared_records = [
+        {
+            "pdb_id": pdb_id,
+            "candidate_id": candidate_id,
+            "object_key": "CCD:LIG",
+            "kind": "CCD",
+            "type_tag": "small_molecule",
+            "is_covalent": False,
+            "smiles": "CC",
+            "smiles_source": "ccd",
+            "diagnostics": {},
+        }
+        for candidate_id in (0, 1)
+    ]
+    (prepared_directory / "prepared_smiles.jsonl").write_text(
+        "".join(json.dumps(record) + "\n" for record in prepared_records),
+        encoding="utf-8",
+    )
     for family, candidate_ids in (("molformer", (0, 1)), ("smi_ted_289m", (1,))):
         directory = language_root / family / pdb_id
         directory.mkdir(parents=True)
@@ -133,6 +153,7 @@ def _write_language_outputs(data_root: Path, pdb_id: str) -> None:
                 candidate_id=np.asarray(candidate_id, dtype=np.int32),
                 object_key=np.asarray("CCD:LIG"),
                 model_name=np.asarray(LANGUAGE_MODEL_NAMES[family]),
+                prepared_smiles=np.asarray("CC"),
                 model_smiles=np.asarray("CC" if candidate_id == 0 else "C=C"),
                 embedding=np.full(768, candidate_id + 1, dtype=np.float32),
             )

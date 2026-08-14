@@ -19,7 +19,14 @@ from matcher.data.geometry import (
 )
 from matcher.data.labels import OccurrenceMask, assign_candidate_target
 from matcher.data.ligand_graph import LigandGraphStore
-from matcher.data.manifest import build_manifest, ensure_manifest, load_jsonl, require_manifest
+from matcher.data.manifest import (
+    _annotate_seen,
+    _validate_joint_identity_classes,
+    build_manifest,
+    ensure_manifest,
+    load_jsonl,
+    require_manifest,
+)
 from matcher.data.pp_input import _build_pp_tokens
 from matcher.data.precompute import precompute_inputs
 from matcher.data.schema import LocalCropStrategy, SourceRoots
@@ -31,6 +38,39 @@ from matcher.utils import locking
 from matcher.utils.cache import ByteBudgetLru
 
 from .factories import build_synthetic_roots
+
+
+def _replace_prepared_smiles(
+    roots: SourceRoots,
+    values_by_candidate: dict[int, str | None],
+) -> None:
+    """替换合成 PDB 的顶层 PreparedLigand.smiles，不改动其它来源字段。"""
+
+    path = roots.language_root / "prepared/1abc/prepared_smiles.jsonl"
+    records = load_jsonl(path)
+    for record in records:
+        candidate_id = int(record["candidate_id"])
+        if candidate_id in values_by_candidate:
+            record["smiles"] = values_by_candidate[candidate_id]
+    path.write_text(
+        "".join(json.dumps(record) + "\n" for record in records),
+        encoding="utf-8",
+    )
+
+
+def _replace_language_prepared_smiles(
+    roots: SourceRoots,
+    family: str,
+    candidate_id: int,
+    prepared_smiles: str,
+) -> None:
+    """替换一个合成语言 NPZ 的 public API 输入字符串并保留向量。"""
+
+    path = roots.language_root / family / "1abc" / f"candidate_{candidate_id}.npz"
+    with np.load(path, allow_pickle=False) as archive:
+        values = {name: np.asarray(archive[name]).copy() for name in archive.files}
+    values["prepared_smiles"] = np.asarray(prepared_smiles)
+    np.savez(path, **values)
 
 
 def test_read_only_manifest_entry_never_builds_missing_files(tmp_path: Path) -> None:
@@ -46,6 +86,102 @@ def test_read_only_manifest_entry_never_builds_missing_files(tmp_path: Path) -> 
             required_splits=("calibration",),
         )
     assert not roots.manifest_root.exists()
+
+
+@pytest.mark.parametrize(
+    ("field_name", "invalid_value", "expected_error"),
+    (
+        ("schema_version", 3, "schema_version"),
+        ("identity_key_fields", ["object_key"], "联合身份字段顺序"),
+    ),
+)
+def test_dataset_requires_explicit_v4_joint_identity_contract(
+    tmp_path: Path,
+    field_name: str,
+    invalid_value: object,
+    expected_error: str,
+) -> None:
+    """Dataset 不得把 v3 或字段不完整的清单静默解释为联合身份。"""
+
+    roots = build_synthetic_roots(tmp_path)
+    manifest_path = build_manifest(roots, 0.30, 3407, ("train", "validation"))
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest[field_name] = invalid_value
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    with pytest.raises(ValueError, match=expected_error):
+        CandidateDataset(
+            roots=roots,
+            manifest_path=manifest_path,
+            split_name="train",
+            task_name="candidate_pretrain",
+            language_family=None,
+            identity_scope=None,
+            pp_top_k=4,
+            local_crop_strategy="fixed_center",
+        )
+
+
+@pytest.mark.parametrize(
+    ("field_name", "invalid_value", "expected_error"),
+    (
+        ("prepared_smiles", None, "prepared_smiles 必须是非空字符串"),
+        ("prepared_smiles", 7, "prepared_smiles 必须是非空字符串"),
+        ("object_key", 7, "object_key 必须是非空字符串"),
+        ("class_index", 5, "class_index 与 class_name 不一致"),
+    ),
+)
+def test_dataset_rejects_invalid_joint_identity_fields(
+    tmp_path: Path,
+    field_name: str,
+    invalid_value: object,
+    expected_error: str,
+) -> None:
+    """身份 JSONL 的联合键与类别字段不得通过 str/int 强制转换迁移。"""
+
+    roots = build_synthetic_roots(tmp_path)
+    manifest_path = build_manifest(roots, 0.30, 3407, ("train", "validation"))
+    identity_path = manifest_path.parent / "train_identities.jsonl"
+    identities = load_jsonl(identity_path)
+    identities[0][field_name] = invalid_value
+    identity_path.write_text(
+        "".join(json.dumps(identity) + "\n" for identity in identities),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match=expected_error):
+        CandidateDataset(
+            roots=roots,
+            manifest_path=manifest_path,
+            split_name="train",
+            task_name="candidate_pretrain",
+            language_family=None,
+            identity_scope=None,
+            pp_top_k=4,
+            local_crop_strategy="fixed_center",
+        )
+
+
+def test_dataset_rejects_duplicate_joint_identity_records(tmp_path: Path) -> None:
+    """同一 PDB 的重复联合身份不得形成两个清单槽。"""
+
+    roots = build_synthetic_roots(tmp_path)
+    manifest_path = build_manifest(roots, 0.30, 3407, ("train", "validation"))
+    identity_path = manifest_path.parent / "train_identities.jsonl"
+    identities = load_jsonl(identity_path)
+    identity_path.write_text(
+        "".join(json.dumps(identity) + "\n" for identity in identities + identities),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="既有联合身份重复"):
+        CandidateDataset(
+            roots=roots,
+            manifest_path=manifest_path,
+            split_name="train",
+            task_name="candidate_pretrain",
+            language_family=None,
+            identity_scope=None,
+            pp_top_k=4,
+            local_crop_strategy="fixed_center",
+        )
 
 
 def test_bidirectional_coverage_uses_score_then_occurrence_id() -> None:
@@ -261,6 +397,8 @@ def test_manifest_and_dataset_keep_pdb_but_drop_missing_smi_occurrence(tmp_path)
     identities = load_jsonl(manifest_path.parent / "train_identities.jsonl")
     candidates = load_jsonl(manifest_path.parent / "train_candidates.jsonl")
     smi = identities[0]["language"]["smi_ted_289m"]
+    assert identities[0]["prepared_smiles"] == "CC"
+    assert identities[0]["language"]["molformer"]["selected_candidate_id"] == 0
     assert smi["selected_candidate_id"] == 1
     assert smi["valid_candidate_ids"] == [1]
     assert smi["failed_occurrences"] == [{"candidate_id": 0, "reason": "missing_file"}]
@@ -272,6 +410,8 @@ def test_manifest_and_dataset_keep_pdb_but_drop_missing_smi_occurrence(tmp_path)
         "molformer": True,
         "smi_ted_289m": True,
     }
+    assert candidates[0]["matched_prepared_smiles"] == "CC"
+    assert candidates[0]["matched_prepared_smiles_status"] == "available"
 
     dataset = CandidateDataset(
         roots=SourceRoots(roots.data_root, roots.stage1_root, roots.output_root),
@@ -294,7 +434,9 @@ def test_manifest_and_dataset_keep_pdb_but_drop_missing_smi_occurrence(tmp_path)
     assert item["a_tokens"].shape == (1, 229)
     assert item["pp_tokens"].shape == (4, 4)
     assert item["identity_object_keys"] == ["CCD:LIG"]
+    assert item["identity_prepared_smiles"] == ["CC"]
     assert item["identity_target"] == 0
+    assert item["metadata"]["matched_prepared_smiles"] == "CC"
     assert item["metadata"]["identity_seen_in_train"] is True
     assert item["language_embeddings"].shape == (1, 768)
     assert item["ligand_area_target"][24, 24, 24]
@@ -306,8 +448,332 @@ def test_manifest_and_dataset_keep_pdb_but_drop_missing_smi_occurrence(tmp_path)
     assert batch["voxel_input"].shape == (1, 105, 48, 48, 48)
     assert batch["identity_mask"].tolist() == [[True]]
     assert batch["identity_class_index"].tolist() == [[4]]
+    assert batch["identity_prepared_smiles"] == [["CC"]]
     assert batch["graph_edge_index"].shape == (2, 2)
     assert batch["graph_edge_features"][:, -1].tolist() == pytest.approx([0.15, 0.15])
+
+
+def test_joint_identity_splits_same_object_key_by_exact_prepared_smiles(tmp_path) -> None:
+    """同一模板的两个顶层 SMILES 必须成为两个身份槽并读取各自 occurrence 向量。"""
+
+    roots = build_synthetic_roots(tmp_path)
+    _replace_prepared_smiles(roots, {0: "CC", 1: "C=C"})
+    _replace_language_prepared_smiles(roots, "molformer", 1, "C=C")
+    _replace_language_prepared_smiles(roots, "smi_ted_289m", 1, "C=C")
+    manifest_path = build_manifest(roots, 0.30, 3407, ("train", "validation"))
+
+    identities = load_jsonl(manifest_path.parent / "train_identities.jsonl")
+    assert [(item["object_key"], item["prepared_smiles"]) for item in identities] == [
+        ("CCD:LIG", "C=C"),
+        ("CCD:LIG", "CC"),
+    ]
+    item = CandidateDataset(
+        roots=roots,
+        manifest_path=manifest_path,
+        split_name="train",
+        task_name="full_matcher",
+        language_family="molformer",
+        identity_scope="small_molecule",
+        pp_top_k=4,
+        local_crop_strategy="fixed_center",
+    )[0]
+    assert item["identity_object_keys"] == ["CCD:LIG", "CCD:LIG"]
+    assert item["identity_prepared_smiles"] == ["C=C", "CC"]
+    assert item["identity_target"] == 1
+    np.testing.assert_array_equal(item["language_embeddings"][:, 0], [2.0, 1.0])
+    assert len(item["ligand_graphs"]) == 2
+    np.testing.assert_array_equal(
+        item["ligand_graphs"][0].node_continuous,
+        item["ligand_graphs"][1].node_continuous,
+    )
+    batch = collate_candidates([cast(CandidateItem, item)])
+    assert batch["graph_to_sample"].tolist() == [0, 0]
+    assert batch["graph_to_identity"].tolist() == [0, 1]
+
+
+def test_manifest_preserves_valid_unsupported_prepared_kind(tmp_path: Path) -> None:
+    """非标准 kind 的合法 unsupported/null 记录必须保留候选并关闭该身份目标。"""
+
+    roots = build_synthetic_roots(tmp_path)
+    prepared_path = roots.language_root / "prepared/1abc/prepared_smiles.jsonl"
+    records = load_jsonl(prepared_path)
+    records[0]["kind"] = "OTHER_KIND"
+    records[0]["smiles"] = None
+    records[0]["smiles_source"] = "unsupported"
+    prepared_path.write_text(
+        "".join(json.dumps(record) + "\n" for record in records),
+        encoding="utf-8",
+    )
+    manifest_path = build_manifest(roots, 0.30, 3407, ("train", "validation"))
+    candidate = load_jsonl(manifest_path.parent / "train_candidates.jsonl")[0]
+    assert candidate["class_name"] == "small_molecule"
+    assert candidate["matched_prepared_smiles_status"] == "explicit_null"
+    assert candidate["language_target_available"] == {
+        "molformer": False,
+        "smi_ted_289m": False,
+    }
+
+
+def test_joint_identity_selector_keeps_v3_salt(tmp_path: Path) -> None:
+    """未拆分身份必须沿用不含 PreparedLigand.smiles 的 v3 selector salt。"""
+
+    roots = build_synthetic_roots(tmp_path)
+    _replace_prepared_smiles(roots, {0: "CCC", 1: "CCC"})
+    for candidate_id in (0, 1):
+        _replace_language_prepared_smiles(roots, "molformer", candidate_id, "CCC")
+    manifest_path = build_manifest(roots, 0.30, 3407, ("train", "validation"))
+    identity = load_jsonl(manifest_path.parent / "train_identities.jsonl")[0]
+    selected_candidate_id = identity["language"]["molformer"]["selected_candidate_id"]
+
+    def selector_index(text: str) -> int:
+        weighted_bytes = sum(
+            (position + 1) * byte
+            for position, byte in enumerate(text.encode("utf-8"))
+        )
+        return (3407 + weighted_bytes) % 2
+
+    v3_index = selector_index("1abc|CCD:LIG|molformer")
+    wrong_v4_index = selector_index("1abc|CCD:LIG|CCC|molformer")
+    assert v3_index == 0
+    assert wrong_v4_index == 1
+    assert selected_candidate_id == v3_index
+
+
+def test_joint_seen_does_not_cross_prepared_smiles() -> None:
+    """同一 object_key 的不同顶层字符串不得跨 train/validation 继承 seen。"""
+
+    availability = {"molformer": True, "smi_ted_289m": True}
+    split_candidates = {
+        "train": [
+            {
+                "class_name": "small_molecule",
+                "matched_object_key": "CCD:LIG",
+                "matched_prepared_smiles": "CC",
+                "language_target_available": availability,
+            }
+        ],
+        "validation": [
+            {
+                "class_name": "small_molecule",
+                "matched_object_key": "CCD:LIG",
+                "matched_prepared_smiles": "C=C",
+                "language_target_available": availability,
+            },
+            {
+                "class_name": "small_molecule",
+                "matched_object_key": "CCD:LIG",
+                "matched_prepared_smiles": "CC",
+                "language_target_available": availability,
+            },
+        ],
+    }
+    split_identities = {
+        "train": [{"object_key": "CCD:LIG", "prepared_smiles": "CC"}],
+        "validation": [
+            {"object_key": "CCD:LIG", "prepared_smiles": "C=C"},
+            {"object_key": "CCD:LIG", "prepared_smiles": "CC"},
+        ],
+    }
+    _annotate_seen(split_candidates, split_identities)
+    assert split_candidates["validation"][0]["identity_seen_in_train_by_language"] == {
+        "molformer": False,
+        "smi_ted_289m": False,
+    }
+    assert split_candidates["validation"][1]["identity_seen_in_train_by_language"] == {
+        "molformer": True,
+        "smi_ted_289m": True,
+    }
+
+
+def test_null_prepared_smiles_never_borrows_same_object_identity(tmp_path) -> None:
+    """命中显式 null occurrence 时保留分类样本，但不得借用同模板的非空身份。"""
+
+    roots = build_synthetic_roots(tmp_path)
+    _replace_prepared_smiles(roots, {0: None})
+    manifest_path = build_manifest(roots, 0.30, 3407, ("train", "validation"))
+    candidate = load_jsonl(manifest_path.parent / "train_candidates.jsonl")[0]
+    assert candidate["class_name"] == "small_molecule"
+    assert candidate["matched_prepared_smiles"] is None
+    assert candidate["matched_prepared_smiles_status"] == "explicit_null"
+    assert candidate["language_target_available"] == {
+        "molformer": False,
+        "smi_ted_289m": False,
+    }
+
+    item = CandidateDataset(
+        roots=roots,
+        manifest_path=manifest_path,
+        split_name="train",
+        task_name="full_matcher",
+        language_family="molformer",
+        identity_scope="small_molecule",
+        pp_top_k=4,
+        local_crop_strategy="fixed_center",
+    )[0]
+    assert item["class_target"] == 4
+    assert item["identity_prepared_smiles"] == ["CC"]
+    assert item["identity_target"] == -1
+
+
+def test_all_null_prepared_smiles_produces_no_identity_slots(tmp_path) -> None:
+    """PDB 内所有顶层 SMILES 均为 null 时仍保留候选并返回空身份轴。"""
+
+    roots = build_synthetic_roots(tmp_path)
+    _replace_prepared_smiles(roots, {0: None, 1: None})
+    manifest_path = build_manifest(roots, 0.30, 3407, ("train", "validation"))
+    assert load_jsonl(manifest_path.parent / "train_identities.jsonl") == []
+    item = CandidateDataset(
+        roots=roots,
+        manifest_path=manifest_path,
+        split_name="train",
+        task_name="full_matcher",
+        language_family="molformer",
+        identity_scope="small_molecule",
+        pp_top_k=4,
+        local_crop_strategy="fixed_center",
+    )[0]
+    assert item["class_target"] == 4
+    assert item["identity_object_keys"] == []
+    assert item["identity_prepared_smiles"] == []
+    assert item["identity_target"] == -1
+
+
+def test_missing_prepared_file_is_distinct_from_explicit_null(tmp_path) -> None:
+    """缺失 PreparedLigand 文件时保留候选，并用独立状态关闭身份监督。"""
+
+    roots = build_synthetic_roots(tmp_path)
+    (roots.language_root / "prepared/1abc/prepared_smiles.jsonl").unlink()
+    manifest_path = build_manifest(roots, 0.30, 3407, ("train", "validation"))
+    candidate = load_jsonl(manifest_path.parent / "train_candidates.jsonl")[0]
+    assert candidate["matched_prepared_smiles"] is None
+    assert candidate["matched_prepared_smiles_status"] == "missing_file"
+    assert load_jsonl(manifest_path.parent / "train_identities.jsonl") == []
+
+
+def test_language_archive_must_match_joint_prepared_smiles(tmp_path) -> None:
+    """语言 NPZ 的 prepared_smiles 不一致时不得跨联合身份借用该向量。"""
+
+    roots = build_synthetic_roots(tmp_path)
+    _replace_prepared_smiles(roots, {0: "C=C", 1: "CC"})
+    manifest_path = build_manifest(roots, 0.30, 3407, ("train", "validation"))
+    identities = load_jsonl(manifest_path.parent / "train_identities.jsonl")
+    split_identity = next(item for item in identities if item["prepared_smiles"] == "C=C")
+    assert split_identity["language"]["molformer"]["available"] is False
+    assert split_identity["language"]["molformer"]["failed_occurrences"][0][
+        "reason"
+    ] == "invalid_archive"
+    assert split_identity["language"]["smi_ted_289m"]["available"] is False
+    assert split_identity["language"]["smi_ted_289m"]["failed_occurrences"][0][
+        "reason"
+    ] == "missing_file"
+    candidate = load_jsonl(manifest_path.parent / "train_candidates.jsonl")[0]
+    assert candidate["language_target_available"] == {
+        "molformer": False,
+        "smi_ted_289m": False,
+    }
+
+
+def test_manifest_rejects_non_string_language_prepared_smiles(tmp_path: Path) -> None:
+    """语言 NPZ 的 prepared_smiles 非字符串时必须记为无效归档，不能字符串化。"""
+
+    roots = build_synthetic_roots(tmp_path)
+    path = roots.language_root / "molformer/1abc/candidate_0.npz"
+    with np.load(path, allow_pickle=False) as archive:
+        values = {name: np.asarray(archive[name]).copy() for name in archive.files}
+    values["prepared_smiles"] = np.asarray(7, dtype=np.int64)
+    np.savez(path, **values)
+    manifest_path = build_manifest(roots, 0.30, 3407, ("train", "validation"))
+    identity = load_jsonl(manifest_path.parent / "train_identities.jsonl")[0]
+    evidence = identity["language"]["molformer"]
+    assert evidence["valid_candidate_ids"] == [1]
+    assert evidence["failed_occurrences"][0]["candidate_id"] == 0
+    assert evidence["failed_occurrences"][0]["reason"] == "invalid_archive"
+    assert "Unicode 标量字符串" in evidence["failed_occurrences"][0]["detail"]
+
+
+def test_dataset_rechecks_language_prepared_smiles_scalar_type(tmp_path: Path) -> None:
+    """清单发布后归档类型漂移时，Dataset 二次读取必须失败关闭。"""
+
+    roots = build_synthetic_roots(tmp_path)
+    manifest_path = build_manifest(roots, 0.30, 3407, ("train", "validation"))
+    path = roots.language_root / "molformer/1abc/candidate_0.npz"
+    with np.load(path, allow_pickle=False) as archive:
+        values = {name: np.asarray(archive[name]).copy() for name in archive.files}
+    values["prepared_smiles"] = np.asarray(7, dtype=np.int64)
+    np.savez(path, **values)
+    dataset = CandidateDataset(
+        roots=roots,
+        manifest_path=manifest_path,
+        split_name="train",
+        task_name="full_matcher",
+        language_family="molformer",
+        identity_scope="small_molecule",
+        pp_top_k=4,
+        local_crop_strategy="fixed_center",
+    )
+    with pytest.raises(ValueError, match="prepared_smiles 必须是非空 Unicode 标量字符串"):
+        dataset[0]
+
+
+def test_joint_identity_rejects_cross_split_class_drift() -> None:
+    """同一联合身份跨 PDB 或划分映射到多个类别时必须失败关闭。"""
+
+    with pytest.raises(ValueError, match="联合身份跨 PDB 或划分类别不一致"):
+        _validate_joint_identity_classes(
+            {
+                "train": [
+                    {
+                        "pdb_id": "1abc",
+                        "object_key": "CCD:LIG",
+                        "prepared_smiles": "CC",
+                        "class_name": "small_molecule",
+                        "class_index": 4,
+                    }
+                ],
+                "validation": [
+                    {
+                        "pdb_id": "2def",
+                        "object_key": "CCD:LIG",
+                        "prepared_smiles": "CC",
+                        "class_name": "sugar",
+                        "class_index": 5,
+                    }
+                ],
+            }
+        )
+
+
+@pytest.mark.parametrize(
+    ("field_name", "invalid_value", "message"),
+    (
+        ("object_key", 7, "object_key 必须是非空字符串"),
+        ("prepared_smiles", 7, "prepared_smiles 必须是非空字符串"),
+        ("class_name", 7, "class_name 必须属于五类非背景类别"),
+        ("class_index", "4", "class_index 与 class_name 不一致"),
+    ),
+)
+def test_manifest_extension_rejects_invalid_persisted_identity_types(
+    tmp_path: Path,
+    field_name: str,
+    invalid_value: object,
+    message: str,
+) -> None:
+    """扩展既有 v4 时必须拒绝身份 JSONL 类型漂移，不得隐式迁移后重发。"""
+
+    roots = build_synthetic_roots(tmp_path)
+    manifest_path = build_manifest(roots, 0.30, 3407, ("train",))
+    identity_path = manifest_path.parent / "train_identities.jsonl"
+    identities = load_jsonl(identity_path)
+    identities[0][field_name] = invalid_value
+    identity_path.write_text(
+        "".join(json.dumps(record) + "\n" for record in identities),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match=message):
+        ensure_manifest(roots, 0.30, 3407, ("train", "validation"))
+    assert not (manifest_path.parent / "validation_candidates.jsonl").exists()
+    assert not (manifest_path.parent / "validation_identities.jsonl").exists()
 
 
 @pytest.mark.parametrize(
@@ -371,7 +837,7 @@ def test_dataset_rejects_stage1_probability_outside_unit_interval(
     assert list(sampler) == [[0]]
 
 
-def test_manifest_v3_scope_distinguishes_small_from_multiple_foreground_classes(tmp_path) -> None:
+def test_manifest_v4_scope_distinguishes_small_from_multiple_foreground_classes(tmp_path) -> None:
     """合成 ion 与 small_molecule 后，两种身份范围读取不同身份轴。"""
 
     roots = build_synthetic_roots(tmp_path)
@@ -387,6 +853,25 @@ def test_manifest_v3_scope_distinguishes_small_from_multiple_foreground_classes(
     )
     occurrence_path.write_text(
         "".join(json.dumps(item) + "\n" for item in occurrences),
+        encoding="utf-8",
+    )
+    prepared_path = roots.language_root / "prepared/1abc/prepared_smiles.jsonl"
+    prepared_records = load_jsonl(prepared_path)
+    prepared_records.append(
+        {
+            "pdb_id": "1abc",
+            "candidate_id": 2,
+            "object_key": "ION:ZN",
+            "kind": "CCD",
+            "type_tag": "ion",
+            "is_covalent": False,
+            "smiles": "CC",
+            "smiles_source": "ccd",
+            "diagnostics": {},
+        }
+    )
+    prepared_path.write_text(
+        "".join(json.dumps(item) + "\n" for item in prepared_records),
         encoding="utf-8",
     )
     ligand_area_path = roots.data_root / "density/1abc/ligand_area.npz"
@@ -407,6 +892,7 @@ def test_manifest_v3_scope_distinguishes_small_from_multiple_foreground_classes(
             language = {name: np.asarray(archive[name]).copy() for name in archive.files}
         language["candidate_id"] = np.asarray(2, dtype=np.int32)
         language["object_key"] = np.asarray("ION:ZN")
+        language["prepared_smiles"] = np.asarray("CC")
         np.savez(reference_path.parent / "candidate_2.npz", **language)
 
     manifest_path = build_manifest(
@@ -432,6 +918,7 @@ def test_manifest_v3_scope_distinguishes_small_from_multiple_foreground_classes(
     )[0]
     assert all_foreground["identity_class_index"].tolist() == [1, 4]
     assert all_foreground["identity_object_keys"] == ["ION:ZN", "CCD:LIG"]
+    assert all_foreground["identity_prepared_smiles"] == ["CC", "CC"]
     assert all_foreground["identity_target"] == 1
 
     small_only = CandidateDataset(
