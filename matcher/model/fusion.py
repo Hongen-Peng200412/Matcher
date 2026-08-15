@@ -1,7 +1,7 @@
-"""编码 A/P/V/PP 原始 token，并以两种聚合器返回 ``(B,D_m)`` 候选表示。
+"""编码 A/P/V/PP 原始 token，并以三种聚合路径返回 (B,D_m) 候选表示。
 
-符号 ``B/N/F/D_m/C_v/K`` 分别表示批次、token 数、原特征宽度、模型宽度、
-体素特征通道和注意力头数；``Z/Y/X`` 表示三个体素空间轴。
+符号 B/N/F/D_m/C_v/K 分别表示批次、token 数、原特征宽度、模型宽度、
+体素特征通道和注意力头数；Z/Y/X 表示三个体素空间轴。
 """
 
 from __future__ import annotations
@@ -539,3 +539,114 @@ class CandidateConditionedAggregator(nn.Module):
             if grouped_manual is not None:
                 summaries.append(grouped_manual[:, modality_index, :])
         return self.fusion(torch.cat(summaries, dim=-1))
+
+
+class MeanMaxCandidateConditionedResidualAggregator(nn.Module):
+    """把两种完整候选摘要拼接为零输出残差，并保留 mean/max 主路径。
+
+    - model_dim: 候选摘要宽度 D_m。
+    - head_count: 候选条件注意力的头数 K。
+    - dropout: 两个既有聚合器和残差多层感知机的丢弃概率。
+    - include_manual: 是否让两个既有聚合器分别使用 12 项手动统计。
+    - include_sampling: 是否让两个既有聚合器分别使用 4 项采样统计。
+    - candidate_summary: 浮点 (B,D_m) U-Net 候选查询。
+    - modalities: 含 a、p、v、pp 四个键；每个值是投影 token 与有效性掩码组成的二元组。
+    - modalities[a]: 浮点 (B,N_A,D_m) 原子 token 与 bool (B,N_A) 掩码。
+    - modalities[p]: 浮点 (B,N_P,D_m) P 模态 token 与 bool (B,N_P) 掩码。
+    - modalities[v]: 浮点 (B,N_V,D_m) 体素 token 与 bool (B,N_V) 掩码。
+    - modalities[pp]: 浮点 (B,N_PP,D_m) 概率图 token 与 bool (B,N_PP) 掩码。
+    - manual_features: 与 include_manual 一致的可选浮点 (B,12) 统计。
+    - sampling_features: 与 include_sampling 一致的可选浮点 (B,4) 统计。
+    - attention_bias_features: 必须为 None；本结构不启用 token 注意力偏置。
+    - 返回值: 浮点 (B,D_m) 候选表示。残差末层为零时逐值等于 mean/max 输出。
+
+    - statistics_reuse: mean_max 和 conditioned 分别读取同一手动统计与采样统计；两个 D_m 维输出只在残差入口拼接一次，不会第三次追加原始统计。
+    """
+
+    def __init__(
+        self,
+        model_dim: int,
+        head_count: int,
+        dropout: float,
+        include_manual: bool,
+        include_sampling: bool,
+    ) -> None:
+        super().__init__()
+        self.mean_max = MeanMaxAggregator(
+            model_dim,
+            dropout,
+            include_manual,
+            include_sampling,
+        )
+        # 新分支使用确定性的域分离 CPU 子流，且不推进共同模块的初始化随机状态。
+        with torch.random.fork_rng(devices=[]):
+            initialization_generator = torch.Generator(device="cpu")
+            initialization_seed = (torch.initial_seed() & ((1 << 63) - 1)) ^ 0x4D4D4341434F4E43
+            initialization_generator.manual_seed(initialization_seed)
+            torch.set_rng_state(initialization_generator.get_state())
+            self.conditioned = CandidateConditionedAggregator(
+                model_dim,
+                head_count,
+                dropout,
+                include_manual,
+                include_sampling,
+                False,
+            )
+            final = nn.Linear(model_dim * 2, model_dim)
+            nn.init.zeros_(final.weight)
+            nn.init.zeros_(final.bias)
+            self.residual = nn.Sequential(
+                nn.LayerNorm(model_dim * 2),
+                nn.Linear(model_dim * 2, model_dim * 2),
+                nn.GELU(),
+                nn.Dropout(dropout),
+                final,
+            )
+
+    def forward(
+        self,
+        candidate_summary: torch.Tensor,
+        modalities: Mapping[str, tuple[torch.Tensor, torch.Tensor]],
+        manual_features: torch.Tensor | None,
+        sampling_features: torch.Tensor | None,
+        attention_bias_features: Mapping[str, torch.Tensor] | None,
+    ) -> torch.Tensor:
+        """计算两个完整摘要，并把零初始化残差加到 mean/max 表示。
+
+        - candidate_summary: 浮点 (B,D_m) U-Net 候选查询。
+        - modalities: 含 a、p、v、pp 四个键；每个值是投影 token 与有效性掩码组成的二元组。
+        - modalities[a]: 浮点 (B,N_A,D_m) 原子 token 与 bool (B,N_A) 掩码。
+        - modalities[p]: 浮点 (B,N_P,D_m) P 模态 token 与 bool (B,N_P) 掩码。
+        - modalities[v]: 浮点 (B,N_V,D_m) 体素 token 与 bool (B,N_V) 掩码。
+        - modalities[pp]: 浮点 (B,N_PP,D_m) 概率图 token 与 bool (B,N_PP) 掩码。
+        - manual_features: 可选浮点 (B,12) 手动统计。
+        - sampling_features: 可选浮点 (B,4) 采样统计。
+        - attention_bias_features: 必须为 None。
+        - 返回值: 浮点 (B,D_m) mean/max 主表示与学习残差之和。
+        """
+
+        if attention_bias_features is not None:
+            raise ValueError("摘要拼接结构不得接收候选实体注意力偏置输入。")
+        mean_max_summary = self.mean_max(
+            candidate_summary,
+            modalities,
+            manual_features,
+            sampling_features,
+            None,
+        )
+        fork_devices: list[int] = []
+        if candidate_summary.device.type == "cuda":
+            device_index = candidate_summary.device.index
+            fork_devices.append(torch.cuda.current_device() if device_index is None else device_index)
+        # 新分支仍执行训练态 dropout，但其随机消耗不得改变后续共同分类头和辅助头的掩码。
+        with torch.random.fork_rng(devices=fork_devices):
+            conditioned_summary = self.conditioned(
+                candidate_summary,
+                modalities,
+                manual_features,
+                sampling_features,
+                None,
+            )
+            concatenated = torch.cat((mean_max_summary, conditioned_summary), dim=-1)
+            residual_increment = self.residual(concatenated)
+        return mean_max_summary + residual_increment

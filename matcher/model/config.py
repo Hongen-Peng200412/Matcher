@@ -6,14 +6,21 @@ import math
 from dataclasses import asdict, dataclass
 from typing import Any, Literal
 
-AggregationName = Literal["mean_max", "candidate_cross_attention"]
+AggregationName = Literal[
+    "mean_max",
+    "candidate_cross_attention",
+    "mean_max_candidate_cross_attention_concat",
+]
 
 
 @dataclass(frozen=True)
 class MatcherModelConfig:
     """保存候选编码器和身份匹配器的完整结构参数。
 
-    ``aggregation`` 选择 ``mean_max`` 或 ``candidate_cross_attention``。
+    - aggregation: 必须是 mean_max、candidate_cross_attention 或 mean_max_candidate_cross_attention_concat。
+    - aggregation=mean_max: 对 A/P/V/PP 各自计算掩码均值和最大值，再由融合层产生候选表示。
+    - aggregation=candidate_cross_attention: 用候选摘要分别查询 A/P/V/PP token，再融合四个注意力摘要。
+    - aggregation=mean_max_candidate_cross_attention_concat: 拼接前两种完整摘要，并把零输出残差加到 mean/max 主表示。
     ``use_manual_features`` 控制候选聚合是否拼接四模态固化统计。
     ``use_manual_features`` 还控制身份打分是否拼接同一统计与每个身份槽所属类别的六分类概率。
     ``use_sampling_features`` 控制候选聚合是否拼接四项裁剪几何统计。
@@ -51,7 +58,11 @@ class MatcherModelConfig:
     def __post_init__(self) -> None:
         """拒绝不能组成完整前向的结构参数。"""
 
-        if self.aggregation not in ("mean_max", "candidate_cross_attention"):
+        if self.aggregation not in (
+            "mean_max",
+            "candidate_cross_attention",
+            "mean_max_candidate_cross_attention_concat",
+        ):
             raise ValueError(f"不支持 aggregation={self.aggregation!r}。")
         if type(self.use_manual_features) is not bool:
             raise TypeError("use_manual_features 必须是布尔值。")
