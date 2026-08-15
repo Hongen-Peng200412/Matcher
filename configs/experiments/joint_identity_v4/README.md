@@ -16,7 +16,7 @@ seed 3407 的 LR=`1.0e-4` 配置保持与[第 2 批零门 oracle 配置](../batc
 
 清单来源审计、Dataset 与固定权重数值等价、输出目录查重和受管资源触发属于任务执行证据，应记录在联合身份 v4 的单任务、批次和总记录中，不写入本配置目录的稳定科学契约。
 
-六项学习率任务使用 `AdaLigand-Matcher-JointIdentityV4` 项目；下述六项摘要拼接实验使用独立的 `AdaLigand-Matcher-JointIdentityV4-SummaryConcat` 项目。上表列出六项学习率任务的分组。全部任务都只用 validation 选模；calibration 仍等待全部迭代结束及用户单独确认。
+六项学习率任务使用 `AdaLigand-Matcher-JointIdentityV4` 项目；下述七项摘要拼接实验使用独立的 `AdaLigand-Matcher-JointIdentityV4-SummaryConcat` 项目。上表列出六项学习率任务的分组。全部任务都只用 validation 选模；calibration 仍等待全部迭代结束及用户单独确认。
 
 ## 摘要拼接结构锚点
 
@@ -26,15 +26,16 @@ seed 3407 的 LR=`1.0e-4` 配置保持与[第 2 批零门 oracle 配置](../batc
 
 ## 摘要拼接参数矩阵
 
-最后一组实验包含六个摘要拼接任务。两项 A800 任务固定训练随机种子 3407、零身份门和 LR=`1.0e-4`，只比较梯度裁剪阈值 1 与 200。四项 A100 任务固定训练随机种子 3408、LR=`1.0e-4` 和相同批量，以双身份门 `{0, 0.02}` 与梯度裁剪阈值 `{1, 200}` 形成完整 2×2 矩阵。A100 与 A800 之间同时改变硬件和训练随机种子，只提供跨硬件、跨种子的方向性重复证据，不能把差异归因于硬件或种子任一单轴，也不冒充逐位同轨对照。
+最后一组实验包含七个摘要拼接任务。三项 A800 任务固定训练随机种子 3407、LR=`1.0e-4` 和相同批量：零门任务比较裁剪阈值 1 与 200；双门 0.02、clip 1 任务则与零门、clip 1 任务组成同硬件、同随机种子的门值直接对照。四项 A100 任务固定训练随机种子 3408、LR=`1.0e-4` 和相同批量，以双身份门 `{0, 0.02}` 与梯度裁剪阈值 `{1, 200}` 形成完整 2×2 矩阵。A100 与 A800 之间同时改变硬件和训练随机种子，只提供跨硬件、跨种子的方向性重复证据，不能把差异归因于硬件或种子任一单轴，也不冒充逐位同轨对照。
 
 | GPU | 门值 | 裁剪阈值 | 配置 | 直接用途 |
 |---|---:|---:|---|---|
 | A800 | 0 | 1 | `joint_identity_v4_concat_zero_gate_seed_3407_lr_1e4_oracle_a800.yaml` | 与同卡 v4 mean/max 基线比较摘要结构；也是 A800 裁剪对照基线 |
-| A800 | 0 | 200 | `joint_identity_v4_concat_zero_gate_clip_200_seed_3407_lr_1e4_oracle_a800.yaml` | 与上一项只比较裁剪阈值 |
+| A800 | 0.02 | 1 | `joint_identity_v4_concat_gate_002_seed_3407_lr_1e4_oracle_a800.yaml` | 与 A800 零门、clip 1 任务只比较双门初值；复核 A100 门值方向 |
+| A800 | 0 | 200 | `joint_identity_v4_concat_zero_gate_clip_200_seed_3407_lr_1e4_oracle_a800.yaml` | 与 A800 零门、clip 1 任务只比较裁剪阈值 |
 | A100 | 0 | 1 | `joint_identity_v4_concat_zero_gate_seed_3408_lr_1e4_oracle_a100.yaml` | A100 2×2 矩阵共同基线 |
 | A100 | 0.02 | 1 | `joint_identity_v4_concat_gate_002_seed_3408_lr_1e4_oracle_a100.yaml` | clip1 下的双门效应 |
 | A100 | 0 | 200 | `joint_identity_v4_concat_zero_gate_clip_200_seed_3408_lr_1e4_oracle_a100.yaml` | 零门下的宽松裁剪效应 |
 | A100 | 0.02 | 200 | `joint_identity_v4_concat_gate_002_clip_200_seed_3408_lr_1e4_oracle_a100.yaml` | 双门与宽松裁剪的联合单元，用于估计交互 |
 
-六项都固定 `data.selection_seed=3407`、oracle 身份损失、物理批量 8、梯度累积 4、global batch 32、BF16、从零训练和完整 validation 选模。裁剪阈值 200 只表示宽松裁剪；以 W&B 逐更新字段 `gradient/train_step/preclip_norm` 为裁剪前全局梯度范数，分母为全部 global update。只有范数大于 200 的更新比例不超过 0.1% 时，运行记录才能称其为“近似不裁剪”；同时必须保存总更新数、触发数、触发比例、最大范数，以及按每步 `min(1, 200 / (preclip_norm + 1e-6))` 派生的最小缩放系数。
+七项都固定 `data.selection_seed=3407`、oracle 身份损失、物理批量 8、梯度累积 4、global batch 32、BF16、从零训练和完整 validation 选模。裁剪阈值 200 只表示宽松裁剪；以 W&B 逐更新字段 `gradient/train_step/preclip_norm` 为裁剪前全局梯度范数，分母为全部 global update。只有范数大于 200 的更新比例不超过 0.1% 时，运行记录才能称其为“近似不裁剪”；同时必须保存总更新数、触发数、触发比例、最大范数，以及按每步 `min(1, 200 / (preclip_norm + 1e-6))` 派生的最小缩放系数。
