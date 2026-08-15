@@ -16,7 +16,7 @@ seed 3407 的 LR=`1.0e-4` 配置保持与[第 2 批零门 oracle 配置](../batc
 
 清单来源审计、Dataset 与固定权重数值等价、输出目录查重和受管资源触发属于任务执行证据，应记录在联合身份 v4 的单任务、批次和总记录中，不写入本配置目录的稳定科学契约。
 
-六项学习率任务使用 `AdaLigand-Matcher-JointIdentityV4` 项目；下述八项摘要拼接实验使用独立的 `AdaLigand-Matcher-JointIdentityV4-SummaryConcat` 项目。上表列出六项学习率任务的分组。全部任务都只用 validation 选模；calibration 仍等待全部迭代结束及用户单独确认。
+六项学习率任务使用 `AdaLigand-Matcher-JointIdentityV4` 项目；下述九项摘要拼接配置和三项配对 mean/max 对照使用独立的 `AdaLigand-Matcher-JointIdentityV4-SummaryConcat` 项目。上表列出六项学习率任务的分组。全部任务都只用 validation 选模；calibration 仍等待全部迭代结束及用户单独确认。
 
 ## 摘要拼接结构锚点
 
@@ -26,7 +26,7 @@ seed 3407 的 LR=`1.0e-4` 配置保持与[第 2 批零门 oracle 配置](../batc
 
 ## 摘要拼接参数矩阵
 
-最后一组实验包含八个摘要拼接任务。四项 A800 任务固定训练随机种子 3407、LR=`1.0e-4` 和相同批量，以双身份门 `{0, 0.02}` 与梯度裁剪阈值 `{1, 200}` 形成完整 2×2 矩阵。四项 A100 任务固定训练随机种子 3408、LR=`1.0e-4` 和相同批量，使用相同的 2×2 设计。A100 与 A800 之间同时改变硬件和训练随机种子，只提供跨硬件、跨种子的方向性重复证据，不能把差异归因于硬件或种子任一单轴，也不冒充逐位同轨对照。
+此前参数矩阵包含八个摘要拼接任务。四项 A800 任务固定训练随机种子 3407、LR=`1.0e-4` 和相同批量，以双身份门 `{0, 0.02}` 与梯度裁剪阈值 `{1, 200}` 形成完整 2×2 矩阵。四项 A100 任务固定训练随机种子 3408、LR=`1.0e-4` 和相同批量，使用相同的 2×2 设计。A100 与 A800 之间同时改变硬件和训练随机种子，只提供跨硬件、跨种子的方向性重复证据，不能把差异归因于硬件或种子任一单轴，也不冒充逐位同轨对照。
 
 | GPU | 门值 | 裁剪阈值 | 配置 | 直接用途 |
 |---|---:|---:|---|---|
@@ -40,3 +40,17 @@ seed 3407 的 LR=`1.0e-4` 配置保持与[第 2 批零门 oracle 配置](../batc
 | A100 | 0.02 | 200 | `joint_identity_v4_concat_gate_002_clip_200_seed_3408_lr_1e4_oracle_a100.yaml` | 双门与宽松裁剪的联合单元，用于估计交互 |
 
 八项都固定 `data.selection_seed=3407`、oracle 身份损失、物理批量 8、梯度累积 4、global batch 32、BF16、从零训练和完整 validation 选模。裁剪阈值 200 只表示宽松裁剪；以 W&B 逐更新字段 `gradient/train_step/preclip_norm` 为裁剪前全局梯度范数，分母为全部 global update。只有范数大于 200 的更新比例不超过 0.1% 时，运行记录才能称其为“近似不裁剪”；同时必须保存总更新数、触发数、触发比例、最大范数，以及按每步 `min(1, 200 / (preclip_norm + 1e-6))` 派生的最小缩放系数。
+
+## 最终五项结构对照
+
+最终只新增五个实验，完成后不再扩展科学矩阵。第一项使用 A800、seed3407、双门 0.02 和 clip200 的摘要拼接配置，补齐上表 A800 2×2。其余四项统一使用零门、clip200、LR=`1.0e-4`、物理批量 8、梯度累积 4、global batch 32 和从零训练；这四项不等待第一项结果再做条件选择。
+
+| 序号 | GPU | 训练种子 | 聚合结构 | 配置 | 对照职责 |
+|---:|---|---:|---|---|---|
+| 1 | A800 | 3407 | 摘要拼接 | `joint_identity_v4_concat_gate_002_clip_200_seed_3407_lr_1e4_oracle_a800.yaml` | 补齐 A800 门值 × 裁剪矩阵 |
+| 2 | A800 | 3407 | mean/max | `joint_identity_v4_mean_max_zero_gate_clip_200_seed_3407_lr_1e4_oracle_a800.yaml` | 与同卡、同 seed、同零门和 clip200 的摘要拼接任务只比较聚合结构 |
+| 3 | A100 | 3408 | mean/max | `joint_identity_v4_mean_max_zero_gate_clip_200_seed_3408_lr_1e4_oracle_a100.yaml` | 与同卡、同 seed、同零门和 clip200 的摘要拼接任务只比较聚合结构 |
+| 4 | A100 | 3409 | 摘要拼接 | `joint_identity_v4_concat_zero_gate_clip_200_seed_3409_lr_1e4_oracle_a100.yaml` | 新种子结构复现的实验侧 |
+| 5 | A100 | 3409 | mean/max | `joint_identity_v4_mean_max_zero_gate_clip_200_seed_3409_lr_1e4_oracle_a100.yaml` | 与序号 4 只比较聚合结构 |
+
+三组 mean/max—摘要拼接直接对照分别固定硬件、训练种子、联合身份 v4 清单、数据选择、模型宽度、两项身份门、损失、优化器、裁剪阈值、批量和评估口径。两种聚合结构只通过 `model.aggregation` 区分；计划名、阶段名和 W&B 分组只隔离运行产物。A100 与 A800 结果仍只作跨硬件、跨种子的方向性证据，不能冒充同轨单变量对照。
