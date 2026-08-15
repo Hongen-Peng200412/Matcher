@@ -13,6 +13,7 @@ from .config import MatcherModelConfig
 from .fusion import (
     CandidateConditionedAggregator,
     MeanMaxAggregator,
+    MeanMaxCandidateConditionedResidualAggregator,
     MODALITY_INPUT_DIMS,
     TokenProjector,
     candidate_token_attention_bias_features,
@@ -105,7 +106,7 @@ class CandidateEncoder(nn.Module):
                 config.use_manual_features,
                 config.use_sampling_features,
             )
-        else:
+        elif config.aggregation == "candidate_cross_attention":
             self.aggregator = CandidateConditionedAggregator(
                 config.model_dim,
                 config.attention_heads,
@@ -114,6 +115,16 @@ class CandidateEncoder(nn.Module):
                 config.use_sampling_features,
                 config.use_candidate_token_attention_bias,
             )
+        elif config.aggregation == "mean_max_candidate_cross_attention_concat":
+            self.aggregator = MeanMaxCandidateConditionedResidualAggregator(
+                config.model_dim,
+                config.attention_heads,
+                config.dropout,
+                config.use_manual_features,
+                config.use_sampling_features,
+            )
+        else:
+            raise RuntimeError(f"未实现 aggregation={config.aggregation!r}。")
         self.class_head = nn.Sequential(
             nn.Linear(config.model_dim, config.model_dim),
             nn.GELU(),

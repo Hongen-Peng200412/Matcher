@@ -16,4 +16,10 @@ seed 3407 的 LR=`1.0e-4` 配置保持与[第 2 批零门 oracle 配置](../batc
 
 清单来源审计、Dataset 与固定权重数值等价、输出目录查重和受管资源触发属于任务执行证据，应记录在联合身份 v4 的单任务、批次和总记录中，不写入本配置目录的稳定科学契约。
 
-W&B 统一使用 `AdaLigand-Matcher-JointIdentityV4` 项目；上表列出六项任务的分组。六项任务都只用 validation 选模；calibration 仍等待全部迭代结束及用户单独确认。
+六项学习率任务使用 `AdaLigand-Matcher-JointIdentityV4` 项目；下述摘要拼接锚点使用独立的 `AdaLigand-Matcher-JointIdentityV4-SummaryConcat` 项目。上表列出六项学习率任务的分组。全部任务都只用 validation 选模；calibration 仍等待全部迭代结束及用户单独确认。
+
+## 摘要拼接结构锚点
+
+`joint_identity_v4_concat_zero_gate_seed_3407_lr_1e4_oracle_a800.yaml` 是最后一组摘要结构实验的首个直接对照。它在 seed 3407、A800、LR=`1.0e-4`、零身份门和 clip 1 下，把候选聚合从 `mean_max` 改为 `mean_max_candidate_cross_attention_concat`；数据、模型宽度、损失、批量、初始化和评估口径保持不变。计划名、阶段名、输出目录名及 W&B project/group 只隔离产物。
+
+该配置先完整计算 mean/max 与候选条件注意力的两个 `D_m=model.model_dim` 维表示，再把二者拼接为 `2D_m` 维残差输入。残差末层为零初始化，初始候选表示逐值等于 mean/max 主路径；训练后允许条件注意力表示通过残差参与任务。两种摘要各自按 A/P/V/PP 顺序读取每模态的 token 数、Stage1 固化概率均值和 Stage1 固化概率最大值，共 12 项手动统计；另读取请求裁剪起点是否在任一轴被边界限制（`requested_start_zyx != start_zyx`）、裁剪中心相对完整 V 质心的 L2 与 L∞ 体素距离、裁剪保留的 V 体素比例，共 4 项采样统计。`data.local_crop_strategy=v_centroid` 先以 `np.rint(mean(V_zyx)+0.5-24)` 的最近偶数规则求裁剪起点，再逐轴限制到 `[0,32]`。残差入口不再第三次追加这些原始统计。该任务只用 validation 选择，不读取 calibration。

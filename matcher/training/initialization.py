@@ -59,7 +59,7 @@ _DATA_CONFIG_FIELDS = (
 class CandidateEncoderConfigRecord(TypedDict):
     """保存与候选编码器参数和前向语义有关的规范化模型配置。
 
-    ``aggregation`` 是 ``mean_max`` 或 ``candidate_cross_attention``。
+    - aggregation: 必须是 mean_max、candidate_cross_attention 或 mean_max_candidate_cross_attention_concat；第三项把前两种完整摘要拼接为零输出残差。
     ``use_manual_features`` 控制 12 维无量纲候选统计及身份类别概率特征。
     ``use_sampling_features`` 控制 4 维无量纲候选裁剪统计。
     ``use_candidate_token_attention_bias`` 控制四模态实体注意力偏置。
