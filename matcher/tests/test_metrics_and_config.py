@@ -1143,6 +1143,54 @@ def test_joint_identity_v4_zero_gate_config_matches_batch2_oracle() -> None:
     assert target_tracking == baseline_tracking
 
 
+def test_joint_identity_v4_concat_anchor_changes_only_aggregation_and_run_names() -> None:
+    """A800 摘要拼接锚点只改变聚合结构与运行隔离字段。"""
+
+    config_directory = (
+        Path(__file__).parents[2] / "configs" / "experiments" / "joint_identity_v4"
+    )
+    baseline = load_experiment_plan(
+        config_directory / "joint_identity_v4_zero_gate_oracle_a100.yaml"
+    )
+    target = load_experiment_plan(
+        config_directory
+        / "joint_identity_v4_concat_zero_gate_seed_3407_lr_1e4_oracle_a800.yaml"
+    )
+    assert len(baseline.stages) == len(target.stages) == 1
+    baseline_stage = baseline.stages[0]
+    target_stage = target.stages[0]
+    expected_name = "joint_identity_v4_concat_zero_gate_seed_3407_lr_1e4_oracle_a800"
+    assert target.plan_name == target_stage.name == expected_name
+    assert target.output_root == baseline.output_root
+    assert target.data == baseline.data
+    assert target_stage.task_name == baseline_stage.task_name == "full_matcher"
+    assert target_stage.language_family == baseline_stage.language_family == "smi_ted_289m"
+    assert target_stage.identity_variant == baseline_stage.identity_variant == "oracle"
+    assert target_stage.identity_scope == baseline_stage.identity_scope == "all_non_background"
+    assert target_stage.initialize_candidate_from is baseline_stage.initialize_candidate_from is None
+
+    baseline_model = baseline_stage.model.to_dict()
+    target_model = target_stage.model.to_dict()
+    assert baseline_model.pop("aggregation") == "mean_max"
+    assert target_model.pop("aggregation") == "mean_max_candidate_cross_attention_concat"
+    assert target_model == baseline_model
+    assert target_stage.training == baseline_stage.training
+    assert target_stage.training.seed == 3407
+    assert target_stage.training.learning_rate == 1.0e-4
+    assert target_stage.training.physical_batch_size == 8
+    assert target_stage.training.gradient_accumulation == 4
+    assert target_stage.training.global_batch_size == 32
+    assert target_stage.training.gradient_clip_norm == 1.0
+
+    baseline_tracking = asdict(baseline.tracking)
+    target_tracking = asdict(target.tracking)
+    baseline_tracking.pop("project")
+    baseline_tracking.pop("group")
+    assert target_tracking.pop("project") == "AdaLigand-Matcher-JointIdentityV4-SummaryConcat"
+    assert target_tracking.pop("group") == "joint-identity-v4-summary-concat-seed-3407"
+    assert target_tracking == baseline_tracking
+
+
 def test_joint_identity_v4_learning_rate_matrix_has_three_seed_pairs() -> None:
     """三个联合身份 v4 随机种子配对只改变学习率、种子和隔离命名，并保持计划名全局唯一。"""
 

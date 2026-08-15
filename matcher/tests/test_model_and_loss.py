@@ -17,6 +17,8 @@ from matcher.model.config import AggregationName
 from matcher.model.fusion import (
     CandidateConditionedAggregator,
     CandidateTokenAttentionBias,
+    MeanMaxAggregator,
+    MeanMaxCandidateConditionedResidualAggregator,
     candidate_token_attention_bias_features,
     gather_voxel_features,
     normalize_candidate_manual_features,
@@ -30,6 +32,11 @@ from matcher.model.ligand_matcher import (
     SelfExcludingInventoryAttention,
 )
 from matcher.model.raunet import RaUnetBackbone
+from matcher.training.checkpointing import (
+    CHECKPOINT_SCHEMA_VERSION,
+    load_candidate_encoder_checkpoint,
+    save_checkpoint,
+)
 from matcher.training.losses import IdentityLossVariant, LossWeights, MatcherLossBatch, compute_matcher_loss
 
 from .factories import build_synthetic_roots
@@ -41,6 +48,7 @@ def _small_config(
     use_candidate_token_attention_bias: bool = False,
     initial_graph_gate: float = 0.0,
     initial_inventory_gate: float = 0.0,
+    dropout: float = 0.0,
 ) -> MatcherModelConfig:
     """返回适合 CPU 契约测试的窄 RAUNet，空间层级与正式模型相同。"""
 
@@ -53,7 +61,7 @@ def _small_config(
         initial_inventory_gate=initial_inventory_gate,
         model_dim=16,
         attention_heads=4,
-        dropout=0.0,
+        dropout=dropout,
         voxel_feature_channels=8,
         raunet_planes=(4, 16, 16, 16, 16, 16, 8, 8, 4),
         recycle_iterations=1,
@@ -258,11 +266,18 @@ def test_closed_set_matcher_bfloat16_autocast_forward_and_backward(tmp_path) -> 
     assert all(torch.isfinite(gradient).all() for gradient in gradients)
 
 
-def test_both_aggregators_accept_empty_modalities_without_nan(tmp_path) -> None:
-    """真实数据常见 A/V 空集；弱聚合和强聚合都必须以零摘要稳定继续前向。"""
+def test_all_aggregators_accept_empty_modalities_without_nan(tmp_path) -> None:
+    """真实数据常见 A/V 空集；三种聚合路径都必须以零摘要稳定继续前向。"""
 
     original = _batch(tmp_path, "candidate_pretrain")
-    aggregations = cast(tuple[AggregationName, ...], ("mean_max", "candidate_cross_attention"))
+    aggregations = cast(
+        tuple[AggregationName, ...],
+        (
+            "mean_max",
+            "candidate_cross_attention",
+            "mean_max_candidate_cross_attention_concat",
+        ),
+    )
     for aggregation in aggregations:
         batch = cast(CandidateBatch, dict(original))
         batch["a_tokens"] = torch.empty((1, 0, 229), dtype=torch.float32)
@@ -346,6 +361,269 @@ def _attention_aggregator_inputs() -> tuple[
         for name, (tokens, _) in modalities.items()
     }
     return candidate, modalities, torch.randn(2, 12), torch.randn(2, 4), attention_features
+
+
+def _concatenated_aggregator_inputs() -> tuple[
+    torch.Tensor,
+    dict[str, tuple[torch.Tensor, torch.Tensor]],
+    torch.Tensor,
+    torch.Tensor,
+    None,
+]:
+    """构造四个模态均含有效 token 的摘要拼接测试输入。
+
+    - 返回第 1 项: 浮点 (2,16) 候选查询。
+    - 返回第 2 项: 含 a、p、v、pp 四个键的模态映射。
+    - 返回第 2 项[a]: 浮点 (2,3,16) 原子 token 与 bool (2,3) 掩码。
+    - 返回第 2 项[p]: 浮点 (2,3,16) P 模态 token 与 bool (2,3) 掩码。
+    - 返回第 2 项[v]: 浮点 (2,3,16) 体素 token 与 bool (2,3) 掩码。
+    - 返回第 2 项[pp]: 浮点 (2,3,16) 概率图 token 与 bool (2,3) 掩码；每个样本至少有两个有效 token。
+    - 返回第 3 项: 浮点 (2,12) 手动统计。
+    - 返回第 4 项: 浮点 (2,4) 采样统计。
+    - 返回第 5 项: None；摘要拼接结构不使用 token 注意力偏置。
+    """
+
+    candidate = torch.randn(2, 16)
+    mask = torch.tensor([[True, True, True], [True, True, False]])
+    modalities = {
+        name: (torch.randn(2, 3, 16), mask.clone())
+        for name in ("a", "p", "v", "pp")
+    }
+    return candidate, modalities, torch.randn(2, 12), torch.randn(2, 4), None
+
+
+@pytest.mark.parametrize("autocast_enabled", (False, True))
+def test_concatenated_aggregator_zero_residual_exactly_matches_mean_max(
+    autocast_enabled: bool,
+) -> None:
+    """零输出残差在 FP32/BF16 下逐值退化，并保持旧参数与随机状态。"""
+
+    torch.manual_seed(12031)
+    baseline = MeanMaxAggregator(16, 0.0, True, True).eval()
+    baseline_rng_state = torch.get_rng_state().clone()
+    torch.manual_seed(12031)
+    concatenated = MeanMaxCandidateConditionedResidualAggregator(
+        16,
+        4,
+        0.0,
+        True,
+        True,
+    ).eval()
+    concatenated_rng_state = torch.get_rng_state().clone()
+    assert torch.equal(baseline_rng_state, concatenated_rng_state)
+    for name, value in baseline.state_dict().items():
+        assert torch.equal(value, concatenated.mean_max.state_dict()[name]), name
+
+    residual_final = cast(torch.nn.Linear, concatenated.residual[-1])
+    assert torch.count_nonzero(residual_final.weight) == 0
+    assert torch.count_nonzero(residual_final.bias) == 0
+    inputs = _concatenated_aggregator_inputs()
+    with torch.inference_mode():
+        if autocast_enabled:
+            with torch.autocast("cpu", dtype=torch.bfloat16):
+                expected = baseline(*inputs)
+                actual = concatenated(*inputs)
+        else:
+            expected = baseline(*inputs)
+            actual = concatenated(*inputs)
+    assert torch.equal(expected, actual)
+
+
+@pytest.mark.parametrize("autocast_enabled", (False, True))
+def test_concatenated_full_matcher_preserves_common_initialization_and_outputs(
+    tmp_path: Path,
+    autocast_enabled: bool,
+) -> None:
+    """固定种子下旧公共参数、后续随机状态和全部正式前向输出保持逐值相等。"""
+
+    batch = _batch(tmp_path, "full_matcher")
+    torch.manual_seed(77221)
+    baseline = ClosedSetMatcher(_small_config("mean_max")).eval()
+    baseline_rng_state = torch.get_rng_state().clone()
+    torch.manual_seed(77221)
+    concatenated = ClosedSetMatcher(
+        _small_config("mean_max_candidate_cross_attention_concat")
+    ).eval()
+    concatenated_rng_state = torch.get_rng_state().clone()
+    assert torch.equal(baseline_rng_state, concatenated_rng_state)
+
+    concatenated_state = concatenated.state_dict()
+    for name, value in baseline.state_dict().items():
+        target_name = name
+        prefix = "candidate_encoder.aggregator."
+        if name.startswith(prefix):
+            target_name = f"{prefix}mean_max.{name[len(prefix):]}"
+        assert torch.equal(value, concatenated_state[target_name]), name
+
+    with torch.inference_mode():
+        if autocast_enabled:
+            with torch.autocast("cpu", dtype=torch.bfloat16):
+                expected = baseline(batch)
+                actual = concatenated(batch)
+        else:
+            expected = baseline(batch)
+            actual = concatenated(batch)
+    assert expected.keys() == actual.keys()
+    for name in expected:
+        assert torch.equal(expected[name], actual[name]), name
+
+    concatenated_aggregator = cast(
+        MeanMaxCandidateConditionedResidualAggregator,
+        concatenated.candidate_encoder.aggregator,
+    )
+    class_head_first = cast(torch.nn.Linear, concatenated.candidate_encoder.class_head[0])
+    assert not torch.equal(
+        concatenated_aggregator.conditioned.branches["a"].query.weight,
+        class_head_first.weight,
+    )
+
+
+@pytest.mark.parametrize("autocast_enabled", (False, True))
+def test_concatenated_training_forward_preserves_common_dropout_stream(
+    tmp_path: Path,
+    autocast_enabled: bool,
+) -> None:
+    """正式丢弃率下，零残差保持训练态输出与共同前向后的随机状态逐值相等。"""
+
+    batch = _batch(tmp_path, "candidate_pretrain")
+    torch.manual_seed(42031)
+    baseline = CandidateEncoder(_small_config("mean_max", dropout=0.10)).train()
+    baseline_construction_state = torch.get_rng_state().clone()
+    torch.manual_seed(42031)
+    concatenated = CandidateEncoder(
+        _small_config(
+            "mean_max_candidate_cross_attention_concat",
+            dropout=0.10,
+        )
+    ).train()
+    concatenated_construction_state = torch.get_rng_state().clone()
+    assert torch.equal(baseline_construction_state, concatenated_construction_state)
+
+    torch.manual_seed(77519)
+    if autocast_enabled:
+        with torch.autocast("cpu", dtype=torch.bfloat16):
+            expected = baseline(batch)
+    else:
+        expected = baseline(batch)
+    expected_rng_state = torch.get_rng_state().clone()
+
+    torch.manual_seed(77519)
+    if autocast_enabled:
+        with torch.autocast("cpu", dtype=torch.bfloat16):
+            actual = concatenated(batch)
+    else:
+        actual = concatenated(batch)
+    actual_rng_state = torch.get_rng_state().clone()
+
+    assert expected.keys() == actual.keys()
+    for name in expected:
+        assert torch.equal(expected[name], actual[name]), name
+    assert torch.equal(expected_rng_state, actual_rng_state)
+
+
+def test_concatenated_aggregator_releases_gradients_in_three_steps() -> None:
+    """三次反向传播与两次手工参数扰动依次释放残差、条件摘要和 PP 分支梯度。"""
+
+    torch.manual_seed(99117)
+    aggregator = MeanMaxCandidateConditionedResidualAggregator(
+        16,
+        4,
+        0.0,
+        True,
+        True,
+    ).train()
+    inputs = _concatenated_aggregator_inputs()
+    target = torch.randn(2, 16)
+    residual_first = cast(torch.nn.Linear, aggregator.residual[1])
+    residual_final = cast(torch.nn.Linear, aggregator.residual[-1])
+    conditioned_final = cast(torch.nn.Linear, aggregator.conditioned.fusion[4])
+    pp_branch = aggregator.conditioned.branches["pp"]
+
+    (aggregator(*inputs) * target).sum().backward()
+    assert residual_final.weight.grad is not None
+    assert torch.count_nonzero(residual_final.weight.grad) > 0
+    assert residual_first.weight.grad is not None
+    assert torch.count_nonzero(residual_first.weight.grad) == 0
+    assert conditioned_final.weight.grad is not None
+    assert torch.count_nonzero(conditioned_final.weight.grad) == 0
+    with torch.no_grad():
+        residual_final.weight.add_(residual_final.weight.grad, alpha=-0.05)
+        assert residual_final.bias.grad is not None
+        residual_final.bias.add_(residual_final.bias.grad, alpha=-0.05)
+    aggregator.zero_grad(set_to_none=True)
+
+    (aggregator(*inputs) * target).sum().backward()
+    assert residual_first.weight.grad is not None
+    assert torch.count_nonzero(residual_first.weight.grad) > 0
+    assert conditioned_final.weight.grad is not None
+    assert torch.count_nonzero(conditioned_final.weight.grad) > 0
+    assert pp_branch.output.weight.grad is not None
+    assert torch.count_nonzero(pp_branch.output.weight.grad) > 0
+    for name in ("a", "p", "v"):
+        branch = aggregator.conditioned.branches[name]
+        for projection in (branch.query, branch.key, branch.value, branch.output):
+            assert projection.weight.grad is not None
+            assert torch.count_nonzero(projection.weight.grad) > 0
+    for projection in (pp_branch.query, pp_branch.key, pp_branch.value):
+        assert projection.weight.grad is not None
+        assert torch.count_nonzero(projection.weight.grad) == 0
+    with torch.no_grad():
+        pp_branch.output.weight.add_(pp_branch.output.weight.grad, alpha=-0.05)
+        assert pp_branch.output.bias.grad is not None
+        pp_branch.output.bias.add_(pp_branch.output.bias.grad, alpha=-0.05)
+    aggregator.zero_grad(set_to_none=True)
+
+    (aggregator(*inputs) * target).sum().backward()
+    for projection in (pp_branch.query, pp_branch.key, pp_branch.value):
+        assert projection.weight.grad is not None
+        assert torch.count_nonzero(projection.weight.grad) > 0
+
+
+def test_candidate_encoder_checkpoint_loader_separates_mean_max_and_concat(
+    tmp_path: Path,
+) -> None:
+    """正式加载入口接受同构参数，并对 mean/max 与摘要拼接的双向错配失败关闭。"""
+
+    baseline_source = CandidateEncoder(_small_config("mean_max"))
+    concatenated_source = CandidateEncoder(
+        _small_config("mean_max_candidate_cross_attention_concat")
+    )
+    baseline_path = tmp_path / "mean_max.pt"
+    concatenated_path = tmp_path / "concat.pt"
+    save_checkpoint(
+        baseline_path,
+        {
+            "schema_version": CHECKPOINT_SCHEMA_VERSION,
+            "model_state": baseline_source.state_dict(),
+        },
+    )
+    save_checkpoint(
+        concatenated_path,
+        {
+            "schema_version": CHECKPOINT_SCHEMA_VERSION,
+            "model_state": concatenated_source.state_dict(),
+        },
+    )
+
+    concatenated_target = CandidateEncoder(
+        _small_config("mean_max_candidate_cross_attention_concat")
+    )
+    baseline_target = CandidateEncoder(_small_config("mean_max"))
+    assert load_candidate_encoder_checkpoint(baseline_target, baseline_path) == {
+        "missing_keys": [],
+        "unexpected_keys": [],
+    }
+    assert load_candidate_encoder_checkpoint(concatenated_target, concatenated_path) == {
+        "missing_keys": [],
+        "unexpected_keys": [],
+    }
+    for name, value in concatenated_source.state_dict().items():
+        assert torch.equal(value, concatenated_target.state_dict()[name]), name
+
+    with pytest.raises(RuntimeError):
+        load_candidate_encoder_checkpoint(concatenated_target, baseline_path)
+    with pytest.raises(RuntimeError):
+        load_candidate_encoder_checkpoint(baseline_target, concatenated_path)
 
 
 @pytest.mark.parametrize("autocast_enabled", (False, True))
@@ -870,6 +1148,12 @@ def test_model_config_and_voxel_gather_reject_invalid_contracts() -> None:
     with pytest.raises(ValueError, match="raunet_planes"):
         MatcherModelConfig.from_dict(values)
     values = _small_config().to_dict()
+    values["use_candidate_token_attention_bias"] = True
+    with pytest.raises(ValueError, match="candidate_cross_attention"):
+        MatcherModelConfig.from_dict(values)
+    concatenated = _small_config("mean_max_candidate_cross_attention_concat")
+    assert MatcherModelConfig.from_dict(concatenated.to_dict()) == concatenated
+    values = concatenated.to_dict()
     values["use_candidate_token_attention_bias"] = True
     with pytest.raises(ValueError, match="candidate_cross_attention"):
         MatcherModelConfig.from_dict(values)
