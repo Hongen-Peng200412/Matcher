@@ -1143,6 +1143,110 @@ def test_joint_identity_v4_zero_gate_config_matches_batch2_oracle() -> None:
     assert target_tracking == baseline_tracking
 
 
+def test_joint_identity_v4_learning_rate_matrix_has_three_seed_pairs() -> None:
+    """三个联合身份 v4 随机种子配对只改变学习率、种子和隔离命名，并保持计划名全局唯一。"""
+
+    config_directory = (
+        Path(__file__).parents[2] / "configs" / "experiments" / "joint_identity_v4"
+    )
+    pairs = (
+        (
+            3407,
+            "joint_identity_v4_zero_gate_oracle_a100.yaml",
+            "joint_identity_v4_lr_2e4_oracle_a100.yaml",
+            "joint-identity-v4-zero-gate-baseline",
+            "joint-identity-v4-learning-rate",
+        ),
+        (
+            3408,
+            "joint_identity_v4_seed_3408_lr_1e4_oracle_a100.yaml",
+            "joint_identity_v4_seed_3408_lr_2e4_oracle_a100.yaml",
+            "joint-identity-v4-learning-rate-seed-3408",
+            "joint-identity-v4-learning-rate-seed-3408",
+        ),
+        (
+            3409,
+            "joint_identity_v4_seed_3409_lr_1e4_oracle_a100.yaml",
+            "joint_identity_v4_seed_3409_lr_2e4_oracle_a100.yaml",
+            "joint-identity-v4-learning-rate-seed-3409",
+            "joint-identity-v4-learning-rate-seed-3409",
+        ),
+    )
+    normalized_pairs: list[dict[str, object]] = []
+
+    for seed, lr_1e4_file, lr_2e4_file, lr_1e4_group, lr_2e4_group in pairs:
+        lr_1e4 = load_experiment_plan(config_directory / lr_1e4_file)
+        lr_2e4 = load_experiment_plan(config_directory / lr_2e4_file)
+        assert len(lr_1e4.stages) == len(lr_2e4.stages) == 1
+        lr_1e4_stage = lr_1e4.stages[0]
+        lr_2e4_stage = lr_2e4.stages[0]
+        assert lr_1e4.plan_name == lr_1e4_stage.name == Path(lr_1e4_file).stem
+        assert lr_2e4.plan_name == lr_2e4_stage.name == Path(lr_2e4_file).stem
+        assert lr_1e4.output_root == lr_2e4.output_root
+        assert lr_1e4.data == lr_2e4.data
+        assert lr_1e4.data.selection_seed == lr_2e4.data.selection_seed == 3407
+        assert lr_1e4.data.roots.manifest_root.name == "closed_set_v4"
+        assert lr_2e4.data.roots.manifest_root.name == "closed_set_v4"
+        assert lr_1e4_stage.task_name == lr_2e4_stage.task_name == "full_matcher"
+        assert lr_1e4_stage.language_family == lr_2e4_stage.language_family == "smi_ted_289m"
+        assert lr_1e4_stage.identity_variant == lr_2e4_stage.identity_variant == "oracle"
+        assert lr_1e4_stage.identity_scope == lr_2e4_stage.identity_scope == "all_non_background"
+        assert lr_1e4_stage.model == lr_2e4_stage.model
+        assert lr_1e4_stage.model.initial_graph_gate == 0.0
+        assert lr_1e4_stage.model.initial_inventory_gate == 0.0
+        assert lr_1e4_stage.initialize_candidate_from is lr_2e4_stage.initialize_candidate_from is None
+
+        lr_1e4_training = asdict(lr_1e4_stage.training)
+        lr_2e4_training = asdict(lr_2e4_stage.training)
+        assert lr_1e4_training.pop("learning_rate") == 1.0e-4
+        assert lr_2e4_training.pop("learning_rate") == 2.0e-4
+        assert lr_1e4_training == lr_2e4_training
+        assert lr_1e4_stage.training.seed == lr_2e4_stage.training.seed == seed
+        assert lr_1e4_stage.training.physical_batch_size == 8
+        assert lr_1e4_stage.training.gradient_accumulation == 4
+        assert lr_1e4_stage.training.global_batch_size == 32
+        assert lr_1e4_stage.training.gradient_clip_norm == 1.0
+
+        lr_1e4_tracking = asdict(lr_1e4.tracking)
+        lr_2e4_tracking = asdict(lr_2e4.tracking)
+        assert lr_1e4_tracking.pop("project") == "AdaLigand-Matcher-JointIdentityV4"
+        assert lr_2e4_tracking.pop("project") == "AdaLigand-Matcher-JointIdentityV4"
+        assert lr_1e4_tracking.pop("group") == lr_1e4_group
+        assert lr_2e4_tracking.pop("group") == lr_2e4_group
+        assert lr_1e4_tracking == lr_2e4_tracking
+
+        normalized_data = asdict(lr_1e4.data)
+        normalized_training = dict(lr_1e4_training)
+        normalized_training.pop("seed")
+        normalized_pairs.append(
+            {
+                "output_root": lr_1e4.output_root,
+                "data": normalized_data,
+                "task": (
+                    lr_1e4_stage.task_name,
+                    lr_1e4_stage.language_family,
+                    lr_1e4_stage.identity_variant,
+                    lr_1e4_stage.identity_scope,
+                ),
+                "model": lr_1e4_stage.model.to_dict(),
+                "training_without_seed_or_learning_rate": normalized_training,
+                "initialize_candidate_from": lr_1e4_stage.initialize_candidate_from,
+                "tracking_without_project_or_group": lr_1e4_tracking,
+            }
+        )
+
+    assert normalized_pairs[1:] == [normalized_pairs[0], normalized_pairs[0]]
+    all_plans = [
+        load_experiment_plan(path)
+        for path in sorted(config_directory.glob("*.yaml"))
+    ]
+    assert all(len(plan.stages) == 1 for plan in all_plans)
+    all_plan_names = [plan.plan_name for plan in all_plans]
+    all_stage_names = [plan.stages[0].name for plan in all_plans]
+    assert all_plan_names == all_stage_names
+    assert len(all_plan_names) == len(set(all_plan_names))
+
+
 @pytest.mark.parametrize(
     "missing_key",
     (
