@@ -1,5 +1,7 @@
 # matcher.training.config.load_experiment_plan 读取本文件；单张 A100 从零训练联合身份 v4 的零门 oracle 基线。
-# 执行本配置的 Matcher 包必须采用 schema v4 联合身份；本 YAML 不重复声明 schema，也不改变模型或损失。
+# schema v4 将 (object_key, PreparedLigand.smiles) 作为联合身份；PreparedLigand.smiles 是顶层规范非同分异构 SMILES。
+# 本 YAML 不重复声明 schema；它是 seed 3407、LR=1.0e-4 对照，不改变 Batch2 的模型或损失。
+# 正式成对对照是同目录 seed 3407、LR=2.0e-4 配置；组内只改变 training.learning_rate 和任务命名。
 # v_centroid 使用 np.rint(mean(V_zyx)+0.5-24) 的最近偶数规则，起点再逐轴限制到 [0,32]。
 # use_manual_features=true 拼接 A/P/V/PP 各自的 token 数、Stage1 概率均值和最大值，共 12 项。
 # use_sampling_features=true 拼接边界限制标志、V 质心偏移 L2/L∞ 距离和 V 保留比例，共 4 项。
