@@ -1226,6 +1226,14 @@ def test_joint_identity_v4_concat_anchor_changes_only_aggregation_and_run_names(
             "joint-identity-v4-summary-concat-seed-3407",
         ),
         (
+            "joint_identity_v4_concat_gate_002_clip_200_seed_3407_lr_1e4_oracle_a800.yaml",
+            3407,
+            0.02,
+            0.02,
+            200.0,
+            "joint-identity-v4-summary-concat-seed-3407",
+        ),
+        (
             "joint_identity_v4_concat_zero_gate_seed_3408_lr_1e4_oracle_a100.yaml",
             3408,
             0.0,
@@ -1267,7 +1275,7 @@ def test_joint_identity_v4_concat_matrix_changes_only_declared_axes(
     clip_norm: float,
     tracking_group: str,
 ) -> None:
-    """七项摘要拼接配置只改变聚合结构、两个门、裁剪、训练种子与运行命名。"""
+    """八项摘要拼接配置只改变聚合结构、两个门、裁剪、训练种子与运行命名。"""
 
     config_directory = (
         Path(__file__).parents[2] / "configs" / "experiments" / "joint_identity_v4"
@@ -1346,6 +1354,43 @@ def test_joint_identity_v4_concat_a800_gate_probe_changes_only_gates_and_names()
     baseline_structure["stages"][0]["model"]["initial_graph_gate"] = 0.02
     baseline_structure["stages"][0]["model"]["initial_inventory_gate"] = 0.02
     assert target_structure == baseline_structure
+
+
+def test_joint_identity_v4_concat_a800_gate_clip200_closes_two_by_two_matrix() -> None:
+    """A800 双门 0.02、clip 200 单元相对两条直接基线各只改变一个科学轴。"""
+
+    config_directory = (
+        Path(__file__).parents[2] / "configs" / "experiments" / "joint_identity_v4"
+    )
+    gate_clip1 = load_experiment_plan(
+        config_directory
+        / "joint_identity_v4_concat_gate_002_seed_3407_lr_1e4_oracle_a800.yaml"
+    )
+    zero_gate_clip200 = load_experiment_plan(
+        config_directory
+        / "joint_identity_v4_concat_zero_gate_clip_200_seed_3407_lr_1e4_oracle_a800.yaml"
+    )
+    target = load_experiment_plan(
+        config_directory
+        / "joint_identity_v4_concat_gate_002_clip_200_seed_3407_lr_1e4_oracle_a800.yaml"
+    )
+    assert len(gate_clip1.stages) == len(zero_gate_clip200.stages) == len(target.stages) == 1
+    expected_name = "joint_identity_v4_concat_gate_002_clip_200_seed_3407_lr_1e4_oracle_a800"
+    assert target.plan_name == target.stages[0].name == expected_name
+
+    gate_clip1_structure = asdict(gate_clip1)
+    target_structure = asdict(target)
+    gate_clip1_structure["plan_name"] = target_structure["plan_name"]
+    gate_clip1_structure["stages"][0]["name"] = target_structure["stages"][0]["name"]
+    gate_clip1_structure["stages"][0]["training"]["gradient_clip_norm"] = 200.0
+    assert target_structure == gate_clip1_structure
+
+    zero_gate_clip200_structure = asdict(zero_gate_clip200)
+    zero_gate_clip200_structure["plan_name"] = target_structure["plan_name"]
+    zero_gate_clip200_structure["stages"][0]["name"] = target_structure["stages"][0]["name"]
+    zero_gate_clip200_structure["stages"][0]["model"]["initial_graph_gate"] = 0.02
+    zero_gate_clip200_structure["stages"][0]["model"]["initial_inventory_gate"] = 0.02
+    assert target_structure == zero_gate_clip200_structure
 
 
 def test_joint_identity_v4_learning_rate_matrix_has_three_seed_pairs() -> None:
