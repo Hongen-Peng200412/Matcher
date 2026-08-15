@@ -1191,6 +1191,127 @@ def test_joint_identity_v4_concat_anchor_changes_only_aggregation_and_run_names(
     assert target_tracking == baseline_tracking
 
 
+@pytest.mark.parametrize(
+    (
+        "file_name",
+        "training_seed",
+        "graph_gate",
+        "inventory_gate",
+        "clip_norm",
+        "tracking_group",
+    ),
+    (
+        (
+            "joint_identity_v4_concat_zero_gate_seed_3407_lr_1e4_oracle_a800.yaml",
+            3407,
+            0.0,
+            0.0,
+            1.0,
+            "joint-identity-v4-summary-concat-seed-3407",
+        ),
+        (
+            "joint_identity_v4_concat_zero_gate_clip_200_seed_3407_lr_1e4_oracle_a800.yaml",
+            3407,
+            0.0,
+            0.0,
+            200.0,
+            "joint-identity-v4-summary-concat-seed-3407",
+        ),
+        (
+            "joint_identity_v4_concat_zero_gate_seed_3408_lr_1e4_oracle_a100.yaml",
+            3408,
+            0.0,
+            0.0,
+            1.0,
+            "joint-identity-v4-summary-concat-a100-seed-3408",
+        ),
+        (
+            "joint_identity_v4_concat_gate_002_seed_3408_lr_1e4_oracle_a100.yaml",
+            3408,
+            0.02,
+            0.02,
+            1.0,
+            "joint-identity-v4-summary-concat-a100-seed-3408",
+        ),
+        (
+            "joint_identity_v4_concat_zero_gate_clip_200_seed_3408_lr_1e4_oracle_a100.yaml",
+            3408,
+            0.0,
+            0.0,
+            200.0,
+            "joint-identity-v4-summary-concat-a100-seed-3408",
+        ),
+        (
+            "joint_identity_v4_concat_gate_002_clip_200_seed_3408_lr_1e4_oracle_a100.yaml",
+            3408,
+            0.02,
+            0.02,
+            200.0,
+            "joint-identity-v4-summary-concat-a100-seed-3408",
+        ),
+    ),
+)
+def test_joint_identity_v4_concat_matrix_changes_only_declared_axes(
+    file_name: str,
+    training_seed: int,
+    graph_gate: float,
+    inventory_gate: float,
+    clip_norm: float,
+    tracking_group: str,
+) -> None:
+    """六项摘要拼接配置只改变聚合结构、两个门、裁剪、训练种子与运行命名。"""
+
+    config_directory = (
+        Path(__file__).parents[2] / "configs" / "experiments" / "joint_identity_v4"
+    )
+    baseline = load_experiment_plan(
+        config_directory / "joint_identity_v4_zero_gate_oracle_a100.yaml"
+    )
+    target = load_experiment_plan(config_directory / file_name)
+    assert len(baseline.stages) == len(target.stages) == 1
+    baseline_stage = baseline.stages[0]
+    target_stage = target.stages[0]
+    expected_name = Path(file_name).stem
+    assert target.plan_name == target_stage.name == expected_name
+    assert target.output_root == baseline.output_root
+    assert target.data == baseline.data
+    assert target_stage.task_name == baseline_stage.task_name == "full_matcher"
+    assert target_stage.language_family == baseline_stage.language_family == "smi_ted_289m"
+    assert target_stage.identity_variant == baseline_stage.identity_variant == "oracle"
+    assert target_stage.identity_scope == baseline_stage.identity_scope == "all_non_background"
+    assert target_stage.initialize_candidate_from is baseline_stage.initialize_candidate_from is None
+
+    baseline_model = baseline_stage.model.to_dict()
+    target_model = target_stage.model.to_dict()
+    assert baseline_model.pop("aggregation") == "mean_max"
+    assert target_model.pop("aggregation") == "mean_max_candidate_cross_attention_concat"
+    assert target_model.pop("initial_graph_gate") == graph_gate
+    assert target_model.pop("initial_inventory_gate") == inventory_gate
+    baseline_model.pop("initial_graph_gate")
+    baseline_model.pop("initial_inventory_gate")
+    assert target_model == baseline_model
+
+    baseline_training = asdict(baseline_stage.training)
+    target_training = asdict(target_stage.training)
+    assert target_training.pop("seed") == training_seed
+    assert target_training.pop("gradient_clip_norm") == clip_norm
+    baseline_training.pop("seed")
+    baseline_training.pop("gradient_clip_norm")
+    assert target_training == baseline_training
+    assert target_stage.training.learning_rate == 1.0e-4
+    assert target_stage.training.physical_batch_size == 8
+    assert target_stage.training.gradient_accumulation == 4
+    assert target_stage.training.global_batch_size == 32
+
+    baseline_tracking = asdict(baseline.tracking)
+    target_tracking = asdict(target.tracking)
+    baseline_tracking.pop("project")
+    baseline_tracking.pop("group")
+    assert target_tracking.pop("project") == "AdaLigand-Matcher-JointIdentityV4-SummaryConcat"
+    assert target_tracking.pop("group") == tracking_group
+    assert target_tracking == baseline_tracking
+
+
 def test_joint_identity_v4_learning_rate_matrix_has_three_seed_pairs() -> None:
     """三个联合身份 v4 随机种子配对只改变学习率、种子和隔离命名，并保持计划名全局唯一。"""
 
