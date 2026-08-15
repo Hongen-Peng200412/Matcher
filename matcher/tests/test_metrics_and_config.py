@@ -1218,6 +1218,14 @@ def test_joint_identity_v4_concat_anchor_changes_only_aggregation_and_run_names(
             "joint-identity-v4-summary-concat-seed-3407",
         ),
         (
+            "joint_identity_v4_concat_gate_002_seed_3407_lr_1e4_oracle_a800.yaml",
+            3407,
+            0.02,
+            0.02,
+            1.0,
+            "joint-identity-v4-summary-concat-seed-3407",
+        ),
+        (
             "joint_identity_v4_concat_zero_gate_seed_3408_lr_1e4_oracle_a100.yaml",
             3408,
             0.0,
@@ -1259,7 +1267,7 @@ def test_joint_identity_v4_concat_matrix_changes_only_declared_axes(
     clip_norm: float,
     tracking_group: str,
 ) -> None:
-    """六项摘要拼接配置只改变聚合结构、两个门、裁剪、训练种子与运行命名。"""
+    """七项摘要拼接配置只改变聚合结构、两个门、裁剪、训练种子与运行命名。"""
 
     config_directory = (
         Path(__file__).parents[2] / "configs" / "experiments" / "joint_identity_v4"
@@ -1310,6 +1318,34 @@ def test_joint_identity_v4_concat_matrix_changes_only_declared_axes(
     assert target_tracking.pop("project") == "AdaLigand-Matcher-JointIdentityV4-SummaryConcat"
     assert target_tracking.pop("group") == tracking_group
     assert target_tracking == baseline_tracking
+
+
+def test_joint_identity_v4_concat_a800_gate_probe_changes_only_gates_and_names() -> None:
+    """A800 双门 0.02 任务相对同卡零门任务只改变两个门和运行命名。"""
+
+    config_directory = (
+        Path(__file__).parents[2] / "configs" / "experiments" / "joint_identity_v4"
+    )
+    baseline = load_experiment_plan(
+        config_directory
+        / "joint_identity_v4_concat_zero_gate_seed_3407_lr_1e4_oracle_a800.yaml"
+    )
+    target = load_experiment_plan(
+        config_directory
+        / "joint_identity_v4_concat_gate_002_seed_3407_lr_1e4_oracle_a800.yaml"
+    )
+    assert len(baseline.stages) == len(target.stages) == 1
+    target_stage = target.stages[0]
+    expected_name = "joint_identity_v4_concat_gate_002_seed_3407_lr_1e4_oracle_a800"
+    assert target.plan_name == target_stage.name == expected_name
+
+    baseline_structure = asdict(baseline)
+    target_structure = asdict(target)
+    baseline_structure["plan_name"] = target_structure["plan_name"]
+    baseline_structure["stages"][0]["name"] = target_structure["stages"][0]["name"]
+    baseline_structure["stages"][0]["model"]["initial_graph_gate"] = 0.02
+    baseline_structure["stages"][0]["model"]["initial_inventory_gate"] = 0.02
+    assert target_structure == baseline_structure
 
 
 def test_joint_identity_v4_learning_rate_matrix_has_three_seed_pairs() -> None:
