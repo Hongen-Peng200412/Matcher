@@ -1393,6 +1393,99 @@ def test_joint_identity_v4_concat_a800_gate_clip200_closes_two_by_two_matrix() -
     assert target_structure == zero_gate_clip200_structure
 
 
+@pytest.mark.parametrize(
+    ("mean_max_file", "concat_file", "training_seed", "tracking_group"),
+    (
+        (
+            "joint_identity_v4_mean_max_zero_gate_clip_200_seed_3407_lr_1e4_oracle_a800.yaml",
+            "joint_identity_v4_concat_zero_gate_clip_200_seed_3407_lr_1e4_oracle_a800.yaml",
+            3407,
+            "joint-identity-v4-summary-concat-seed-3407",
+        ),
+        (
+            "joint_identity_v4_mean_max_zero_gate_clip_200_seed_3408_lr_1e4_oracle_a100.yaml",
+            "joint_identity_v4_concat_zero_gate_clip_200_seed_3408_lr_1e4_oracle_a100.yaml",
+            3408,
+            "joint-identity-v4-summary-concat-a100-seed-3408",
+        ),
+        (
+            "joint_identity_v4_mean_max_zero_gate_clip_200_seed_3409_lr_1e4_oracle_a100.yaml",
+            "joint_identity_v4_concat_zero_gate_clip_200_seed_3409_lr_1e4_oracle_a100.yaml",
+            3409,
+            "joint-identity-v4-summary-concat-a100-seed-3409",
+        ),
+    ),
+)
+def test_final_concat_structure_pairs_change_only_aggregation_and_names(
+    mean_max_file: str,
+    concat_file: str,
+    training_seed: int,
+    tracking_group: str,
+) -> None:
+    """三组同硬件同种子对照只改变聚合结构和运行隔离名称。"""
+
+    config_directory = (
+        Path(__file__).parents[2] / "configs" / "experiments" / "joint_identity_v4"
+    )
+    mean_max = load_experiment_plan(config_directory / mean_max_file)
+    concat = load_experiment_plan(config_directory / concat_file)
+    assert len(mean_max.stages) == len(concat.stages) == 1
+    assert mean_max.plan_name == mean_max.stages[0].name == Path(mean_max_file).stem
+    assert concat.plan_name == concat.stages[0].name == Path(concat_file).stem
+    assert mean_max.tracking.project == concat.tracking.project
+    assert mean_max.tracking.group == concat.tracking.group == tracking_group
+    assert mean_max.stages[0].training.seed == concat.stages[0].training.seed == training_seed
+    assert mean_max.stages[0].training.learning_rate == concat.stages[0].training.learning_rate == 1.0e-4
+    assert mean_max.stages[0].training.gradient_clip_norm == 200.0
+    assert concat.stages[0].training.gradient_clip_norm == 200.0
+    assert mean_max.stages[0].model.initial_graph_gate == 0.0
+    assert mean_max.stages[0].model.initial_inventory_gate == 0.0
+    assert concat.stages[0].model.initial_graph_gate == 0.0
+    assert concat.stages[0].model.initial_inventory_gate == 0.0
+
+    mean_max_structure = asdict(mean_max)
+    concat_structure = asdict(concat)
+    mean_max_structure["plan_name"] = concat_structure["plan_name"]
+    mean_max_structure["stages"][0]["name"] = concat_structure["stages"][0]["name"]
+    assert mean_max_structure["stages"][0]["model"]["aggregation"] == "mean_max"
+    mean_max_structure["stages"][0]["model"]["aggregation"] = (
+        "mean_max_candidate_cross_attention_concat"
+    )
+    assert concat_structure["stages"][0]["model"]["aggregation"] == (
+        "mean_max_candidate_cross_attention_concat"
+    )
+    assert concat_structure == mean_max_structure
+
+
+def test_final_concat_seed3409_replicate_changes_only_seed_group_and_names() -> None:
+    """seed3409 摘要拼接复现相对 seed3408 只改变种子和运行隔离字段。"""
+
+    config_directory = (
+        Path(__file__).parents[2] / "configs" / "experiments" / "joint_identity_v4"
+    )
+    seed3408 = load_experiment_plan(
+        config_directory
+        / "joint_identity_v4_concat_zero_gate_clip_200_seed_3408_lr_1e4_oracle_a100.yaml"
+    )
+    seed3409 = load_experiment_plan(
+        config_directory
+        / "joint_identity_v4_concat_zero_gate_clip_200_seed_3409_lr_1e4_oracle_a100.yaml"
+    )
+    assert len(seed3408.stages) == len(seed3409.stages) == 1
+    assert seed3408.stages[0].training.seed == 3408
+    assert seed3409.stages[0].training.seed == 3409
+    assert seed3408.tracking.group == "joint-identity-v4-summary-concat-a100-seed-3408"
+    assert seed3409.tracking.group == "joint-identity-v4-summary-concat-a100-seed-3409"
+
+    seed3408_structure = asdict(seed3408)
+    seed3409_structure = asdict(seed3409)
+    seed3408_structure["plan_name"] = seed3409_structure["plan_name"]
+    seed3408_structure["stages"][0]["name"] = seed3409_structure["stages"][0]["name"]
+    seed3408_structure["stages"][0]["training"]["seed"] = 3409
+    seed3408_structure["tracking"]["group"] = seed3409_structure["tracking"]["group"]
+    assert seed3409_structure == seed3408_structure
+
+
 def test_joint_identity_v4_learning_rate_matrix_has_three_seed_pairs() -> None:
     """三个联合身份 v4 随机种子配对只改变学习率、种子和隔离命名，并保持计划名全局唯一。"""
 
