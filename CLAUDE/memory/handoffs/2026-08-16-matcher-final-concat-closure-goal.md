@@ -4,7 +4,7 @@ Date: 2026-08-16
 
 ## Current State
 
-当前活动 Goal 只剩本地 Git/worktree 收口。五个新增 concat_summary 任务、全部实验汇总、两份指定结果文档、三个推荐变体从头训练脚本和全库细粒度注释均已完成。运行记录与注释资产已经汇入 `codex/matcher-final-integration` 的 135 个未提交差异路径；当前只剩唯一完整终审点名修订的窄复核、双线提交与树等价、推进 `Learn/CUMULATIVE`，以及逐工作树资产核对后的单主工作树清理。本段不提前声称这些 Git 后置条件已经完成。
+当前活动 Goal 已进入完成态。五个新增 concat_summary 任务、全部实验汇总、两份指定结果文档、三个推荐变体从头训练脚本和全库细粒度注释均已完成；135 个整合路径已经分别进入真实实现历史和按阅读顺序重建的学习历史。实现线与学习线在最终治理记录提交前的树对象同为 `7181cc3a181390917a97bdf097deea7ba53747d0`，测试目录没有差异。`Learn/CUMULATIVE` 已推进到学习线，17 个 worktree 已清理为唯一主工作树 `C:/Users/15919/Desktop/Matcher`；主工作树的 tracked/untracked 状态干净，ignored `tmp/` 运维证据原地保留。
 
 五个固定收尾任务已经全部自然早停，后续不再新增实验。精度优先推荐是 A100、seed3409、LR `1e-4`、摘要拼接、零门、clip200；另保留 A100 seed3408 摘要拼接 clip1 高分复现和 mean/max LR `2e-4` 简单结构入口。
 
@@ -27,6 +27,8 @@ Date: 2026-08-16
 - 最终第 4 项 A100、seed3409 摘要拼接零门 clip200 已自然早停：BEST/last=`11/13`、selection=`0.7057373297694586`；6258 次更新中裁剪触发 0 次。摘要拼接比配对 mean/max 高 `1.906471%`。六个目标 allocation 已全部安全释放。
 - 三组零门 clip200 结构配对的 selection 变化为 `+0.375438%/+0.352861%/+1.906471%`，平均 `+0.878257%`。方向一致，但收益主要由 seed3409 拉高；两份最终报告已经把它表述为小幅正收益且方差明显。
 - `文档/记录/结果总记录.md` 与 `文档/记录/结果分析与最优结果.md` 已完成；`训练与运行/sh/最优变体推荐/` 已建立三个零参数从头训练脚本和 README。Shell 语法、正式 YAML 解析、科学字段、Markdown 链接、格式、禁用运维内容、关键百分比和 diff-check 均通过。
+- 外置恢复包 `C:/Users/15919/AppData/Local/Temp/Matcher_worktree_recovery_20260816T192617165` 完整保存主工作树 50 项、细粒度注释树 85 项和明确拒绝的 round1 8 项资产；`manifest.json` 的 SHA-256 为 `a376e6e518d69070489b10b768ae9c663e5253a8d1f4785fa05545058abea644`。逐树摘要和独有业务文件核对通过后，16 个辅助 worktree 已移除，分支引用保留。
+- 细粒度注释的最终映射计数已按窄复核唯一余项机械复算为 `77 + 6 + 2 = 85`：77 个路径逐字节映射，6 个实现或配置交叉路径保留最新可执行内容，2 个最终整合文档为 `matcher/model/README.md` 与 `talk/Matcher_全库细粒度注释清单.md`。没有开启用户禁止的第三轮独立审查。
 
 ## Decisions
 
@@ -43,19 +45,18 @@ Date: 2026-08-16
 
 旧 `Matcher_comments_round1` 有 8 个失败样稿路径，其中三份 talk 文件不在细粒度注释树中；用户已经否决该样稿，最终不整合。`Matcher_batch5_lr_2e4` 只有工作区状态/换行脏标记，`git diff --name-only` 为空，没有独有语义资产。主工作树的 ignored `tmp/` 包含运行证据，任何恢复、切换或清理都不得触碰。
 
-上述信息是用户确认前的历史预检边界，不代表当前状态。用户随后已经明确确认 17-worktree 可恢复整理方案；恢复包已经建立，运行记录与注释资产已经进入未提交整合树。工作树仍未物理清理，必须等本轮窄复核、双线提交和端点等价全部通过后再执行。
+上述信息是用户确认前的历史预检边界，不代表当前状态。用户随后明确确认 17-worktree 可恢复整理方案；恢复包、双线提交、端点树等价和逐工作树资产核对均已完成，16 个辅助 worktree 已按精确路径移除。
 
 同一干净累计端点已使用外置 Python/pytest 缓存完成全套基线，结果为 `184 passed in 405.24s`；测试后累计 worktree 的 tracked/untracked 状态计数仍为 0。系统策略拒绝递归删除本轮 `%TEMP%/matcher_final_preflight_20260816104739887`，该目录位于工作树之外且不含项目资产；不要为了清理它绕过工具策略。
 
 ## Open Questions
 
-- 无待用户裁定的整理问题。用户已确认 17-worktree 可恢复整理方案；仍须按恢复包、端点等价、逐树资产核对和最后单工作树的顺序执行。
+- 无待用户裁定或待执行的整理问题。
 
-## Next Actions
+## Completion Checks
 
-1. 对唯一完整终审点名的 concat 注释、映射计数、两份结果文档和当前状态记录执行一次窄复核；PASS 后提交实现历史并按人类阅读顺序重建学习历史。
-2. 证明实现端点与学习端点树等价，推进 `Learn/CUMULATIVE`；逐个核对恢复包和分支后清理 16 个隔离 worktree，只保留 `C:/Users/15919/Desktop/Matcher`。
-3. 复核主工作树干净、`Learn/CUMULATIVE` 是按提交者时间唯一最新提交、六个服务器 Job 仍已释放，再把 Goal 标为完成。
+1. 最终治理记录在实现线与学习线使用同一文件树提交；学习提交最后生成，使 `Learn/CUMULATIVE` 指向按提交者时间计算的唯一最新提交对象。
+2. 最终机械复核包含单工作树、主工作树干净、双线树等价、46 份 YAML 正式解析、推荐脚本语法与链接，以及六个服务器 Job 仍已释放。
 
 ## Files To Reopen
 
@@ -71,4 +72,4 @@ Date: 2026-08-16
 - `文档/exec_plan/Matcher_单候选闭集身份分类重写执行记录.md`
 - `文档/mapping/计划执行映射.md`
 - `configs/experiments/joint_identity_v4/README.md`
-- `C:/Users/15919/Desktop/Matcher_comments_fine_grained/talk/Matcher_全库细粒度注释清单.md`
+- `talk/Matcher_全库细粒度注释清单.md`

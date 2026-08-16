@@ -1193,3 +1193,9 @@ A800、seed3407 摘要拼接 2×2 的四格 selection 为 `0.6475402763/0.693934
 用户随后已确认 17-worktree 可恢复整理方案。外置恢复包已经覆盖主工作树 50 项资产、细粒度注释树 85 项资产和明确拒绝的旧 round1 8 项样稿；主工作树 ignored `tmp/` 不在恢复或清理范围。85 项注释资产与 50 项最终记录资产已经组成 `codex/matcher-final-integration` 的 135 个未提交差异路径：77 个注释路径逐字节映射，6 个实现或配置交叉路径保留累计线 concat 可执行内容并移植已审注释，`matcher/model/README.md` 与注释清单 2 个最终整合文档按当前事实更新。
 
 冻结整合树已通过 `184 passed`、45 个源码的 mypy、compileall、pyflakes、37 个生产 Python 去 Docstring AST 等价、46 份正式 YAML/47 个阶段解析、28 份 Shell 语法、Markdown 链接和文本格式门禁。唯一完整整合终审只点名 concat 增量注释、85 项映射计数、两份结果文档的两处口径和当前状态记录；这些位置进入一次定点修订与一次窄复核。窄复核 PASS 前不提交；PASS 后只剩实现/学习双线提交与树等价、推进唯一最新 `Learn/CUMULATIVE`，以及逐工作树资产核对后的单主工作树清理。本路标不提前宣称这些后置条件已经完成。
+
+### 双线 Git 与工作树最终收口
+
+最终整合先在 `codex/matcher-final-integration` 形成两个真实过程提交，再从累计基点按六个阅读层次重建 `Learn/matcher-final-closure`。最终治理记录提交前，实现端点 `d48380f1162462b2e595b998528f8aecdeacde20` 与学习端点 `45ac1b411877cb790d0a449878d43e7f0e6040b9` 的树对象均为 `7181cc3a181390917a97bdf097deea7ba53747d0`，`matcher/tests/` 差异计数为 0。唯一窄复核的最后机械问题已经按真实字节结果修订为 77 个逐字节路径、6 个实现或配置交叉路径和 2 个最终整合文档，共 85 项；按用户审查上限不再开启第三轮独立审查。
+
+外置恢复包 `C:/Users/15919/AppData/Local/Temp/Matcher_worktree_recovery_20260816T192617165` 保存 143 项待整合或明确拒绝的源资产，`manifest.json` 的 SHA-256 为 `a376e6e518d69070489b10b768ae9c663e5253a8d1f4785fa05545058abea644`。源文件摘要、分支、tracked/untracked 和 ignored 业务文件边界逐树复核后，主工作树 16 个 tracked 修改恢复到旧分支、34 个已备份 untracked 文件按显式清单清理，再切换到 `Learn/CUMULATIVE`；ignored `tmp/` 始终未进入目标集合。其余 16 个辅助 worktree 在确认没有未映射资产后移除，分支引用保留。当前 `git worktree list` 只剩 `C:/Users/15919/Desktop/Matcher`，主工作树 tracked/untracked 状态干净。
