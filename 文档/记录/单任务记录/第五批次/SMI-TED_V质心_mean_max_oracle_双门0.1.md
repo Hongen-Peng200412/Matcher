@@ -8,7 +8,7 @@
 - 判断方式：使用自然早停 BEST 的 validation selection score、六分类、五类身份、small_molecule 兼容身份、区域指标和 `identity_contribution/validation/*`；同时观察首轮稳定性、门值轨迹和非有限事件，不能只按收敛速度判优。
 - 实际资源：受管 A100 Job `340897`；16 CPU；物理批量 8、梯度累积 4、global batch 32；本任务不设置训练或 Slurm 时间上限。
 - W&B：online project `AdaLigand-Matcher-Batch5`；group `matcher-batch5-gate-initialization`；run [`57uwuxb6`](https://wandb.ai/pencounkdual-111/AdaLigand-Matcher-Batch5/runs/57uwuxb6)。
-- 状态：已提交并完成首个 global batch，继续训练；未读取 calibration。
+- 状态：已自然早停；BEST/last epoch 为 `9/11`，未读取 calibration。
 
 ## 提交与结果留证
 
@@ -18,4 +18,5 @@
 - launch：`train_experiment_job340897_20260815T032605_a4`；运行根：`/storage/penghongen/tmp/Matcher/experiments/batch5_smi_ted_v_centroid_gate_010_oracle_a100/train_experiment_job340897_20260815T032605_a4/`。
 - 锁边界：控制器只删除 `try_lock_340897`；`after_lock_340897` 保留，`pre_lock_340897/kill_lock_340897` 均不存在。没有取消、重启或释放 allocation。
 - 首个 global batch 已完成参数更新：global batch 32、身份有效候选数 7（`identity_eligible_count=7`）；classification/ligand/binding/identity/total loss 为 `1.7817382812/1.7512671351/1.6758121848/1.4810268027/3.6054730160`，裁剪前梯度范数 `48.4062690735`。数据等待/计算为 `9.0371542359/25.1023310081 s`，吞吐 `0.9373310632 candidate/s`，显存峰值 allocated/reserved 为 `14,195,046,400/19,440,599,040` bytes；首次更新后 graph/inventory 门值为 `0.1001000032/0.1000999957`。
-- 首次完整 validation、BEST/last 与最终头对头结论：待自然事件后回填。
+- BEST/last epoch 为 `9/11`，global step 为 `5364`，BEST selection score 为 `0.6937232999295260`；运行根与阶段摘要已正常写出并由 runner 自然恢复 `try_lock_340897`。
+- 双门 `0.1` 没有超过第 2 批零门 oracle或双门 `0.02`。该单随机种子尺度探针不支持把更大的门初值设为默认。
