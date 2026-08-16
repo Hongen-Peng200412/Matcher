@@ -1,0 +1,21 @@
+# 联合身份 v4 mean/max：seed 3409、LR 1e-4、A100 零门 clip200
+
+- 任务：最终五项 concat_summary 收尾中的第 5 项。它与同一批新触发的 seed3409、A100 摘要拼接零门 clip200 任务只在 aggregation 与运行隔离名称上不同，形成第三组结构配对。
+- 受管 Job：`340899`，A100，1 GPU，16 CPU。2026-08-16 02:29（Asia/Shanghai）经受保护控制器触发；触发后只存在 after_lock，try/pre/kill 均不存在。
+- 配置：`configs/experiments/joint_identity_v4/joint_identity_v4_mean_max_zero_gate_clip_200_seed_3409_lr_1e4_oracle_a100.yaml`。
+- 固定科学字段：联合身份 v4、SMI-TED、oracle、all_non_background、`data.selection_seed=3407`、`training.seed=3409`、LR `1e-4`、mean/max、双门 `0/0`、clip `200`、BF16、物理批量 `8`、梯度累积 `4`、global batch `32`、从零初始化。
+- Git：实现端点 `ffc020354ff2bc1169eacd01a5fc6d3ffd41fd57`；学习端点与 `Learn/CUMULATIVE` 为 `2f80bc9880591c69c1e51f7125bb4f989ab22b9f`；两端 Git tree 均为 `7cd1241a6d184134a5c9638cef8a659bccb64f9a`。
+- 本地门禁：最终配置专项 `15 passed`、完整配置测试 `52 passed`、正式解析器通过 `46` 个计划和 `47` 个阶段；mypy 检查 45 个 Python 文件零问题，pyflakes 与 diff-check 通过。配置科学正确性与严格技术表达均已独立 PASS。
+- release：`/home/penghongen/Feedback/Matcher/releases/Matcher_d3d65ad54fce/Matcher`。
+- 前序完成证据：`train_experiment_job340899_20260815T192320_a6` 自然早停，BEST/last=`7/9`，selection=`0.6968598986464777`。
+- 一次性控制器：本地 ignored `tmp/joint_identity_v4_audit/activate_final_concat_controls_a100.sh`，冻结 SHA-256 为 `a1028163a92b7376c1234b5377dfcb21d6fa1fe945665917c51f709bf30664e7`；远端冻结副本位于 `/storage/penghongen/tmp/Matcher/diagnostics/final_concat_controls_20260816T0215/`。控制器科学正确性与严格技术表达均独立 PASS 后执行一次。
+- 动态命令：`/home/penghongen/Feedback/Matcher/allocations/340899/run_cmd_340899.sh`，SHA-256 为 `ea551d368631a8d6ae279b0a986ff5326226e488e9fd00a479a23f58b514552d`。
+- launch：`/home/penghongen/Feedback/Matcher/launches/340899/train_experiment_job340899_20260816T022922_a7/`。
+- W&B：entity `pencounkdual-111`，project `AdaLigand-Matcher-JointIdentityV4-SummaryConcat`，group `joint-identity-v4-summary-concat-a100-seed-3409`，run ID [`l8evur0y`](https://wandb.ai/pencounkdual-111/AdaLigand-Matcher-JointIdentityV4-SummaryConcat/runs/l8evur0y)。
+- 运行根：`/storage/penghongen/tmp/Matcher/experiments/joint_identity_v4_mean_max_zero_gate_clip_200_seed_3409_lr_1e4_oracle_a100/train_experiment_job340899_20260816T022922_a7/`。
+- 首步：global batch `32`，`identity_eligible_count=12`，计算耗时 `24.8917558379 s`，裁剪前梯度范数 `76.4645156860`，峰值 CUDA allocated/reserved 为 `14,195,432,448/19,440,599,040 bytes`。
+- 记录时点：本记录在受保护触发后立即补齐；配置与五项任务定义在触发前已经冻结，launch 和 allocation runner 提供实际执行事实。这里不把补记时点伪写为触发前完成。
+- 最终结果：任务按 patience 自然早停，BEST/last epoch=`7/9`、阶段最终 global step=`4470`、BEST selection=`0.6925343658028632`，last selection=`0.6894207737452067`。BEST validation 的 `sample_count/identity_eligible_count=6495/1466`；六分类 macro-F1、固有身份 Top-1、条件身份 Top-1、宽松端到端身份 F1 分别为 `0.5311359506939183/0.8717598908594816/0.875/0.6714671467146714`。small-molecule 的固有 Top-1、条件 Top-1、端到端 F1 分别为 `0.7706422018348624/0.7870563674321504/0.6708185053380783`；ligand/binding micro Dice 为 `0.3028377665331473/0.04337566508159356`。
+- 裁剪证据：正式逐更新 W&B 历史包含 `4470` 次更新，`gradient/train_step/preclip_norm>200` 的触发数为 `0`、比例为 `0%`，最大裁剪前梯度范数为 `76.46451568603516`，最小缩放系数 `min(1,200/(norm+1e-6))` 为 `1.0`；P50/P95/P99 分别为 `5.4347109795/12.9760022640/19.3618903732`。因此本轨迹严格没有发生梯度裁剪。
+- 直接辅助比较：同硬件、同 seed 的 mean/max 零门 clip1 selection 为 `0.6927067815952292`；本 clip200 绝对变化 `-0.0001724158`、相对变化 `-0.024890%`，可视为几乎中性。摘要拼接结构效应必须等待 Job `340898` 的同 seed、同硬件、同 clip200 配对自然收口后再计算。
+- 释放状态：完整 summary、BEST、LAST、W&B、四锁和资源均核对后，只删除精确 `after_lock_340899`；runner 正常退出，没有调用 `scancel`，也没有删除 pre/kill 锁。随后清理该 Job 已失效的 `/storage` try-lock 替身目标。2026-08-16 的只读复核确认 Job 已不在 `squeue`，四类锁均不存在；不读取 calibration，也不创建 heartbeat。

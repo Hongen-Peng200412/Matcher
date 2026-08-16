@@ -1,0 +1,23 @@
+# 联合身份 v4 mean/max：seed 3407、LR 1e-4、A800 零门 clip200
+
+- 任务：最终五项 concat_summary 收尾中的第 2 项。任务保留联合身份 v4 与 mean/max 聚合器，固定双身份门为 0、裁剪阈值为 200；它与同硬件、同训练随机种子、同学习率、同批量的摘要拼接零门 clip200 任务形成聚合结构直接对照。
+- 触发资源：Job 340894，A800，16 CPU。前序摘要拼接双门0.02、clip1 任务自然早停后，控制器再次核对 Job 资源、四锁、前序 launch、summary、BEST、LAST、W&B、动态命令与目标输出不存在；只删除了 Job 340894 的精确 try_lock，保留 after_lock，未触碰 pre_lock 或 kill_lock。
+- 配置：`configs/experiments/joint_identity_v4/joint_identity_v4_mean_max_zero_gate_clip_200_seed_3407_lr_1e4_oracle_a800.yaml`。
+- 固定科学字段：联合身份 v4、SMI-TED、oracle、all_non_background、`data.selection_seed=3407`、`training.seed=3407`、LR `1e-4`、mean/max、双门 `0/0`、clip `200`、BF16、物理批量 `8`、梯度累积 `4`、global batch `32`、从零初始化。
+- 对照边界：该任务与已完成的 A800 摘要拼接零门 clip200 任务只允许 aggregation 和运行隔离名称不同；不得把它与双门 0.02 的第 1 项直接解释为单一结构效应。
+- Git：实现端点 `ffc020354ff2bc1169eacd01a5fc6d3ffd41fd57`；学习端点与 `Learn/CUMULATIVE` 为 `2f80bc9880591c69c1e51f7125bb4f989ab22b9f`；两端 Git tree 均为 `7cd1241a6d184134a5c9638cef8a659bccb64f9a`。
+- 本地门禁：最终配置专项 `15 passed`、完整配置测试 `52 passed`、正式解析器通过 `46` 个计划和 `47` 个阶段；mypy 检查 45 个 Python 文件零问题，pyflakes 与 diff-check 通过。配置科学正确性和严格技术表达均已独立 PASS。
+- release：`/home/penghongen/Feedback/Matcher/releases/Matcher_d3d65ad54fce/Matcher`。
+- 前序证据：摘要拼接双门0.02、clip1 使用 launch `train_experiment_job340894_20260815T220601_a14`、W&B run `8e9ufq3b`，BEST/last=`6/8`、selection=`0.6939342114402051`、`stopped_by_patience=true`。控制器还绑定了联合身份 v4 GPU 等价报告、清单输入快照、计划、checkpoint、selection 与 worker provenance；科学正确性和严格技术表达两项独立终审均为 PASS。
+- 触发异常与恢复：首次触发时，`/home` Lustre 的 OST 写入阈值已满，runner 无法创建 launch 文件和恢复 try_lock；没有训练进入首步。失败产生的 226 个空 launch 目录已按清单删除，相关缓存与旧日志 inode 均先完整复制并核对后移到 `/storage/penghongen/tmp/Matcher/diagnostics/home_enospc_archive_20260816/`，可以恢复。Job 340894 的原 launch 树保存在 `/home/penghongen/Feedback/Matcher/launches/340894.home_enospc_archive_20260816`，活动逻辑路径改为指向 `/storage/penghongen/tmp/Matcher/diagnostics/final_a800_meanmax_20260816/launches_340894_live` 的符号链接；迁移清单覆盖 42 个条目并通过路径、类型、权限、大小与内容摘要核验。该处置没有删除 after_lock，也没有使用 scancel。
+- 正式 launch：`/home/penghongen/Feedback/Matcher/launches/340894/train_experiment_job340894_20260816T035809_a241/`。逻辑路径保留原历史身份，实际字节位于上述 `/storage` 活动 launch 树。
+- 动态命令：`/home/penghongen/Feedback/Matcher/allocations/340894/run_cmd_340894.sh`，内容摘要为 `862523c80ea472e698a1bab592771a43b1136af25d5d7d66815e56640e478b0e`；它绑定 release `Matcher_d3d65ad54fce` 和本记录的唯一 YAML。
+- W&B：entity/project 为 `pencounkdual-111/AdaLigand-Matcher-JointIdentityV4-SummaryConcat`，run ID 为 `d9thnzeq`。
+- 运行根：`/storage/penghongen/tmp/Matcher/experiments/joint_identity_v4_mean_max_zero_gate_clip_200_seed_3407_lr_1e4_oracle_a800/train_experiment_job340894_20260816T035809_a241/`。
+- 首步验收：首个 global batch 32 已完成；`identity_eligible_count=7`、计算耗时 `22.4204440098 s`、裁剪前梯度范数 `42.1325302124`，CUDA allocated/reserved 为 `14,195,046,400/19,667,091,456 bytes`。首步只证明训练链正常，不形成结构结论。
+- 锁与空间保险：六个受管 Job 的逻辑 try_lock 均已改为指向 `/storage/penghongen/tmp/Matcher/diagnostics/final_allocation_lock_surrogates_20260816/try_lock_<job>` 的符号链接。训练期间目标不存在，因此 runner 继续执行；自然结束时 `touch` 会在 `/storage` 创建目标并恢复锁，避免 `/home` ENOSPC 空转。Job 340894 当前保留 after_lock，pre/kill 不存在。
+- 当前状态：2026-08-16 03:58（服务器 launch 时间）正式运行并完成首步；等待完整 validation 与自然早停。
+- 最终结果：2026-08-16 06:48:35（Asia/Shanghai）因 patience 自然早停；BEST/last=`3/5`、global step=`2682`、selection=`0.6889974930159317`。BEST validation 的 `sample_count/identity_eligible_count=6495/1466`；六分类 macro-F1、固有身份 Top-1、条件身份 Top-1、宽松端到端 F1 为 `0.5263171804210311/0.8553888130968622/0.8762295081967213/0.6644457904300424`，small-molecule 三项为 `0.7357798165137615/0.7741935483870968/0.6418338108882522`，ligand/binding micro Dice 为 `0.23902371590856084/0.015096124496138917`。
+- 裁剪统计：`2682` 次参数更新中，大于阈值 200 的裁剪前梯度范数为 `0` 次，触发比例 `0%`；最大值 `42.132530212402344`，最小缩放系数 `1.0`。因此本任务严格没有发生梯度裁剪。
+- 结构对照：同硬件、同 seed、同 LR、同门值与同 clip200 的摘要拼接任务 selection=`0.6915842525509563`，比本 mean/max 高 `0.375438%`。本 mean/max clip200 又比同 seed mean/max clip1 `0.6920686526492751` 低 `0.443765%`。两个差异都很小，不构成跨 seed 稳定结构结论。
+- 释放：runner 通过 `/storage` try_lock 替身恢复锁；核对 summary、BEST/LAST、W&B、资源和四锁后，只删除精确 `after_lock_340894`。Job 正常退出 Slurm，逻辑 try_lock 链接与已失效的 `/storage` 目标随后清理。未使用 scancel，未触碰 pre/kill，未读取 calibration。

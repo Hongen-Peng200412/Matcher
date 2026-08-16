@@ -1,0 +1,22 @@
+# 联合身份 v4 摘要拼接：seed 3407、LR 1e-4、A800 零门 clip1
+
+- 任务：最后一组摘要结构实验的首个锚点；与 mean/max Job 340894 构成同硬件、同训练随机种子、同学习率、同批量的直接结构对照。
+- 受管 Job：`340894`，A800，16 CPU；本任务触发前，旧 mean/max 任务已经自然早停并恢复 `try_lock_340894`，`after_lock_340894` 保留，pre/kill 锁不存在。
+- 配置：`configs/experiments/joint_identity_v4/joint_identity_v4_concat_zero_gate_seed_3407_lr_1e4_oracle_a800.yaml`。
+- 科学变量：相对 Job 340894 只把 `model.aggregation` 从 `mean_max` 改为 `mean_max_candidate_cross_attention_concat`；计划名、阶段名和 W&B 命名只隔离产物。
+- 固定字段：联合身份 v4、SMI-TED、oracle、all_non_background、`data.selection_seed=3407`、`training.seed=3407`、LR `1e-4`、双身份门 0、clip 1、BF16、物理批量 8、梯度累积 4、global batch 32、从零初始化。
+- 结构：完整 mean/max 与完整候选条件注意力各自产生 D_m 维表示；拼接后的 2D_m 维表示进入隐藏宽度 2D_m 的残差多层感知机，零初始化末层输出加回 mean/max 主表示，末尾不增加 LayerNorm。
+- 当前状态：2026-08-15 18:36 安全触发；训练于 20:03:15（Asia/Shanghai）因连续两个 validation 轮次没有改善而自然早停。实现端点 `7e1924dc4fe543362f31416ccaea1c96cc4ab80d` 与学习端点 `947efecae8a737b5b5eaefbc5b53db1d4d5ac979` 的 Git 树均为 `075f41edce51b33fcc5a9a2abaa8fe17855f92b3`；后续矩阵学习端点和当前 `Learn/CUMULATIVE` 已推进到 `36877d1b6e2f301e44f1e4611169f3451b47e4fb`。本地全套 `170 passed`，学习端点摘要拼接专项 `8 passed`；模型科学与技术表达独立终审均已 PASS。
+- release：`/home/penghongen/Feedback/Matcher/releases/Matcher_81a80171fa02/Matcher`；远端正式 Python 已完成 46 个 Python 文件内存语法解析、35 个计划/36 个阶段正式解析与锚点配置专项 `1 passed`。
+- 一次性激活控制器：本地 ignored `tmp/joint_identity_v4_audit/activate_v4_concat_seed3407_a800.sh`；冻结 SHA-256 为 `e3fd03d0f455ef346f0ec2e241721a7ec1eccafb7747b50bd93ff1b7a0b3f23d`。当前字节的科学正确性与严格技术表达独立终审均为 PASS。该摘要只留在执行记录，不进入正式包、YAML 或 `resolved.json`。
+- 动态命令：`/home/penghongen/Feedback/Matcher/allocations/340894/run_cmd_340894.sh`，SHA-256 `6adbcf9f694e87af4801e757396be85288df635a2032290c19272f13f374abc4`；要求 `TASK_PROJECT_ROOT=/home/penghongen/Feedback/Matcher/releases/Matcher_81a80171fa02/Matcher`，随后执行 `训练与运行/sh/train_experiment.sh --plan configs/experiments/joint_identity_v4/joint_identity_v4_concat_zero_gate_seed_3407_lr_1e4_oracle_a800.yaml`。
+- launch：`/home/penghongen/Feedback/Matcher/launches/340894/train_experiment_job340894_20260815T183625_a13/`，release、Job、A800、1 GPU、16 CPU 和目标命令均已匹配。
+- W&B：entity `pencounkdual-111`，project `AdaLigand-Matcher-JointIdentityV4-SummaryConcat`，group `joint-identity-v4-summary-concat-seed-3407`，run ID `a9nluhn9`，[运行链接](https://wandb.ai/pencounkdual-111/AdaLigand-Matcher-JointIdentityV4-SummaryConcat/runs/a9nluhn9)。
+- 运行根：`/storage/penghongen/tmp/Matcher/experiments/joint_identity_v4_concat_zero_gate_seed_3407_lr_1e4_oracle_a800/train_experiment_job340894_20260815T183625_a13/`。
+- 首步：global step 1 已接受；global batch 32，`identity_eligible_count=7`，计算耗时 `22.1436675452 s`，裁剪前梯度范数 `42.1252670288`，峰值 CUDA allocated/reserved 分别为 `14,212,122,624 / 19,583,205,376` bytes。
+- 最终结果：BEST/last epoch 为 `0/2`，global step 为 `1341`，BEST selection score 为 `0.6475402763159072`，`stopped_by_patience=true`。BEST validation 的 `sample_count/identity_eligible_count` 为 `6495/1466`；六分类 macro-F1、固有身份 Top-1、条件身份 Top-1、宽松端到端 F1 分别为 `0.5181645495329218/0.8021828103683493/0.8154224774405250/0.6090338019742747`。small-molecule 兼容口径的固有 Top-1、条件 Top-1、端到端 F1 分别为 `0.6330275229357798/0.6621923937360179/0.5512104283054003`，ligand/binding micro Dice 为 `0.1622142225538307/0.005250260529653988`。
+- 结构对照：同硬件、同训练随机种子、同学习率和同批量的 v4 mean/max 基线 selection 为 `0.6920686526492751`；摘要拼接降低 `6.434098%`。六分类 macro-F1、固有身份 Top-1、条件身份 Top-1、宽松端到端 F1 分别变化 `-1.937686%/-7.328605%/-7.140768%/-9.055330%`；small-molecule 三项分别变化 `-17.464115%/-15.788418%/-16.855234%`，ligand/binding micro Dice 分别变化 `-32.303216%/-76.071192%`。该单个 A800、seed3407 锚点明确不支持把摘要拼接作为默认结构，但最终矩阵结论仍须等待其余五项自然收口。
+- 轨迹限定：摘要拼接 epoch 0 selection `0.6475402763159072` 比 mean/max 同 epoch 的 `0.6418496024938629` 高 `0.886605%`，validation 总损失也更低（`1.0004038088` 对 `1.0334609476`）。摘要拼接随后两轮 selection 均未超过 epoch 0，因同一 patience 契约在 epoch 2 停止；mean/max 则在 epoch 2 以 `0.6469126497476826` 刷新 BEST、重置 patience，并继续改善到 epoch 5。故当前证据说明训练轨迹和最终选模不利，不说明零残差初始化退化失效，也不能由单个 seed 证明结构必然有害。
+- 触发门禁：代码/配置本地门禁、双线 Git 等价、内容寻址 release、两项独立代码终审、控制器两项独立终审、v4 manifest 与既有 GPU 等价报告绑定、a12 自然早停 summary/BEST/LAST/W&B 绑定、Job 资源与四锁、输出查重、动态命令字节复核全部通过后，才允许删除精确 `try_lock_340894`。
+- 锁状态：allocation runner 在训练命令成功退出后于 20:03:19 创建 `/home/penghongen/Feedback/Matcher/allocations/try_lock_340894`；`after_lock_340894` 继续位于 Job 子目录，pre/kill 锁不存在。20:30 的初次临时探针误把四类锁都查在 Job 子目录，因而错误写成“try_lock 尚未恢复”；21:03 按正式 `allocation_runner.sh` 路径分层重查并由 runner 输出交叉确认后已纠正。allocation 仍为 `RUNNING`，本次取证没有修改锁或动态命令。
+- 禁止项：不删除 `after_lock`，不触碰 pre/kill 锁，不释放 allocation，不创建 heartbeat，不读取 calibration。

@@ -17,7 +17,7 @@
 - SMI-TED 某个 occurrence 缺失只移除该表示，不排除整个 PDB。真实小分子若没有当前语言模型的可用目标，保留六分类且使用 `identity_target=-1`，不进入身份损失和身份指标。
 - `oracle/detached/joint` 都只以真实 small-molecule 且当前身份目标有效的候选作监督。它们的身份损失分母是同一 global batch 中的真实有效候选数，不是 `p_small` 权重和；`detached` 不把身份梯度传给 `p_small`，`joint` 传递该梯度。
 - 候选不按 PDB 分批。每个 epoch 在全候选轴上使用 `seed+epoch` 洗牌，先截断到 32 的整倍，再切成 A100 的 `8×4` 或 A800 的 `16×2`，因此两种硬件每个 epoch 使用同一候选序列。
-- train/validation/calibration 按 PDB 互斥。训练和模型选择只构造 train 与 validation Dataset；calibration 虽可在冻结清单中物化，但只能在选定最终方案后做一次保留评估。
+- train/validation/calibration 中实际发布的候选记录按小写 `pdb_id` 互斥；仅有整 PDB 排除记录时不计入候选重叠。训练和模型选择只构造 train 与 validation Dataset；calibration 虽可在冻结清单中物化，但只能在选定最终方案后做一次保留评估。
 
 ## 实现历史
 
@@ -1030,10 +1030,166 @@ Git 忽略目录中的 `tmp/batch5_launch/activate_batch5_gate.sh` 经科学正�
 
 用户要求把模型可见身份改为 `(object_key,PreparedLigand.smiles)`，其中第二项只能取 AdaLigand `prepared_smiles.jsonl` 顶层公开模型接口字符串。第 5 批六项已经冻结并运行 v3，故本轮从累计端点另开 `codex/matcher-joint-identity-v4`，不修改任何运行命令、release、Job 或锁。
 
-清单 schema 提升为 4。新实现按联合键分组身份、定位候选真值、选择同字符串 occurrence 的语言表示并计算 train seen；LigandObject 图仍按 `object_key` 复用。显式 `smiles=null` 保留候选但令身份目标不可用，整个 PreparedLigand 文件缺失用独立状态留证，已有文件缺记录或字段损坏失败关闭。同一联合键跨 PDB、跨已物化划分类别不一致时在正式清单发布前失败。为保护没有拆分的身份，固定 occurrence 选择继续沿用 v3 的 `(pdb_id,object_key,language_family)` 盐值。
+清单 schema 提升为 4。新实现按联合键分组身份、定位候选真值、选择同字符串 occurrence 的语言表示并计算 train seen；LigandObject 图仍按 `object_key` 复用。显式 `smiles=null` 保留候选但令身份目标不可用，整个 PreparedLigand 文件缺失用独立状态留证，已有文件缺记录或字段损坏失败关闭。同一 PDB 的本地身份轴内，联合键类别不一致时在正式清单发布前失败；同一小写 `pdb_id` 的候选记录不得同时发布到多个划分，仅有整 PDB 排除记录时不算候选重叠。不同 PDB 的类别差异只作结构化诊断。为保护没有拆分的身份，固定 occurrence 选择继续沿用 v3 的 `(pdb_id,object_key,language_family)` 盐值。
 
 两轮独立审查发现并已修正任意非空 `PreparedLigand.kind`、持久联合键字段隐式转换、扩展路径类型漂移，以及一次性审计器的源真值和跨类别覆盖等边界。第二轮修订后的本地全套为 `162 passed in 152.31s`，mypy 检查 45 个 Python 文件零问题，compileall、pyflakes 和 diff-check 通过；一次性审计器另有 8 项回归通过。科学正确性与严格技术表达两项独立复审均为 PASS，阻断项为零。正式测试包含同模板不同字符串拆槽、同字符串不同模板不合并、显式空值不借用、来源缺失独立状态、语言归档字符串类型与内容不一致、跨划分类别漂移和同数值批次前向隔离。该结果仅证明合成契约与代码接口；真实数据等价尚未执行。
 
 Git 忽略目录 `tmp/joint_identity_v4_audit/` 已准备一次性清单比较工具，只读取显式传入的 v3/v4 train/validation JSONL 与 PreparedLigand 记录。后续先构建独立 `closed_set_v4`，逐 PDB 报告拆槽、固定语言 occurrence、seen 和候选监督变化；再对未受影响 PDB 比较 Dataset 科学张量、固定权重前向和 `loss/metrics/sample_count/identity_eligible_count`。calibration、墙钟与吞吐均不进入该等价判断。两项独立代码复审已通过；真实审计完成前，不创建或触发 v4 零门训练任务。
 
 双线 Git 随后从同一 `Learn/CUMULATIVE` 基点收口。实现分支保留真实实现提交；学习分支按文档契约、schema、清单构造、Dataset 和测试的顺序形成五个线性提交。两端树逐文件相同，学习端点重跑 `162 passed`、mypy、compileall、pyflakes 和 diff-check 后，累计学习分支快进到学习端点。一次性审计器仍位于 Git 忽略目录，不进入两条正式历史。
+
+首次真实 train/validation 构建使用 release `Matcher_936323d942c5` 和 CPU Job `342285`。Job 运行 `00:37:29` 后以 `FAILED/1` 结束，未发布 manifest 或正式 JSONL。失败证据是同一 `CCD:SAH` 联合键在 `train/7fgg` 的 12 个 occurrence 中为 `peptide_like`，在 `train/7pnx` 与 `validation/7pnz` 各 1 个 occurrence 中为 `small_molecule`；三个 PDB 内部均一致。该证据触发上述本地类别规则修订和跨 PDB 诊断，不触发 GPU、calibration 或旧 release 重试。下一步在完整本地门禁和两项独立复审后建立新内容寻址 release，再次只构建 train/validation。
+
+规则修订后的学习端点版本化正式测试为 `160 passed in 155.57s`；主工作区根目录合并运行时自动发现 ignored 审计器的 12 项测试，因此为 `172 passed in 150.01s`。mypy 检查 45 个 Python 文件零问题，compileall、pyflakes、29 份正式 YAML 解析和 diff-check 通过；一次性审计器单独运行仍为 `12 passed`，并通过 pyflakes 与 Git Bash 语法检查。新增零门配置相对第 2 批 oracle 只改变任务命名和 W&B 隔离字段。科学正确性与严格技术表达两项独立终审均为 PASS，阻断项为零。
+
+双线 Git 从 `Learn/CUMULATIVE@f3aa704453dca61a2d96d6cf3cf061618a59e28b` 收口：实现端点为 `codex/matcher-v4-zero-gate-baseline@18fe8cb7f2e24cb1552f307517dfa6fb93a88e27`，学习端点为 `Learn/matcher-v4-zero-gate-baseline@011b289dd26422a98573508bafe9fc20520a9bc5`，两端树摘要均为 `ba7d910b617a3cc87b8ed7ae1531e886a1d29403`。学习端点通过上述正式门禁后，`Learn/CUMULATIVE` 已快进到该端点。下一步创建新 release、CPU-only 重建并执行同卡确定性数值门禁。
+
+2026-08-15 07:55，使用干净的累计学习端点完成安全同步并创建 release `Matcher_28e4bacd0dbc`。第二次 CPU-only 构建 Job `342303` 的 launch 为 `build_manifest_job342303_20260815T075525_a1`，实际绑定该新 release；07:55:46 的事件式首查为 `RUNNING`、节点 `cnode01`。任务参数仍只允许 train/validation，资源为 2 CPU、16 GiB、无 GPU且未设置时间上限；当前没有第二次构建结果，也没有读取 calibration。
+
+### 第 5 批双门收口与学习率接续准备
+
+2026-08-15 04:55，第 5 批双门 `0.02` 在 epoch 9 后因连续两个坏验证轮自然早停。运行根与阶段 `summary.json` 均已发布；BEST/last epoch 为 `7/9`，global step 为 `4470`，selection score 为 `0.6957138818`。相对第 2 批零门 oracle，selection score、六分类 macro-F1、五类固有 Top-1、条件 Top-1、宽松端到端 F1、small-molecule 兼容 F1、ligand Dice 和 binding Dice 分别变化 `-0.342%/-0.128%/-1.402%/-0.292%/-0.576%/-2.740%/-9.896%/-29.963%`。该单随机种子结果不支持把双门 `0.02` 作为默认，但不外推为该门值普遍有害。
+
+Job `340899` 的 Slurm allocation 继续 `RUNNING`，A100、16 CPU、`TimeLimit=UNLIMITED`；`after_lock_340899` 保留，共享 allocation 根恢复 `try_lock_340899`，没有 `pre_lock/kill_lock`。另外五项第 5 批任务继续训练。用户要求尽量保持六张受管卡同时有具名任务，因此新增学习率 `2e-4` 单轴探针：它逐字段回到第 2 批 A100 零门 oracle，只把初始学习率从 `1e-4` 提高到 `2e-4`，继续使用 `clip1` 与 global batch 32。该探针回答强裁剪条件下优化器步长翻倍是否改善 validation，不声称搜索全局最优学习率，也不与门值或裁剪变量混在同一任务。
+
+正式配置候选为 `configs/experiments/batch5/batch5_smi_ted_v_centroid_lr_2e4_oracle_a100.yaml`；本地第 5 批专项测试 `7 passed`、完整正式测试 `161 passed`，mypy 与 diff-check 通过。截至 08:07，该任务为第 7 项已决定、尚未提交的任务。严格技术表达复审为 PASS；独立科学复审发现隔离工作树继承 v4 累计端点，按其正常入口会读取 `closed_set_v4`，不再是记录声明的 v3 单变量对照，因此判为 FAIL。该工作树不得创建训练 release 或触发 Job `340899`。根据项目双线 Git 规则，从历史 v3 端点派生独立运行分支需要用户明确确认；备选是在当前 v4 主线实现显式版本选择，但改动范围和风险更大。CPU-only v4 Job `342303` 同时继续运行，没有 GPU、heartbeat 或 calibration 读取。
+
+08:29 的事件式只读核验发现 A800 Job `340894` 已自然恢复 `try_lock`。正式运行摘要确认 `clip5` 于 08:14:39 自然早停，BEST/last epoch=`8/10`、global step=`4917`、selection=`0.6908370762`；相对第 2 批 A100 `clip1` 次级基线，selection 低 `1.041%`，六分类与主要身份指标低 `0.646%–3.029%`，ligand/binding Dice 低 `16.573%/41.929%`。同硬件 `clip200` 仍在训练，因此不提前归因为裁剪阈值。Job `340894` 的 `after_lock` 保留且没有 `pre_lock/kill_lock`；它优先等待 v4 清单审计与同卡数值等价门禁，门禁未通过前不触发 v4 零门训练。
+
+Job `342303` 于 08:30:27 以 `COMPLETED/0:0` 结束，耗时 `00:35:03`，正式发布 v4 train/validation 清单。第一次审计提交 Job `342316` 在 Conda 激活前因 Bash 未定义变量检查失败，未运行审计器或发布报告；一次性脚本把 `set -u` 移至 Conda 激活之后并通过本地 Bash 门禁。重提 Job `342318` 完整发布输入快照和审计报告，随后因零差异硬门禁发现真实 seen 变化而按设计以 `FAILED/2` 结束；审计前后输入快照逐字节相同。
+
+报告确认 train/validation 候选 `14,312/6,495`、身份 `1,477/536`，候选集合、JSONL 顺序、固定语言 occurrence、可监督候选数和排除记录均与 v3 相同，没有同 PDB 多 SMILES 拆槽。唯一差异是 exact `CCD:SAH` 联合键使 `train/7pnx` 与 `validation/7pnz` 的两种语言 seen 标记由 false 变 true；每个 PDB 的 seen 身份数增加 1，可监督候选数不变。下一步对这两个 PDB 全部候选与未受影响分层样本比较 Dataset 科学张量，再在同一 A800、同一 checkpoint 和确定性数值设置下比较固定权重前向、完整 validation 损失、总体指标和 selection score；只允许 `7pnz` 导致的 seen/unseen 子统计变化。calibration 未读取。
+
+### 联合身份 v4 Dataset/Batch 门禁
+
+一次性 Dataset 审计使用两个独立 Python 进程加载 v3/v4 release，显式绑定对应清单和计划，并把 voxel/PP 缓存读取改为只读；任一 cache miss 在原 load-or-build 之前失败。比较范围包括清单审计相关 PDB 的全部候选，以及每个划分、每个六分类类别最多四个不同的未受影响 PDB；某类不足四个时取全部，可为零。候选级联合身份字符串、类别、target、seen 元数据和 collated batch 字符串轴都必须绑定各自清单真值，不能只比较字段是否存在。
+
+首次提交 Job `342324` 使用旧的“每类恰好四个”规则，因 `validation/nucleotide_like` 低基数在 Dataset 实例化前以 `FAILED/1:0` 结束，运行 `00:00:05`。该失败没有发布正式 `result/`，旧目录 `/storage/penghongen/tmp/Matcher/diagnostics/joint_identity_v4_dataset_audit_20260815T0900/` 保留。修订后的工具增加低基数与零未受影响池回归；本地与服务器专项均为 `11 passed`，科学正确性和严格技术表达两项独立复审均为 PASS。
+
+第二次 CPU-only Job `342325` 使用目录 `/storage/penghongen/tmp/Matcher/diagnostics/joint_identity_v4_dataset_audit_20260815T0945/`，在 `cnode01` 运行 `00:03:08` 后以 `COMPLETED/0:0` 结束，stderr 为空。正式报告位于 `result/report.json`：train/validation 的完整 Dataset 长度分别在 v3/v4 中同为 `14,312/6,495`，实际比较 `92/72` 个候选和 `12/9` 个 collated batch；清单审计相关 PDB 全候选均被强制纳入。结果为 `model_input_and_supervision_exact=true`、`collated_tensor_fields_exact=true`，允许变化列表为空。该门禁没有创建缓存、使用 GPU、修改锁或读取 calibration。
+
+Dataset/Batch 门禁至此完成。下一步另行冻结 GPU 门禁脚本，以同一空闲 A800、同一 Batch2 oracle `BEST.pt`、相同样本顺序和确定性数值后端依次运行 v3/v4 固定权重前向与完整 validation；墙钟和吞吐不比较，总体损失、指标、样本数、身份有效候选数与 selection score 必须精确一致，只允许 `validation/7pnz` 对应的 seen/unseen 子统计重新分层。脚本通过两项独立复审前，不删除 Job `340894` 的 `try_lock`。
+
+### 第 5 批最终收口与联合身份 v4 学习率矩阵
+
+第 5 批六项均已自然早停，最终结果如下。BEST/last epoch 均相差两轮，与连续两个 validation 轮次没有改善后停止一致。
+
+| 任务 | BEST/last epoch | 优化器更新数 | BEST selection score |
+|---|---:|---:|---:|
+| 双门 `0.02/0.02` | `7/9` | `4470` | `0.6957138818452475` |
+| graph-only `0.02/0.0` | `8/10` | `4917` | `0.6914142117510179` |
+| inventory-only `0.0/0.02` | `6/8` | `4023` | `0.6932194548785874` |
+| 双门 `0.1/0.1` | `9/11` | `5364` | `0.6937232999295260` |
+| `clip5` | `8/10` | `4917` | `0.6908370761804674` |
+| `clip200` | `11/13` | `6258` | `0.6960835398398743` |
+
+同一 A800 资源类型、同一随机种子、相同 `16×2=global32` 配置和候选顺序的主要裁剪对照中，`clip200` 比 `clip5` 高 `0.0052464636594069`，相对提高 `0.7594357397%`。`clip200` 的 6258 次更新中裁剪触发 0 次，最大裁剪前梯度范数为 `73.61093139648438`，最小缩放系数为 `1.0`；因此本次运行满足预先规定的“近似不裁剪”条件，更精确地说，有限阈值 200 没有实际改变任何一步梯度。该结论只来自一个随机种子，不能写成显著或普遍优势；与第 2 批 A100 `clip1` 的比较只作跨硬件辅助证据。
+
+联合身份 v4 的同卡 GPU 门禁随后正式 PASS。v3/v4 的 validation 长度与 `sample_count` 均为 `6495`，`identity_eligible_count` 均为 `1466`，selection score 均为 `0.69798148434599`；固定权重前向、完整科学 validation、checkpoint 身份、GPU、数值后端和缓存清单严格一致。该门禁只读取 train/validation，没有读取 calibration。历史 v3 结果因此只作等价迁移辅助比较，正式学习率问题改为联合身份 v4 内部的 `1e-4` 对 `2e-4`。
+
+学习率矩阵配置实现提交为 `197cb750ba3cb4f06416fcf7a52cd4000595b0df`，当时的等价学习端点为 `369152756818f04730efd5865ad8fdb18ed9b620`；历史批次入口随后把当前 `Learn/CUMULATIVE` 继续推进到 `f6a3ecb9098e9c145b6c004017d7c700470222f8`，没有改变学习率配置或正式 Matcher 源码。seed 3407 的 `1e-4` 基线使用 release `Matcher_28e4bacd0dbc`；其余五项使用只增加矩阵配置、回归与说明且正式 Matcher 源码相同的 release `Matcher_28e1833e0179`。一次性五任务控制器在科学正确性与严格技术表达两项独立终审均 PASS 后执行，其摘要为 `f7e4694d5c056d87ef12ea2212f6999e3b7716a57026d3e53aff05f7c6f6ccfa`；该摘要只留在 ignored 运维工具和执行记录中，不进入正式包、YAML 或 `resolved.json`。
+
+| Job | GPU | 训练随机种子 | 学习率 | launch | W&B run |
+|---:|---|---:|---:|---|---|
+| `340894` | A800 | `3407` | `1e-4` | `train_experiment_job340894_20260815T115031_a12` | `hvtzju50` |
+| `340895` | A800 | `3407` | `2e-4` | `train_experiment_job340895_20260815T122350_a7` | `s80l6dbp` |
+| `340893` | A100 | `3408` | `1e-4` | `train_experiment_job340893_20260815T122610_a5` | `l0m0ao2i` |
+| `340898` | A100 | `3408` | `2e-4` | `train_experiment_job340898_20260815T122554_a5` | `7csoon5v` |
+| `340897` | A100 | `3409` | `1e-4` | `train_experiment_job340897_20260815T122606_a5` | `7n2y1aek` |
+| `340899` | A100 | `3409` | `2e-4` | `train_experiment_job340899_20260815T122600_a5` | `rgyq1i8k` |
+
+除计划名、阶段名、输出目录和 W&B 命名外，每一对的唯一科学变量是 `training.learning_rate`；六项 `data.selection_seed` 均为 `3407`，并共享 v4 清单、模型、损失、零门初值、裁剪阈值 1、BF16、物理批量 8、梯度累积 4、global batch 32 和从零初始化。A100 与 A800 之间只用于检查学习率效应方向能否复现，不比较硬件效应，也不冒充逐位同轨对照。2026-08-15 12:26 的验收确认六个 Slurm allocation 均为 `RUNNING`，六个在线 W&B run 和运行根均已建立；六把精确 `try_lock` 已删除，六个 `after_lock` 全部保留，`pre_lock/kill_lock` 均不存在。Job `340894` 已完成 epoch 0，selection score 为 `0.6418496024938629`；其余五项进入首个 epoch。没有创建 heartbeat、释放 allocation 或读取 calibration。
+
+13:31 的低频只读事件确认六项均已完成至少一次完整 validation。当前 BEST selection 按 seed3407/3408/3409 的 `1e-4/2e-4` 配对依次为 `0.6469126497476826/0.6362130808272672`、`0.6298150422708556/0.6016802541033975`、`0.6086108130896042/0.6410453244131187`；所有已完成 validation 的 `sample_count` 与 `identity_eligible_count` 均保持 `6495/1466`。各任务完成 epoch 数不同；seed3407 的两项还分别在一个坏验证轮后把下一轮学习率从 `1e-4→5e-5` 与 `2e-4→1e-4`，因此当前数值只证明训练、验证和调度器正常，不能提前用作最终学习率结论。六个 allocation 仍为 `RUNNING`，全部 `after_lock` 保留，`try/pre/kill` 锁不存在；没有读取 calibration。
+
+15:02 的下一次明确 validation 事件确认六项继续运行。seed3407 的 `1e-4/2e-4` 已完成 epoch `5/3`，当前 BEST 为 `0.6920686526492751/0.6787082021150166`；seed3408 已完成 epoch `3/3`，当前 BEST 为 `0.6819080710947985/0.6655444622455226`；seed3409 已完成 epoch `3/3`，当前 BEST 为 `0.6810926252573344/0.6562047225560245`。所有已完成 validation 的 `sample_count/identity_eligible_count` 仍为 `6495/1466`。seed3408 的 `2e-4` 在 epoch 3 进入一个坏验证轮并把下一轮学习率降为 `1e-4`；其余本次最新轮刷新各自 BEST。异步轮次与自然早停均未闭合，因此不作最终 LR 选择。六个 Slurm allocation 仍为 `RUNNING`，仅保留各自 `after_lock`；未读取 calibration。
+
+15:35 的明确 validation 事件确认六项继续运行。seed3407 的 `1e-4/2e-4` 已完成 epoch `6/4`，当前 BEST 为 `0.6920686526492751/0.6885123509717196`；seed3408 已完成 epoch `4/4`，当前 BEST 为 `0.6819080710947985/0.6887014183631415`；seed3409 已完成 epoch `4/4`，当前 BEST 为 `0.6810926252573344/0.6778490020766442`。所有已完成 validation 的 `sample_count/identity_eligible_count` 仍为 `6495/1466`。三项 `1e-4` 的最新轮均为坏验证轮，三项 `2e-4` 的最新轮均刷新 BEST；但六项尚未自然早停，仍不作最终 LR 选择。六个 Slurm allocation 仍为 `RUNNING`，仅保留各自 `after_lock`；未读取 calibration。
+
+16:15 的明确完成事件确认 Job `340894` 已于 15:42:59 自然早停，BEST/last epoch 为 `5/7`，BEST selection score 为 `0.6920686526492751`，`stopped_by_patience=true`。BEST epoch 的六分类 macro-F1、固有身份 Top-1、条件身份 Top-1、宽松端到端 F1 分别为 `0.5284033454997990/0.8656207366984994/0.8781275221953188/0.6696750902527075`，ligand/binding micro Dice 为 `0.2396188019041835/0.021941170508661578`。阶段与运行根 summary、BEST、LAST 均存在，`try_lock_340894` 已恢复且 `after_lock_340894` 保留；其余五项仍在运行。seed3407 的 `2e-4` 对照尚未收口，因此本事件不形成学习率结论。
+
+同一时段，历史第 1–5 批固定 YAML 薄启动脚本完成三轮审查与双线 Git 收口。实现端点 `0b0b93a96eb96c7df1d2df11eaa57906005d5bbd` 与学习端点 `f6a3ecb9098e9c145b6c004017d7c700470222f8` 的树对象均为 `e4d00fd6202858301ba3a9ad8a39db0c04766c15`；`Learn/CUMULATIVE` 已快进到学习端点。两端均通过 21 份 shell 语法、21 份正式配置解析与一一映射、global batch 32、差异检查和干净状态门禁。
+
+### v4 学习率最终对照与摘要拼接六卡矩阵
+
+2026-08-15 19:15 前，三个 v4 学习率配对均已自然早停。seed 3407 的 `1e-4/2e-4` selection 为 `0.6920686526492751/0.6914841865879034`，seed 3408 为 `0.6918678973623833/0.6985805289999240`，seed 3409 为 `0.6927067815952292/0.6967620030292677`。`2e-4` 的配对相对变化依次为 `-0.084452%/+0.970219%/+0.585417%`，三种子平均提高 `0.490377%`；方向不完全一致，因此不宣布普遍最优学习率。
+
+为隔离摘要结构，最后矩阵固定 `LR=1e-4`，而不是继续把学习率作为变量。正式结构保留 mean/max 主表示，并把完整候选条件注意力表示与其拼接后送入零输出残差多层感知机。A800、seed 3407 比较 clip1/clip200；A100、seed 3408 运行双身份门 `{0,0.02}` × clip `{1,200}` 的四格。跨 GPU 类型只检查方向，结构效应只由各自同硬件、同种子的 mean/max 零门 clip1 历史任务作直接基线。
+
+实现端点 `965f1dbaa1ccbedc5bfbf2ed3ca90bbc40e4ab43` 与学习端点 `36877d1b6e2f301e44f1e4611169f3451b47e4fb` 已通过树等价和相称门禁，`Learn/CUMULATIVE` 已推进到后者。19:24 验收时，六项均完成首个 global step；六个 allocation 为 `RUNNING`，全部保留 `after_lock`，没有 `try/pre/kill` 锁。触发过程未读取 calibration、建立 heartbeat 或释放 allocation。后续仅在完整 validation、BEST 刷新、自然早停或失败事件回填，最终按完整核心指标分析结构、门值、裁剪及交互。
+
+20:03:15 的首个完成事件确认，A800、seed3407、零门 clip1 摘要拼接任务因 patience 自然早停，BEST/last epoch=`0/2`、global step=`1341`、selection=`0.6475402763159072`。同硬件、同 seed、同学习率和同批量的 mean/max 基线 selection 为 `0.6920686526492751`，因此直接结构效应为 `-6.434098%`；六分类与总体身份指标也全部下降，small-molecule 三项下降 `15.79%–17.46%`，ligand/binding micro Dice 下降 `32.303216%/76.071192%`。该锚点不支持默认采用摘要拼接；其余五项继续运行，等待裁剪与非零门值结果。完整 summary、BEST、LAST 已写出，Job `340894` allocation 仍为 `RUNNING`；runner 于 20:03:19 正常恢复 `try_lock`，`after_lock` 保留，没有修改锁或读取 calibration。
+
+20:34 的明确 validation 事件确认其余五项都已完成至少一轮完整 validation。Job `340895/340893/340897/340899/340898` 当前 BEST selection 为 `0.6517883443312730/0.6403636782824584/0.6232743533911884/0.6179709176301117/0.6123936891697573`；所有 validation 的 `sample_count/identity_eligible_count` 均为 `6495/1466`。前两项完成 epoch 1 并刷新 BEST，Job `340899` 的 epoch 1 形成一个坏验证轮，其余两项只完成 epoch 0。异步进度不用于提前判断裁剪、门值或交互。
+
+20:44 的后续完整 validation 将 Job `340897/340898` 的当前 BEST 更新为 `0.6351221057744675/0.6456118425694872`，对应双门0.02 的 clip1/clip200 epoch 1。其它三项没有新轮次。当前异步轨迹仍不构成最终因子效应。
+
+21:03 复核锁布局后纠正 20:30 临时探针的误报。正式 runner 把 `try/pre` 放在 allocation 根、`after/kill` 放在 Job 子目录；runner 输出和正确路径均证明 `try_lock_340894` 已于 20:03:19 恢复。当前 Job `340894` 为 `try+after`，其余五项为 `after`，六项均无 pre/kill；此次只读纠错未改动锁。
+
+同一 21:03 状态节点，全库细粒度注释由两个隔离代理继续执行。`matcher/data` 与 `matcher/datasets` 批次均已独立终审 PASS；B 批最终为 `130 passed in 958.08s`，4/4 Python 去 Docstring AST 等价，mypy 与 pyflakes 通过。当时 C 批刚开始，精确覆盖 `matcher/model/` 的 6 个 Python 文件、新建 `matcher/model/README.md` 和全库注释清单；当时的累计集成基点为 `Learn/CUMULATIVE@36877d1`。该段只记录历史时点，最新 C/D 批和累计端点见后续追加记录。
+
+### 第七项 A800 摘要拼接门值复现
+
+首个 A800 零门摘要拼接锚点自然早停后，为避免受管 GPU 长时间空闲，新增同硬件、同 seed、同学习率、同裁剪和同批量的双门 `0.02/0.02` 复现。相对前序任务唯一科学变化是 `model.initial_graph_gate` 与 `model.initial_inventory_gate` 从 `0.0` 改为 `0.02`。实现端点为 `11f477ef87dc0253e372894d2d8218201dda9eaf`，学习端点和 `Learn/CUMULATIVE` 为 `087accb2bc26ca1ba1caa875576890ae1465a3e7`，两端树为 `8b35837892751757f7790336c477ae826064f3f1`；release 为 `Matcher_11b0176436c1`。
+
+一次性单 Job 控制器 SHA-256 为 `3776b8e2c7d8733f9bebe78b5b740858d03be47500de07121e39716d23f53970`。它绑定 GPU 等价报告、当前 v4 manifest 快照、新旧计划、前序 a13 的 launch/summary/BEST/LAST/checkpoint/W&B、Job A800/16 CPU 资源、四锁、输出查重和 live 动态命令，并在科学正确性与严格技术表达独立终审均为 PASS 后执行。控制器只原子替换 `run_cmd_340894.sh` 并删除 allocation 根的 `try_lock_340894`；`after_lock` 保留，pre/kill 未触碰，未读取 calibration。
+
+2026-08-15 22:06（Asia/Shanghai），新 launch `train_experiment_job340894_20260815T220601_a14` 建立，绑定 release `Matcher_11b0176436c1`、A800、1 GPU、16 CPU。W&B run 为 `8e9ufq3b`，运行根为 `/storage/penghongen/tmp/Matcher/experiments/joint_identity_v4_concat_gate_002_seed_3407_lr_1e4_oracle_a800/train_experiment_job340894_20260815T220601_a14/`。首步 global batch 32 已完成：`identity_eligible_count=7`、计算耗时 `22.0611021398 s`、裁剪前梯度范数 `42.3404655457`，CUDA allocated/reserved 为 `14,212,122,624/19,583,205,376` bytes。六张受管 GPU 因此再次全部运行；全部 `after_lock` 保留，`try/pre/kill` 均不存在。
+
+注释 A/B/C 批已独立终审 PASS。D 批精确覆盖 `matcher/training/` 的 9 个 Python 文件、新建 `matcher/training/README.md` 和 `talk/Matcher_全库细粒度注释清单.md`，仍由编写与独立审查代理在隔离工作树推进。最终集成必须以 `Learn/CUMULATIVE@087accb2` 为基点，纳入摘要拼接第七项配置和全部已审注释，重跑实现/学习树等价与全库门禁，并让新学习端点成为按提交者时间唯一最新提交。
+
+最终清理门禁进一步限定：concat summary 实验、全库注释和双线 Git 整理全部结束后，只允许保留一个主工作树。任何 `git worktree remove` 之前都要核对该树成果已整合、状态干净且无未提交资产；完成后逐一验证 worktree 清单只剩主工作树、`Learn/CUMULATIVE` 指向按提交者时间唯一最新提交。当前隔离树仍用于实验与审查，不提前删除。
+
+22:26 的低频 validation 事件显示，Job `340895/340893/340897/340899/340898` 当前 BEST selection 为 `0.6896432316683323/0.6803945989195906/0.6614407794021132/0.6821176224272261/0.6875310488307648`，BEST epoch 为 `5/4/2/4/4`；Job `340897` 最新完成 epoch 3 并累计一个坏验证轮，其余四项最新轮刷新 BEST。新增 Job `340894` 尚在首次训练 epoch。六个任务继续运行，全部 `after_lock` 保留，`try/pre/kill` 均不存在；没有读取 calibration。
+
+### 最终五项摘要结构收尾
+
+用户随后取消条件解锁，把新增 concat_summary 收尾固定为五项：A800 seed3407 摘要拼接双门0.02、clip200；A800 seed3407 mean/max 零门、clip200；A100 seed3408 mean/max 零门、clip200；A100 seed3409 的摘要拼接与 mean/max 零门、clip200 配对。五项执行完毕后不再定义新实验。
+
+第 2–5 项在实现提交 `ffc020354ff2bc1169eacd01a5fc6d3ffd41fd57` 与学习提交 `2f80bc9880591c69c1e51f7125bb4f989ab22b9f` 完成双线 Git，tree 均为 `7cd1241a6d184134a5c9638cef8a659bccb64f9a`。正式 release 为 `Matcher_d3d65ad54fce`。配置专项 `15 passed`、完整配置测试 `52 passed`、46 个计划/47 个阶段正式解析、mypy 45 个源文件、pyflakes 和 diff-check 均通过；配置科学与技术表达两项独立审查均为 PASS。
+
+2026-08-16 02:29，一次性 A100 控制器在两项独立终审 PASS 后只删除 Job `340897/340898/340899` 的精确 try_lock，分别触发第 3/4/5 项。对应 launch 为 `train_experiment_job340897_20260816T022920_a7`、`train_experiment_job340898_20260816T022923_a7`、`train_experiment_job340899_20260816T022922_a7`；W&B run 为 `5kp34mgu/yyf76une/l8evur0y`。三项首个 global batch 32 均成功；全部 after_lock 保留，pre/kill 未触碰。第 2 项等待 Job `340894/340895` 首次恢复 try_lock 后再按相同失败关闭边界触发。
+
+Job `340894` 的前序任务自然早停后，第 2 项控制器完成两项独立 PASS 并执行。首次触发因 `/home` Lustre OST 写入阈值满而在 launch 建立阶段失败，没有训练首步；空目录、缓存、旧日志与 launch 树均按可恢复方式清单化、复制核验或改名保留。活动 launch 根迁移为指向 `/storage` 的符号链接后，控制器继续绑定同一 release/YAML/前序/GPU 等价证据并重新通过锁与资源门禁。
+
+正式 launch `train_experiment_job340894_20260816T035809_a241`、W&B run `d9thnzeq` 和运行根已建立；首个 global batch 32 完成，`identity_eligible_count=7`、裁剪前梯度范数 `42.1325302124`。六个逻辑 try_lock 均使用 `/storage` 目标符号链接作为 ENOSPC 保险；训练结束前目标不存在，结束时由 runner 创建目标并恢复锁。五项固定收尾实验至此全部提交，后续不再新增科学任务，只按 10 分钟低频事件检查自然早停、结果回填与 allocation 释放条件。
+
+同次事件确认 Job `340893` 的 A100、seed3408、摘要拼接零门 clip1 已自然早停，BEST/last=`12/14`、selection=`0.7009100312219069`。完整 summary、BEST/LAST、W&B 与四锁通过后，只删除精确 after_lock；runner 正常退出，逻辑 try_lock 链接和 `/storage` 目标在退出后按顺序清理。六个受管 allocation 已释放 1 个，剩余 5 个继续固定收尾任务。
+
+A100、seed3408 摘要拼接 2×2 的四个 selection 为 `0.7009100312/0.6979373129/0.6968598986/0.6903778566`，顺序为零门clip1、双门0.02 clip1、零门clip200、双门0.02 clip200。双门和clip200的主效应及交互均为负；两个 clip200 轨迹实际均 0 次触发裁剪。该 seed 的零门clip1相对 mean/max提高 `1.306916%`，但与 A800 seed3407 的负方向不一致，故不提前设摘要拼接为默认。
+
+最终第 2 项 A800 mean/max 零门 clip200 以 BEST/last=`3/5`、selection=`0.6889974930159317` 自然早停；2682 次更新中裁剪触发 0 次，最大裁剪前梯度范数 `42.1325302124`。同硬件/seed/clip200的摘要拼接零门高 `0.375438%`。完整产物和锁核对后只删除 `after_lock_340894`，Job 正常退出；allocation 释放进度为 2/6。
+
+最终第 1 项 A800、seed3407 摘要拼接双门0.02、clip200 随后自然早停。launch `train_experiment_job340895_20260816T013419_a9`、W&B run `pyymiux2` 的 BEST/last=`7/9`、阶段最终 global step=`4470`、selection=`0.6956405636500063`；BEST validation 的 `sample_count/identity_eligible_count=6495/1466`。4470 次逐更新遥测中裁剪触发 0 次，最大裁剪前梯度范数 `46.6572875977`，最小缩放系数 `1.0`。
+
+A800、seed3407 摘要拼接 2×2 的四格 selection 为 `0.6475402763/0.6939342114/0.6915842526/0.6956405637`，顺序为零门clip1、双门0.02 clip1、零门clip200、双门0.02 clip200。门0.02在两个裁剪设置下分别变化 `+7.164641%/+0.586525%`，clip200在两个门设置下分别变化 `+6.801735%/+0.245895%`；差中之差为 `-0.0423376240`。零门clip1是异常弱轨迹，门值或宽松裁剪任一项都能恢复大部分差距，但二者组合不具加和性。组合单元相对同硬件、同 seed 的 mean/max 零门clip200只高 `0.964165%`，不能结合 A100、seed3408 的反向超参数效应宣称稳定最优。
+
+核对 summary、BEST/LAST、W&B、资源和四锁后，只删除 Job `340895` 的精确 after_lock；runner 正常退出并清理失效锁替身，没有调用 `scancel`。六个目标 allocation 已释放 3/6。Job `340897/340898/340899` 保持最后三项固定任务；最近低频探针显示它们分别完成 epoch `7/7/8`，当前 BEST selection 为 `0.6944095970/0.6929379742/0.6925343658`，尚未自然早停，不据中途轨迹形成最终结论。
+
+最终第 5 项 A100、seed3409 mean/max 零门 clip200 随后自然早停。launch `train_experiment_job340899_20260816T022922_a7`、W&B run `l8evur0y` 的 BEST/last=`7/9`、阶段最终 global step=`4470`、selection=`0.6925343658028632`；BEST validation 的 `sample_count/identity_eligible_count=6495/1466`。4470 次逐更新遥测中裁剪触发 0 次，最大裁剪前梯度范数 `76.4645156860`，最小缩放系数 `1.0`。相对同 seed 的 mean/max 零门 clip1，selection 仅变化 `-0.024890%`。
+
+核对完整产物和四锁后，只删除 Job `340899` 的精确 after_lock；runner 正常退出，失效锁替身随后清理，没有调用 `scancel`。六个目标 allocation 已释放 4/6；Job `340897/340898` 继续最后两项，分别承担 seed3408 mean/max 与 seed3409 摘要拼接零门clip200。后者完成前不计算第三组摘要结构效应。
+
+最终第 3 项 A100、seed3408 mean/max 零门 clip200 随后自然早停。launch `train_experiment_job340897_20260816T022920_a7`、W&B run `5kp34mgu` 的 BEST/last=`7/9`、阶段最终 global step=`4470`、selection=`0.6944095969666253`；BEST validation 的 `sample_count/identity_eligible_count=6495/1466`。4470 次逐更新遥测中裁剪触发 0 次，最大裁剪前梯度范数 `53.3742675781`，最小缩放系数 `1.0`。
+
+同硬件、同 seed、同 clip200 的摘要拼接任务比本 mean/max 高 `0.352861%`；本 mean/max clip200 又比 mean/max clip1 高 `0.367368%`，两项均为小幅正差。核对完整产物和四锁后，只删除 Job `340897` 的精确 after_lock；runner 正常退出，失效锁替身随后清理，没有调用 `scancel`。六个目标 allocation 已释放 5/6；只剩 Job `340898` 继续 seed3409 摘要拼接零门clip200。
+
+最终第 4 项 A100、seed3409 摘要拼接零门 clip200 最后自然早停。launch `train_experiment_job340898_20260816T022923_a7`、W&B run `yyf76une` 的 BEST/last=`11/13`、阶段最终 global step=`6258`、selection=`0.7057373297694586`；BEST validation 的 `sample_count/identity_eligible_count=6495/1466`。6258 次逐更新遥测中裁剪触发 0 次，最大裁剪前梯度范数 `73.1834640503`，最小缩放系数 `1.0`。
+
+同 seed、同 clip200 的 mean/max selection 为 `0.6925343658028632`，摘要拼接相对提高 `1.906471%`。三组零门 clip200 结构配对的 selection 变化为 `+0.375438%/+0.352861%/+1.906471%`，平均 `+0.878257%`；方向一致，但收益主要由 seed3409 拉高。完整产物与四锁核对后，只删除 Job `340898` 的精确 after_lock；runner 正常退出，失效锁替身随后清理，没有调用 `scancel`。
+
+最终只读验收确认 Job `340893/340894/340895/340897/340898/340899` 全部不在 `squeue`，四类锁均不存在，六份 summary 保留，`/storage` try-lock 替身文件计数为 0。固定五项和服务器训练主线至此全部收口；后续不再新增实验，只完成结果文档、推荐脚本和双线 Git/worktree 整理。
+
+### 结果分析与推荐入口收口
+
+2026-08-16，`文档/记录/结果总记录.md` 已按统一 validation 口径汇总第 0–5 批、联合身份 v4 等价迁移、三对学习率和摘要拼接矩阵。`文档/记录/结果分析与最优结果.md` 将当前最高分 A100、seed3409、摘要拼接、零门、clip200、LR `1e-4` 设为精度优先推荐，同时保留摘要拼接 clip1 的高分复现入口和 mean/max LR `2e-4` 的简单结构入口；没有组合未实测的摘要拼接与 LR `2e-4`。
+
+`训练与运行/sh/最优变体推荐/` 已新增三份零参数 Shell 与目录 README。三份 Shell 的 `bash -n` 通过；其固定 YAML 在包含最终摘要拼接实现的学习端点由正式解析器通过，并逐项确认零门、A100 `8×4=32`、从零初始化和各自具名的聚合、seed、学习率与裁剪设置。四份新增 Markdown 的本地链接、七份交付文件的 UTF-8/LF/末尾换行、脚本禁用运维内容、结果百分比与 `git diff --check` 均通过。
+
+该历史路标完成科学结果与人类入口，不改变双线 Git 的最终门禁。注释 A–F/H 批已经独立终审 PASS，G 批测试代码取消注释；在该时点，17 个工作树的恢复、六个重叠路径人工合并、端点等价、唯一最新 `Learn/CUMULATIVE` 和单主工作树清理仍等待用户确认既有整理方案。
+
+### 最终整合执行路标
+
+用户随后已确认 17-worktree 可恢复整理方案。外置恢复包已经覆盖主工作树 50 项资产、细粒度注释树 85 项资产和明确拒绝的旧 round1 8 项样稿；主工作树 ignored `tmp/` 不在恢复或清理范围。85 项注释资产与 50 项最终记录资产已经组成 `codex/matcher-final-integration` 的 135 个未提交差异路径：77 个注释路径逐字节映射，6 个实现或配置交叉路径保留累计线 concat 可执行内容并移植已审注释，`matcher/model/README.md` 与注释清单 2 个最终整合文档按当前事实更新。
+
+冻结整合树已通过 `184 passed`、45 个源码的 mypy、compileall、pyflakes、37 个生产 Python 去 Docstring AST 等价、46 份正式 YAML/47 个阶段解析、28 份 Shell 语法、Markdown 链接和文本格式门禁。唯一完整整合终审只点名 concat 增量注释、85 项映射计数、两份结果文档的两处口径和当前状态记录；这些位置进入一次定点修订与一次窄复核。窄复核 PASS 前不提交；PASS 后只剩实现/学习双线提交与树等价、推进唯一最新 `Learn/CUMULATIVE`，以及逐工作树资产核对后的单主工作树清理。本路标不提前宣称这些后置条件已经完成。

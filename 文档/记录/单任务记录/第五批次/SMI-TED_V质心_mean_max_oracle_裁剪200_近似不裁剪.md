@@ -8,7 +8,7 @@
 - 判断方式：比较自然早停 BEST 的全部核心 validation 指标，并报告总更新数、裁剪触发数/比例、最大裁剪前范数和最小缩放系数；若触发率超过 `0.1%`，记录中改称“宽松裁剪”。失败或非有限值本身也是结果，不无记录重启。
 - 实际资源：受管 A800 Job `340895`；16 CPU；物理批量 16、梯度累积 2、global batch 32；既有 allocation 的调度器身份时限只作核对，本任务不设置或缩短训练时限。
 - W&B：online project `AdaLigand-Matcher-Batch5`；group `matcher-batch5-gradient-clipping`；run [`ufny2evy`](https://wandb.ai/pencounkdual-111/AdaLigand-Matcher-Batch5/runs/ufny2evy)。
-- 状态：已提交并完成首个 global batch，继续训练；是否可称“近似不裁剪”仍待完整运行的实际触发率；未读取 calibration。
+- 状态：已自然早停；本次运行裁剪零触发，满足“近似不裁剪”预定定义；未读取 calibration。
 
 ## 提交与结果留证
 
@@ -18,4 +18,6 @@
 - launch：`train_experiment_job340895_20260815T032343_a6`；运行根：`/storage/penghongen/tmp/Matcher/experiments/batch5_smi_ted_v_centroid_clip_200_oracle_a800/train_experiment_job340895_20260815T032343_a6/`。
 - 锁边界：控制器只删除 `try_lock_340895`；`after_lock_340895` 保留，`pre_lock_340895/kill_lock_340895` 均不存在。没有取消、重启或释放 allocation。
 - 首个 global batch 已完成参数更新：global batch 32、身份有效候选数 7（`identity_eligible_count=7`）；classification/ligand/binding/identity/total loss 为 `1.8027343750/1.7515190840/1.6761010885/1.5334821258/3.6789785181`，裁剪前梯度范数 `46.0992240906`，低于阈值 200。数据等待/计算为 `10.4452389674/63.1941584488 s`，吞吐 `0.4345499980 candidate/s`，显存峰值 allocated/reserved 为 `28,143,181,312/39,495,663,616` bytes；首次更新后 graph/inventory 门值均约 `0.0001`。
-- 首次完整 validation、BEST/last、完整裁剪触发率与最终头对头结论：待自然事件后回填。
+- BEST/last epoch 为 `11/13`，global step 为 `6258`，BEST selection score 为 `0.6960835398398743`；运行根与阶段摘要已正常写出并由 runner 自然恢复 `try_lock_340895`。
+- 全程共 `6258` 次优化器更新，裁剪触发 `0` 次，触发率 `0/6258=0%`；最大裁剪前梯度范数为 `73.61093139648438`，最小缩放系数为 `1.0`。有限阈值 `200` 在本次运行中从未实际改变梯度。
+- 同 A800、同 seed、同 `16×2=32` 主对照中，selection score 比 `clip5` 高 `0.0052464636594069`，即 `0.5246463659` 个百分点、相对高 `0.7594357397%`。这是单 seed 下支持继续考察宽松裁剪的小幅结果，不足以证明不裁剪普遍更好。
