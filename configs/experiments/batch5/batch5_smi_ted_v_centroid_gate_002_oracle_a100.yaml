@@ -5,65 +5,129 @@
 # use_candidate_token_attention_bias=false 不增加第3批候选—实体注意力偏置。
 # initial_graph_gate/initial_inventory_gate=0.02 是本任务相对第2批 oracle 的唯一科学变化。
 # null：class_weights 不加权；maximum_epochs 不设轮数上限；initialize_candidate_from 不加载 checkpoint。
+
+
+# plan_name（str）：安全单级计划目录名；首字符为 ASCII 字母或数字，后续只允许字母、数字、下划线、点或连字符。
 plan_name: batch5_smi_ted_v_centroid_gate_002_oracle_a100
+# output_root（str）：运行与阶段产物根；按 POSIX 文字规范化后必须位于 /storage/penghongen/tmp/Matcher，不解析符号链接或检查存在性。
 output_root: /storage/penghongen/tmp/Matcher/experiments  # run、阶段、checkpoint 和指标的根目录。
+# tracking：七字段映射；start_wandb_tracking 为每个 stage 分别建立在线运行时读取。
 tracking:
   # 每个 stage 建立独立 W&B online run；在线初始化失败即终止，不降级为离线记录。
+  # tracking.provider（str）：当前唯一允许 wandb。
   provider: wandb
+  # tracking.mode（str）：当前唯一允许 online；初始化失败不得由正式入口静默降级为离线运行。
   mode: online
+  # tracking.entity（非空 str）：W&B 账户或团队名；本地解析不验证远端权限。
   entity: pencounkdual-111
+  # tracking.project（非空 str）：W&B 项目名；本地解析不访问远端。
   project: AdaLigand-Matcher-Batch5  # 第5批独立项目，避免与其它批次曲线混排。
+  # tracking.group（非空 str）：曲线比较分组；不进入模型输入、损失或选模公式。
   group: matcher-batch5-gate-initialization  # 同一门初值方向的直接对照组。
+  # tracking.log_every_global_steps（正 int）：参数更新曲线间隔；WandbTracker 仍固定记录 global_step=1。
   log_every_global_steps: 1  # 每个 global batch 完成一次优化器更新后记录。
+  # tracking.init_timeout_seconds（正 int，单位 s）：W&B 在线初始化超时；不是训练、数据加载或 Slurm 时限。
   init_timeout_seconds: 120  # W&B 握手秒数，不是训练或 Slurm 时限。
+# data：十一字段映射；全部 stage 共用来源、清单、裁剪、DataLoader 与 CandidateDataset 缓存配置。
 data:
   # data_root 与 stage1_root 只读；output_root 只写版本化清单、体素和 PP token 缓存。
+  # data.data_root（非空路径 str）：AdaLigand 来源根；解析器不检查绝对性、存在性或内容。
   data_root: /storage/penghongen/AdaLigand/Ori_Data
+  # data.stage1_root（非空路径 str）：Stage1 Find_0 来源根；解析器不检查绝对性、存在性或内容。
   stage1_root: /storage/penghongen/AdaLigand_stage1_inference/Find_0-CPC1-ligand_PRAUC_0.675477/artifacts/Find_0
+  # data.output_root（路径 str）：清单、105 通道体素与 PP token 缓存根；词法规范化后必须位于 Matcher 产物根。
   output_root: /storage/penghongen/tmp/Matcher
+  # data.coverage_threshold（有限 float，范围 (0,1]）：候选与 occurrence 双向覆盖率共用的清单命中阈值。
   coverage_threshold: 0.30  # 候选与 occurrence 双向覆盖率均达到该值才命中。
+  # data.selection_seed（精确 int）：固定同一身份采用哪个有效 occurrence 语言表示；身份键由执行代码的 schema 决定，解析器不另限范围。
   selection_seed: 3407  # 固定每个 PDB 内身份采用哪个有效 occurrence 语言表示。
+  # data.pp_top_k（正 int）：每个候选最多保留的 PP token 数 K。
   pp_top_k: 1024  # 每个候选保留的 Stage1 固化概率 token 上限。
+  # data.local_crop_strategy（fixed_center 或 v_centroid）：决定 80³ 来源到 48³ 模型输入的裁剪起点。
   local_crop_strategy: v_centroid  # 使用本文件顶部定义的候选级 V 质心视野。
+  # data.train_num_workers（正 int）：每次完整 train DataLoader 迭代使用的 worker 数。
   train_num_workers: 4  # 每次 train 迭代建立的非持久 DataLoader 工作进程数。
+  # data.validation_num_workers（正 int）：每次完整 validation DataLoader 迭代使用的 worker 数。
   validation_num_workers: 4  # train 工作进程退出后再建立 validation 工作进程。
+  # data.prefetch_factor（正 int）：每个 DataLoader worker 预取的训练物理批次数。
   prefetch_factor: 2  # 每个工作进程预取的 batch 数。
-  cache_gib_per_worker: 16  # 每个工作进程五类最近最少使用缓存的按需上限，单位 GiB。
+  # data.cache_gib_per_worker（正有限 float，单位 GiB）：每个 CandidateDataset 实例五类 LRU 的总预算；不预分配，也不是进程 RSS 上限。
+  cache_gib_per_worker: 16  # 每个 CandidateDataset 实例五类 LRU 的总 GiB 预算；不是进程 RSS 上限。
+# stages：非空有序列表；run_plan 按此顺序执行，stage.name 在计划内必须唯一。
 stages:
+  # stages[*].name（安全单级 str）：阶段目录名、W&B run 名和阶段记录标识。
   - name: batch5_smi_ted_v_centroid_gate_002_oracle_a100
+    # stages[*].task_name：candidate_pretrain 用六分类与两个区域损失优化整套 CandidateEncoder，不构造身份分支或身份损失；full_matcher 还构造闭集身份路径，身份键由执行代码的 schema 决定。
     task_name: full_matcher
+    # stages[*].language_family：full_matcher 只允许 molformer 或 smi_ted_289m；candidate_pretrain 必须为 null。
     language_family: smi_ted_289m
+    # stages[*].identity_variant：full_matcher 只允许 oracle、detached 或 joint；candidate_pretrain 必须为 null。
     identity_variant: oracle
+    # stages[*].identity_scope：full_matcher 只允许 small_molecule 或 all_non_background；candidate_pretrain 必须为 null。
     identity_scope: all_non_background  # ion、nucleotide_like、peptide_like、small_molecule、sugar。
+    # stages[*].model：精确十五字段映射；完整定义候选编码器与闭集身份匹配器结构。
     model:
+      # stages[*].model.aggregation：mean_max 使用四模态掩码均值/最大值；candidate_cross_attention 用候选体素摘要查询四模态 token。
       aggregation: mean_max
+      # stages[*].model.use_manual_features（bool）：控制候选表示的 12 项固化统计，并控制三个身份打分器使用同组统计和停止梯度的身份类别概率。
       use_manual_features: true
+      # stages[*].model.use_sampling_features（bool）：控制候选表示和三个身份打分器使用边界限制、V 质心 L2/L∞ 偏移与 V 保留比例四项统计。
       use_sampling_features: true
+      # stages[*].model.use_candidate_token_attention_bias（bool）：为 true 时聚合必须为 candidate_cross_attention，并用 relative_x/y/z/probability 生成逐头偏置。
       use_candidate_token_attention_bias: false
+      # stages[*].model.initial_graph_gate（非 bool 有限数值，[0,1]）：图身份分数增量的可学习门初值；候选预训练必须为 0，训练后不夹紧。
       initial_graph_gate: 0.02  # 图身份分数增量从已观测自然学习量级开始。
+      # stages[*].model.initial_inventory_gate（非 bool 有限数值，[0,1]）：同 PDB 自排除清单增量的可学习门初值；候选预训练必须为 0，训练后不夹紧。
       initial_inventory_gate: 0.02  # 清单身份分数增量使用同一最小初值以控制变量。
+      # stages[*].model.model_dim（正 int）：候选、语言与图身份表示的共同宽度；必须能被 attention_heads 整除。
       model_dim: 256
+      # stages[*].model.attention_heads（正 int）：候选条件、配体图和身份清单注意力头数；不控制 RAUNet 瓶颈自选头数。
       attention_heads: 8
+      # stages[*].model.dropout（非 bool 有限数值，[0,1)）：token 投影、候选注意力/融合/分类、图消息、图/清单注意力和身份配对网络共用。
       dropout: 0.10
+      # stages[*].model.voxel_feature_channels（正 int）：RAUNet 输出宽度，也是两个 VoxelBinaryHead 的输入与隐藏宽度；每个头最终为每体素输出一个 logit。
       voxel_feature_channels: 48
       # enc0、enc1、enc2、enc3、bottleneck、dec3、dec2、dec1、dec0。
+      # stages[*].model.raunet_planes（九项正 int 列表）：顺序为 enc0、enc1、enc2、enc3、bottleneck、dec3、dec2、dec1、dec0；骨干另要求 enc3=bottleneck=dec3、dec0=enc0。
       raunet_planes: [64, 256, 256, 256, 256, 256, 128, 64, 64]
+      # stages[*].model.recycle_iterations（正 int）：RAUNet 回收轮数；前置轮在内部 no_grad，最后一轮是否建图服从外层梯度模式与 requires_grad。
       recycle_iterations: 3
+      # stages[*].model.gradient_checkpointing（bool）：训练且外层启用梯度时，控制 RAUNet 高开销模块的非重入激活重计算。
       gradient_checkpointing: true
+      # stages[*].model.bottleneck_attention_layers（正 int）：RAUNet 最深网格的三轴旋转位置编码自注意力层数。
       bottleneck_attention_layers: 4
+      # stages[*].model.graph_layers（正 int）：LigandGraphEncoder 沿双向化学键执行的消息传递层数。
       graph_layers: 4
+    # stages[*].training：精确十二字段映射；定义随机源、批量、AdamW、早停、精度、裁剪和损失。
     training:
+      # stages[*].training.seed（精确 int，[0,2**32-1]）：固定模型、进程、候选洗牌和 DataLoader 派生随机源。
       seed: 3407
+      # stages[*].training.physical_batch_size（正 int）：训练前向的物理批量；validation 前向以此为上限，末批可不足。
       physical_batch_size: 8
+      # stages[*].training.gradient_accumulation（正 int）：一次 AdamW 参数更新累计的训练物理批次数。
       gradient_accumulation: 4
+      # stages[*].training.global_batch_size（精确 int 32）：必须等于 physical_batch_size × gradient_accumulation。
       global_batch_size: 32  # 8 个候选 × 4 次梯度累积。
+      # stages[*].training.learning_rate（正有限 float）：AdamW 初始学习率，随后可由监控 validation 选择分数的 ReduceLROnPlateau 下调。
       learning_rate: 1.0e-4
+      # stages[*].training.weight_decay（非负有限 float）：AdamW 解耦权重衰减系数。
       weight_decay: 1.0e-4
+      # stages[*].training.maximum_epochs（正 int 或 null）：null 不设 epoch 上限，patience_bad_epochs 仍可自然早停。
       maximum_epochs: null
+      # stages[*].training.patience_bad_epochs（精确 int 2）：连续两个完整 validation 没有严格改善后停止。
       patience_bad_epochs: 2  # 连续两轮完整 validation 未严格改善后停止。
+      # stages[*].training.precision（bf16、fp16 或 fp32）：选择 CUDA autocast；只有 fp16 启用 GradScaler。
       precision: bf16
+      # stages[*].training.gradient_clip_norm（正有限 float）：每个 global batch 在 unscale 后应用的全模型 L2 梯度裁剪阈值。
       gradient_clip_norm: 1.0
+      # stages[*].training.class_weights：六项非负有限且总和为正的列表或 null；顺序为 background、ion、nucleotide_like、peptide_like、small_molecule、sugar。
       class_weights: null  # 六分类交叉熵不做类别重加权。
       # 四项权重依次作用于六分类、配体区域、结合区域和 oracle 身份损失。
+      # stages[*].training.loss_weights：精确四字段映射；四个无量纲非负有限系数按字段名组成总损失。
+      # stages[*].training.loss_weights.classification（非负有限 float）：六分类交叉熵系数。
+      # stages[*].training.loss_weights.ligand_area（非负有限 float）：配体区域平衡 BCE 与软 Dice 之和的系数。
+      # stages[*].training.loss_weights.binding_area（非负有限 float）：受体结合区域平衡 BCE 与软 Dice 之和的系数。
+      # stages[*].training.loss_weights.identity（非负有限 float）：闭集身份交叉熵系数；身份键由执行代码的 schema 决定，candidate_pretrain 必须为 0。
       loss_weights: {classification: 1.0, ligand_area: 0.10, binding_area: 0.10, identity: 1.0}
+    # stages[*].initialize_candidate_from：POSIX 绝对 BEST.pt 路径或 null；非空时只允许 full_matcher，解析阶段不检查文件存在性。
     initialize_candidate_from: null
