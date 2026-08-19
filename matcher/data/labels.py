@@ -1,3 +1,6 @@
+# NOTE: "occurrence" 和 "candidate" 语音论乱！ 本文件有个可读性上的巨大缺陷：把GT-occurrence 的 candidate_id与stage1预测的 candidate_id 都简单地用 candidate_id 来代替了———————— 这无法接受，这在未来版本中必须重新命名、重新说清楚
+# NOTE: 我对于"Match所用标签"的态度：我建议抽出一个独立的脚本，它可以:"输入stage1-centered系列的推理产物路径，然后在同一个目录下创建它的_*label.npz",可以给2种不同的启用模式：存在标签对应的npz就跳过；不跳过，强制覆盖。我阅读了本脚本，除了命名问题之外性能完好，在新版代码中有复用的资格。
+# NOTE: 当前stage1的评估管线对于1to1F1、covF1都只用了 0.3， 0.5 两个阈值。我想增加到 0.3, 0.5, 0.6. 并且top成功率也报告0.5, 0.6两个阈值。
 """
 用完整 Stage1 候选组件与真实配体 occurrence 的双向体素覆盖率生成六分类和身份命中监督。
 
@@ -58,8 +61,8 @@ class CandidateTarget:
     class_index: int
     matched_candidate_id: int | None
     matched_object_key: str | None
-    candidate_coverage: float
-    occurrence_coverage: float
+    candidate_coverage: float      # NOTE: 要改： .candidate_id ————> .occurrence_id
+    occurrence_coverage: float     
     overlap_score: float
 
 
@@ -74,7 +77,7 @@ def assign_candidate_target(
     输入参数:
         - candidate_voxel_zyx: 整数数组，(N_candidate_voxel, 3)；一个完整 Stage1 候选组件的非负全局稀疏体素索引，最后一维依次为 Z、Y、X，允许包含重复坐标但不能为空；_unique_voxel_rows 转为 int64 后核验非负。
         - occurrences: Iterable[OccurrenceMask]；同一 PDB 中可参与监督匹配的真实配体 occurrence；空体素 occurrence 被忽略。
-        - occurrences[*].candidate_id: int；当前 occurrence 的 PDB 内编号，同时用于分数并列时选择较小编号。
+        - occurrences[*].candidate_id: int；当前 occurrence 的 PDB 内编号，同时用于分数并列时选择较小编号。 
         - occurrences[*].object_key: str；当前 occurrence 的 LigandObject 模板键，命中后写入 CandidateTarget.matched_object_key。
         - occurrences[*].type_tag: str；当前 occurrence 类型，输入契约要求属于 OCCURRENCE_TYPE_TO_CLASS；最佳命中使用该映射，未知值会失败。
         - occurrences[*].voxel_index_zyx: 整数数组，(N_occ_voxel, 3)；完整密度图坐标系中的非负稀疏 ZYX 体素，可含重复坐标或为空；_unique_voxel_rows 转为 int64 后核验非负。

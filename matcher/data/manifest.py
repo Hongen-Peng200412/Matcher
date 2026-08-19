@@ -64,7 +64,7 @@ SPLIT_PDB_RULE = (
     "仅出现在 excluded_pdb.jsonl 的整 PDB 排除记录不构成候选重叠。"
 )
 
-
+# NOTE: 本文件中很多函数没必要（比如这个函数）。大的主函数其实只要2个就好：提供地址读取manifest; 给定相关目录(如stage1推理产物目录), 按照它们自己的布局进行读取, 建立新manifest。至于"清单还是否有效/合法性"等检验，可以放到临时脚本中，或者由AI当场检查。
 def ensure_manifest(
     roots: SourceRoots,
     coverage_threshold: float,
@@ -540,7 +540,7 @@ def _annotate_seen(
                 for family in LANGUAGE_FAMILIES
             }
 
-
+# NOTE: 同样看法——————主代码链路不负责写 _valid* 这些检查函数（这是个广泛问题，不局限于这一个函数，比如还包括下面一个函数）
 def _validate_materialized_split_pdb_disjointness(
     split_candidates: dict[str, list[dict[str, Any]]],
 ) -> None:
@@ -634,6 +634,7 @@ def _validate_joint_identity_classes(
         raise ValueError(f"同一 PDB 内的联合身份类别不一致：{conflicts}")
 
 
+# NOTE: 这种不通用的诊断脚本可以边缘化放置（比如放到 ops 甚至 tmp 目录下），不要污染科学主线！
 def _joint_identity_cross_pdb_class_variants(
     split_identities: dict[str, list[dict[str, Any]]],
 ) -> list[dict[str, Any]]:
@@ -1943,6 +1944,7 @@ def _summarize(
     return result
 
 
+# NOTE: 我认为在未来的新版正式代码中， _validate_这种验证函数最好不要在主线中出现————你觉得呢？
 def _validate_existing_manifest(
     path: Path,
     roots: SourceRoots,
@@ -2075,6 +2077,7 @@ def _validate_existing_manifest(
     return manifest
 
 
+# NOTE: 我认为在未来的新版正式代码中， _validate_这种验证函数最好不要在主线中出现————你觉得呢？
 def _validate_split_names(split_names: tuple[str, ...]) -> None:
     """
     要求显式划分序列非空、不重复且只含受支持的三个名称。

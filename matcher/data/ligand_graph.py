@@ -39,6 +39,7 @@ class LigandGraph:
         - node_continuous[:, 0:7]: float32 数组，(N_atom, 7)；逐值转换 LigandObject.atoms.chirality；来源 schema 定义为七种手性类别独热，Matcher 读取器不额外核验每个原子恰有一列为 True。
         - node_continuous[:, 7:11]: float32 数组，(N_atom, 4)；逐值转换 LigandObject.atoms.in_ring 的 3/4/5/6 元环标志。
         - node_continuous[:, 11]: float32 数组，(N_atom,)；把 LigandObject.atoms.is_present 转成 float32；来源 schema 定义该模板字段固定为 False，Matcher 读取器不额外核验全为 False；它不是 occurrence 的 present_{candidate_id} 掩码，也不定义联合身份。
+        # NOTE: 在图网络中，似乎很少有人把中心化坐标当作特征？至少本地的PocketXmol仓库似乎并非如此。
         - node_continuous[:, 12:15]: float32 数组，(N_atom, 3)；每个 residue_id 原子组分别用 ref_pos 减组内质心再除以 10 Å，最后一维依次为 X、Y、Z。
         - edge_index: int64 数组，(2, N_directed_edge)；第一轴依次为源端点和目标端点，数值索引 element、charge、residue_id 与 node_continuous 的第一维；先保存全部原始化学键的 atom_1→atom_2，再保存全部反向边，因此第 b 条原始键的反向边位于 b + N_bond。
         - edge_features: float32 数组，(N_directed_edge, 10)；依次拼接键型 5 维、3/4/5/6 元环 4 维标志和参考距离除以 10 Å 的 1 维数值；来源 schema 定义键型为独热，Matcher 读取器只转换 dtype，不额外核验每条键恰有一列为 True。
@@ -195,7 +196,7 @@ def _load_ligand_graph(path: Path, object_key: str) -> LigandGraph:
         - bonds.type: bool 子数组字段，(N_bond, 5)；依次表示单键、双键、三键、配位键和芳香键；来源 schema 定义为独热，本模块只转换 dtype，不核验每条键恰有一列为 True。
         - bonds.in_ring: bool 子数组字段，(N_bond, 4)；依次表示化学键是否位于 3、4、5、6 元环。
 
-    返回值:
+    返回值: # NOTE: 点与边的特征构造的有问题，存在缺失（如残基类型、主链标志等都没拼全）且似乎多拼接了坐标，需仔细订正。
         - graph: LigandGraph；节点顺序保持 atoms 顺序，每条 bonds 记录扩展为正向和反向两条边。
         - graph.element: int64 数组，(N_atom,)；由 atoms.element 逐值转换的原子序数。
         - graph.charge: int64 数组，(N_atom,)；由 atoms.charge 逐值转换的形式电荷。

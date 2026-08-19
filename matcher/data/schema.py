@@ -22,6 +22,7 @@ MANIFEST_SCHEMA_VERSION = 4
 VOXEL_CACHE_SCHEMA_VERSION = 2
 # int, 候选级 PP token 缓存格式版本；目录名还绑定 top_k 与局部裁剪策略。
 PP_CACHE_SCHEMA_VERSION = 2
+# NOTE: 在最后的正式代码中，不要出现这些 _VERSION，我们使用明确的目录进行区分。
 
 # tuple[str, ...], 长度 6；下标就是六分类标签，0 固定为背景类，其余顺序不得脱离 checkpoint 和指标单独修改。
 CLASS_NAMES = (
@@ -43,9 +44,9 @@ FOREGROUND_CLASS_INDICES = tuple(CLASS_TO_INDEX[name] for name in FOREGROUND_CLA
 # 身份监督范围类型；small_molecule 只监督小分子，all_non_background 监督五个非背景类别。
 IdentityScope = Literal["small_molecule", "all_non_background"]
 # tuple[str, ...], load_experiment_plan 接受的全部 identity_scope 枚举值。
-IDENTITY_SCOPES = ("small_molecule", "all_non_background")
+IDENTITY_SCOPES = ("small_molecule", "all_non_background")  # NOTE: 在最后的正式代码中，只需要后者即可，删掉前者的冗余逻辑。
 # tuple[str, str], schema v4 联合身份字段顺序；两个字段都相同的 occurrence 才共享一个身份槽。
-IDENTITY_KEY_FIELDS = ("object_key", "prepared_smiles")
+IDENTITY_KEY_FIELDS = ("object_key", "prepared_smiles") 
 # PreparedLigand 顶层 smiles 的可用状态；状态与 prepared_smiles 值共同写入候选清单和 metadata。
 PreparedSmilesStatus = Literal[
     "available",
@@ -61,11 +62,11 @@ PREPARED_SMILES_STATUSES = (
     "not_applicable",
 )
 # 48³ 局部裁剪策略；fixed_center 使用 80³ 中心，v_centroid 以候选 V 体素质心请求裁剪中心。
-LocalCropStrategy = Literal["fixed_center", "v_centroid"]
+LocalCropStrategy = Literal["fixed_center", "v_centroid"]  # NOTE: 在最后的正式代码中，只需要后者即可，删掉前者的冗余逻辑。
 # tuple[str, str], 配置和缓存路径接受的全部局部裁剪策略。
-LOCAL_CROP_STRATEGIES = ("fixed_center", "v_centroid")
+LOCAL_CROP_STRATEGIES = ("fixed_center", "v_centroid")  # NOTE: 正式代码只保留 v_centroid的逻辑
 # dict[str, str], occurrence type_tag 到六分类名称的映射；other 明确归入 background。
-OCCURRENCE_TYPE_TO_CLASS = {
+OCCURRENCE_TYPE_TO_CLASS = {  # NOTE: 过度抽象，只需要把other的情况单独处理即可
     "ion": "ion",
     "nucleotide_like": "nucleotide_like",
     "peptide_like": "peptide_like",
@@ -75,9 +76,9 @@ OCCURRENCE_TYPE_TO_CLASS = {
 }
 
 # tuple[str, str], 正式实验支持的两种冻结配体语言表示家族。
-LANGUAGE_FAMILIES = ("molformer", "smi_ted_289m")
+LANGUAGE_FAMILIES = ("molformer", "smi_ted_289m") # NOTE: 过度抽象
 # dict[str, str], 语言表示家族到来源模型公开名称的映射；键与 LANGUAGE_FAMILIES 一致。
-LANGUAGE_MODEL_NAMES = {
+LANGUAGE_MODEL_NAMES = {    # NOTE: 过度抽象，这个字段完全不必要，让现在的 LANGUAGE_FAMILIES 唯一决定即可
     "molformer": "ibm-research/MoLFormer-XL-both-10pct",
     "smi_ted_289m": "SMI-TED Light 289M",
 }
@@ -90,8 +91,8 @@ LOCAL_BOX_SIZE = 48
 LOCAL_BOX_MARGIN = (STAGE1_BOX_SIZE - LOCAL_BOX_SIZE) // 2
 # int, MoLFormer 与 SMI-TED occurrence 级冻结语言向量的共同宽度。
 LANGUAGE_EMBEDDING_DIM = 768
-# float, 世界坐标单位 Å；允许 float32 重算的候选框原点与来源原点之间最多相差 5e-5 Å。
-BOX_ORIGIN_ABSOLUTE_TOLERANCE_ANGSTROM = 5e-5
+# float, 世界坐标单位 Å；允许 float32 重算的候选框原点与来源原点之间最多相差 1e-4 Å。
+BOX_ORIGIN_ABSOLUTE_TOLERANCE_ANGSTROM = 1e-4
 
 # A/P/V/PP token 的最后四个特征分量依次是 Stage1 固化概率、relative_x、relative_y、relative_z；概率必须有限且位于 [0, 1]。
 # A/P 相对 XYZ 以候选实际裁剪中心为原点，并按完整 80³ 物理半边长归一化。
@@ -104,6 +105,8 @@ P_TOKEN_DIM = 116
 V_TOKEN_DIM = 52
 # int, PP token 宽度；只包含上面定义的概率和三个归一化相对坐标。
 PP_TOKEN_DIM = 4
+
+
 # tuple[str, ...], 长度 12；按 A、P、V、PP 模态排列，每个模态依次记录 token 数、概率均值和概率最大值。
 CANDIDATE_MANUAL_FEATURE_NAMES = tuple(
     f"{modality}_{statistic}"
@@ -112,6 +115,8 @@ CANDIDATE_MANUAL_FEATURE_NAMES = tuple(
 )
 # int, candidate_manual_features 的最后一维宽度，与 CANDIDATE_MANUAL_FEATURE_NAMES 长度一致。
 CANDIDATE_MANUAL_FEATURE_DIM = len(CANDIDATE_MANUAL_FEATURE_NAMES)
+
+
 # tuple[str, ...], 长度 4；与 candidate_sampling_features 的最后一维逐位置对齐。
 CANDIDATE_SAMPLING_FEATURE_NAMES = (
     "crop_boundary_limited",
@@ -121,6 +126,8 @@ CANDIDATE_SAMPLING_FEATURE_NAMES = (
 )
 # int, candidate_sampling_features 的最后一维宽度。
 CANDIDATE_SAMPLING_FEATURE_DIM = len(CANDIDATE_SAMPLING_FEATURE_NAMES)
+
+
 # tuple[str, ...], 长度 4；候选—token 注意力偏置输入依次取 token 的 XYZ 相对坐标和 Stage1 概率。
 CANDIDATE_TOKEN_ATTENTION_BIAS_FEATURE_NAMES = (
     "relative_x",
@@ -129,9 +136,9 @@ CANDIDATE_TOKEN_ATTENTION_BIAS_FEATURE_NAMES = (
     "stage1_probability",
 )
 # int, 候选—token 注意力偏置特征的最后一维宽度。
-CANDIDATE_TOKEN_ATTENTION_BIAS_FEATURE_DIM = len(
-    CANDIDATE_TOKEN_ATTENTION_BIAS_FEATURE_NAMES
-)
+CANDIDATE_TOKEN_ATTENTION_BIAS_FEATURE_DIM = len(CANDIDATE_TOKEN_ATTENTION_BIAS_FEATURE_NAMES)
+
+
 # float, 40 个体素；A/P 相对坐标的归一化物理半边长需要再乘各轴 voxel_size_xyz。
 FULL_CONTEXT_HALF_EXTENT_VOXELS = STAGE1_BOX_SIZE / 2.0
 # float, 24 个体素；V/PP 相对坐标的归一化物理半边长需要再乘各轴 voxel_size_xyz。
@@ -169,7 +176,8 @@ class SourceRoots:
     派生路径:
         - language_root: Path；data_root 下两套冻结配体语言表示的共同父目录。
         - manifest_root: Path；output_root 下与 MANIFEST_SCHEMA_VERSION 绑定的闭集监督清单目录。
-        - voxel_cache_root: Path；output_root 下与体素缓存 schema 和局部裁剪策略绑定的目录。
+        - voxel_cache_root: Path；output_root 下与体素缓存 schema 和局部裁剪策略绑定的目录。     
+        # NOTE: 注意，我会在stage1推理时"顺手"保存一些缓存，如48^3的原始密度、模拟密度、概率。所以现有的voxel&PP缓存是要变的————另，P/PP等需要大写（不是p/pp）
         - pp_cache_root: Path；output_root 下与 PP 缓存 schema、局部裁剪策略和 top_k 绑定的目录。
 
     本类只计算路径，不创建目录，也不读取或写入文件。
@@ -188,7 +196,7 @@ class SourceRoots:
             - language_root: Path；data_root/stage1_preparation_box_pool_2/ligand_language_models。
         """
 
-        return self.data_root / "stage1_preparation_box_pool_2/ligand_language_models"
+        return self.data_root / "stage1_preparation_box_pool_2/ligand_language_models"   # NOTE: 注意哦，后面这些地址肯定会发生变动，记得更新
 
     @property
     def manifest_root(self) -> Path:

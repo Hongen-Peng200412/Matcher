@@ -10,6 +10,8 @@
 输出前 56 通道与 DENSITY_CHANNEL_NAMES 逐位置一致，后 49 通道把 80³ 内受体原子的原始 49 维特征按 floor 后的体素归属逐通道求和。float16 是正式缓存量化契约；文件名同时绑定候选编号和实际裁剪起点，防止不同起点静默复用同一数组。
 """
 
+# NOTE: 未来我想要仅仅预先保存 48^3 的切块原始密度图、模拟密度图，剩下的特征（106dim)现场构建，或者"即用即删"，这意味着本文件在未来需要修改。
+# NOTE: 未来stage1推理产物的npz中，会顺便保存"尽量使V居中后的48^3box的中心", Matcher代码库直接使用就好。
 from __future__ import annotations
 
 import os
@@ -99,7 +101,7 @@ class _VoxelSources(TypedDict):
     voxel_size_xyz: np.ndarray
     origin_xyz: np.ndarray
     receptor_coords: np.ndarray
-    receptor_features: np.ndarray
+    receptor_features: np.ndarray  # NOTE: 未来将会是50维（增加主链标识）——————但是在未来整个类可能都需要删掉，这里只是提醒。
 
 
 class VoxelInputStore:
@@ -309,10 +311,10 @@ class VoxelInputStore:
             - F1_centered.npz.box_start_zyx: 整数数组，(C, 3)；C 个候选 80³ 在完整密度图中的 ZYX 起点。
             - F1_centered.npz.box_origin_world: 数值数组，(C, 3)；C 个候选低角点的世界 XYZ 坐标，单位 Å。
             - F1_centered.npz.voxel_size_world: 数值数组，(C, 3)；C 个候选的 XYZ 体素尺寸，单位 Å/voxel。
-            - exp.npz.grid: 数值数组，(1, Z_full, Y_full, X_full)；完整实验密度。
+            - exp.npz.grid: 数值数组，(1, Z_full, Y_full, X_full)；完整实验密度。   # NOTE: 未来我们似乎不需要缓存这个（因为已经切好块了）
             - exp.npz.voxel_size: 数值数组，(3,)；完整实验密度的 XYZ 体素尺寸，单位 Å/voxel。
             - exp.npz.origin: 数值数组，(3,)；完整实验密度低角点的世界 XYZ 坐标，单位 Å。
-            - sim.npz.grid: 数值数组，(1, Z_full, Y_full, X_full)；完整受体模拟密度。
+            - sim.npz.grid: 数值数组，(1, Z_full, Y_full, X_full)；完整受体模拟密度。   # NOTE: 未来我们似乎不需要缓存这个（因为已经切好块了）
             - sim.npz.voxel_size: 数值数组，(3,)；完整模拟密度的 XYZ 体素尺寸，必须与实验密度相同。
             - sim.npz.origin: 数值数组，(3,)；完整模拟密度低角点的世界 XYZ 坐标，必须与实验密度相同。
             - receptor_tokens.npz.coords: 数值数组，(N_atom, 3)；受体重原子世界 XYZ 坐标，单位 Å。

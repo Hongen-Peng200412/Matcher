@@ -11,7 +11,7 @@
 
 完整来源读取成本按 PDB 内候选复用。命令行 products 必须显式选择 voxel、pp 或二者；只在选择 pp 时允许并要求提供正 pp_top_k。
 """
-
+# NOTE: 我的态度和之前仍然一样——————预计算 / 缓存 / 加载逻辑需要整体重写
 from __future__ import annotations
 
 import argparse
@@ -53,7 +53,7 @@ def precompute_inputs(
         - roots.stage1_root: Path；读取 F1 候选、完整概率图和 PP 来源。
         - roots.output_root: Path；派生候选体素和 PP 的版本化可写缓存目录。
         - manifest_path: Path；已经物化所需划分的 manifest.json 路径。
-        - split_names: tuple[str, ...]；本次读取的清单划分，必须非空且不重复。
+        - split_names: tuple[str, ...]；本次读取的清单划分，必须非空且不重复。  # NOTE: 注释有问题，类似的情况仍然是广泛的问题："本次读取的清单划分"————这样的字词语义很模糊，让人无法猜测，遇到这种情况建议给出一个具体例子：是 train / validation 呢，还是 9qd7 / 7pa9 这样的pdb_id呢？  这个规则，建议写进 [$code-comment-style-cn](C:\\Users\\15919\\.codex\\skills\\code-comment-style-cn\\SKILL.md) 这个 skill！
         - workers: int；ProcessPoolExecutor 最大子进程数，必须大于 0。
         - products: tuple[PrecomputeProduct, ...]；显式选择 voxel、pp 或二者，必须非空且不重复。
         - pp_top_k: int 或 None；选择 pp 时必须为正整数，未选择 pp 时必须为 None。
@@ -158,7 +158,7 @@ def _precompute_one_pdb(
         - item[0].output_root: Path；两个产品发布版本化缓存的 Matcher 输出根。
         - item[1]: str；当前划分名 split_name。
         - item[2]: str；当前小写 PDB 标识 pdb_id。
-        - item[3]: tuple[int, ...]；清单候选编号，预期按递增顺序排列。
+        - item[3]: tuple[int, ...]；清单候选编号，预期按递增顺序排列。   # NOTE: “清单候选编号”——————按照即将修改的skill规则，遇到类似可能引发模糊语义的字词或语句，务必要举一个实际的例子！
         - products: tuple[PrecomputeProduct, ...]；当前子进程要构建的 voxel、pp 或二者。
         - pp_top_k: int 或 None；选择 pp 时由入口保证为正整数。
         - local_crop_strategy: LocalCropStrategy；两个产品共享的 48³ 起点解析策略。

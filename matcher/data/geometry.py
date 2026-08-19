@@ -48,8 +48,8 @@ class CandidateCropGeometry:
     strategy: LocalCropStrategy
     requested_start_zyx: np.ndarray
     start_zyx: np.ndarray
-    v_centroid_zyx: np.ndarray
-    crop_center_offset_zyx: np.ndarray
+    v_centroid_zyx: np.ndarray   # NOTE: 这个字段将会被上游的 stage1 直接保存，且上游将会完全预先裁剪好 48^3 的范围(策略固定为现在的 V-centered)
+    crop_center_offset_zyx: np.ndarray   # NOTE: 这个也必须被stage1的centered推理阶段保存。注意我的总设想仍然是： Matcher 只负责读取和极少量适配，产物由stage1推理负责切块、整理、适配。
     clipped_axis_mask: np.ndarray
     full_v_count: int
     retained_v_count: int

@@ -96,7 +96,7 @@ _CACHE_FIELDS = {
     "probability_voxel_size",
 }
 
-
+# NOTE: 在未来，如前所述，会预先保存 48^3 的概率，所以这部分逻辑需要重构——————因为在这种情况下，我们可能有条件现场计算PP而不产生I/O瓶颈。有个好处: k 可以作为参数低成本地调
 def _build_pp_tokens(
     probability_map: np.ndarray,
     box_start_zyx: np.ndarray,
@@ -502,7 +502,7 @@ class PpInputStore:
             - split_name: str；Stage1 来源划分目录名。
             - pdb_id: str；Stage1 PDB 目录名。
 
-        来源文件:
+        来源文件:  # NOTE:统一在一个.npz文件中看起来并不难，且I/O仍然很快，对嘛？
             - {stage1_root}/{split_name}/{pdb_id}/centered/F1_centered.npz: NPZ；提供候选 80³ 起点、体素尺寸和完整权威 V 稀疏表。
             - F1_centered.npz/box_start_zyx: 整数数组，(C, 3)；第 c 项是候选 c 在完整概率图中的 80³ ZYX 起点。
             - F1_centered.npz/voxel_size_world: float32 数组，(C, 3)；第 c 项是候选 c 的 XYZ 体素尺寸，单位 Å/voxel。
