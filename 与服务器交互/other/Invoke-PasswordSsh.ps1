@@ -12,12 +12,19 @@
 .EXAMPLE
 & ".\与服务器交互\other\Invoke-PasswordSsh.ps1" `
   -Command "bash -s" -InputFile ".\tmp\probe.sh"
+
+.EXAMPLE
+& ".\与服务器交互\other\Invoke-PasswordSsh.ps1" `
+  -TargetHostName "gnode09" -Command "hostname; nvidia-smi; ps -ef; squeue"
 #>
 [CmdletBinding()]
 param(
     [string]$HostName,
     [int]$Port,
     [string]$UserName,
+    [string]$TargetHostName,
+    [int]$TargetPort,
+    [string]$TargetUserName,
     [string]$Command,
     [string]$InputFile,
     [string]$PasswordEnvVar,
