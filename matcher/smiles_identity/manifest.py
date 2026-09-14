@@ -1,11 +1,11 @@
-"""构建并验证 Matcher 的单一精确 SMILES 身份清单. 
+"""构建并验证 Matcher 的单一精确 SMILES 身份清单.
 
 正式命令示例:
     python -m matcher.smiles_identity.manifest --data-root /storage/penghongen/AdaLigand/Ori_Data --stage1-root /storage/penghongen/AdaLigand_stage1_inference/Find_1/真实受体/artifacts/Find_1 --output-root /storage/penghongen/tmp/Matcher --split validation
 
 主要入口 build_manifest 在 output_root/manifests/smiles_identity 下发布 manifest.json、
 <split>_candidates.jsonl 和 <split>_identities.jsonl. 候选身份只由 PreparedLigand 顶层
-smiles 定义. 清单不保存 object_key、seen/unseen、语言家族、model_smiles 或重新计算的裁剪位置. 
+smiles 定义. 清单不保存 object_key、seen/unseen、语言家族、model_smiles 或重新计算的裁剪位置.
 """
 
 from __future__ import annotations
@@ -32,16 +32,16 @@ from .graph import SmilesGraphStore
 
 
 # 同一精确 SMILES 的历史 occurrence 向量来自相同公开模型输入, 但批次推理留下了
-# 最高 3.58e-6 的 float32 数值抖动. 清单固定选择最小可用 occurrence_id 的归档; 
-# 若任一重复向量超过该绝对误差, 则视为语言产物内容冲突并停止发布. 
+# 最高 3.58e-6 的 float32 数值抖动. 清单固定选择最小可用 occurrence_id 的归档;
+# 若任一重复向量超过该绝对误差, 则视为语言产物内容冲突并停止发布.
 LANGUAGE_DUPLICATE_ABSOLUTE_TOLERANCE = 5e-6
 
 
 def load_manifest(path: Path) -> dict[str, Any]:
-    """读取入口 manifest.json 并验证新管线消费的全部字段. 
+    """读取入口 manifest.json 并验证新管线消费的全部字段.
 
-    - path: manifest.json 路径. 
-    - return: dict[str, Any], 通过 build_manifest 字段契约检查后的 manifest.json 顶层映射; splits 内 JSONL 路径仍保持相对形式. 
+    - path: manifest.json 路径.
+    - return: dict[str, Any], 通过 build_manifest 字段契约检查后的 manifest.json 顶层映射; splits 内 JSONL 路径仍保持相对形式.
     """
 
     manifest = json.loads(Path(path).read_text(encoding="utf-8"))
@@ -75,12 +75,12 @@ def load_manifest(path: Path) -> dict[str, Any]:
 
 
 def read_split_records(path: Path, split: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """读取一个划分的候选与身份 JSONL, 并检查记录不含旧身份字段. 
+    """读取一个划分的候选与身份 JSONL, 并检查记录不含旧身份字段.
 
-    - path: manifest.json 路径. 
-    - split: manifest.splits 中的划分名称. 
-    - return[0]: list[dict[str, Any]], 按候选 JSONL 文件顺序读取的记录; 每项字段由 _build_split 的 return[0] 契约定义. 
-    - return[1]: list[dict[str, Any]], 按身份 JSONL 文件顺序读取的记录; 每项字段由 _build_split 的 return[1] 契约定义. 
+    - path: manifest.json 路径.
+    - split: manifest.splits 中的划分名称.
+    - return[0]: list[dict[str, Any]], 按候选 JSONL 文件顺序读取的记录; 每项字段由 _build_split 的 return[0] 契约定义.
+    - return[1]: list[dict[str, Any]], 按身份 JSONL 文件顺序读取的记录; 每项字段由 _build_split 的 return[1] 契约定义.
     """
 
     manifest = load_manifest(path)
@@ -105,10 +105,10 @@ def read_split_records(path: Path, split: str) -> tuple[list[dict[str, Any]], li
 
 
 def _read_jsonl(path: Path) -> list[dict[str, Any]]:
-    """读取 UTF-8 JSONL, 并要求每个非空行解析为字符串键映射. 
+    """读取 UTF-8 JSONL, 并要求每个非空行解析为字符串键映射.
 
-    - path: 输入 JSONL 路径. 
-    - return: list[dict[str, Any]], 按文件顺序保存的 JSON 映射列表; 空白行忽略. 
+    - path: 输入 JSONL 路径.
+    - return: list[dict[str, Any]], 按文件顺序保存的 JSON 映射列表; 空白行忽略.
     """
 
     records: list[dict[str, Any]] = []
@@ -124,10 +124,10 @@ def _read_jsonl(path: Path) -> list[dict[str, Any]]:
 
 
 def _write_jsonl_atomic(path: Path, records: list[dict[str, Any]]) -> None:
-    """以 UTF-8 JSONL 原子发布一组记录. 
+    """以 UTF-8 JSONL 原子发布一组记录.
 
-    - path: 最终 JSONL 路径. 
-    - records: list[dict[str, Any]], 按发布顺序写出的 JSON 映射列表; 映射键按字典序编码. 
+    - path: 最终 JSONL 路径.
+    - records: list[dict[str, Any]], 按发布顺序写出的 JSON 映射列表; 映射键按字典序编码.
     - return: None.
     """
 
@@ -140,10 +140,10 @@ def _write_jsonl_atomic(path: Path, records: list[dict[str, Any]]) -> None:
 
 
 def _write_json_atomic(path: Path, value: dict[str, Any]) -> None:
-    """以缩进 UTF-8 JSON 原子发布一个顶层映射. 
+    """以缩进 UTF-8 JSON 原子发布一个顶层映射.
 
-    - path: 最终 JSON 路径. 
-    - value: dict[str, Any], 可由标准 JSON 编码器直接序列化的顶层映射. 
+    - path: 最终 JSON 路径.
+    - value: dict[str, Any], 可由标准 JSON 编码器直接序列化的顶层映射.
     - return: None.
     """
 
@@ -161,23 +161,23 @@ def _read_language_embedding(
     occurrence_id: int,
     smiles: str,
 ) -> np.ndarray | None:
-    """读取并验证一个 occurrence 的固定 SMI-TED 向量; 缺文件时返回 None. 
+    """读取并验证一个 occurrence 的固定 SMI-TED 向量; 缺文件时返回 None.
 
-    - path: candidate_{occurrence_id}.npz 的完整路径. 
+    - path: candidate_{occurrence_id}.npz 的完整路径.
     - pdb_id: str, 当前语言向量预期所属的小写 PDB 标识.
     - occurrence_id: int, 当前语言向量预期所属的 occurrence 编号.
     - smiles: str, 当前语言向量预期所属的精确顶层 PreparedLigand.smiles.
-    - return: float32 数组|None, (768,); 有限 SMI-TED 向量, 文件不存在时为 None. 
+    - return: float32 数组|None, (768,); 有限 SMI-TED 向量, 文件不存在时为 None.
 
     归档字段:
-        - pdb_id: 字符串标量, 必须等于参数 pdb_id. 
-        - candidate_id: 整数标量, 在本模块中解释为 occurrence_id, 必须等于参数 occurrence_id. 
-        - prepared_smiles: 字符串标量, 必须逐字符等于参数 smiles. 
-        - model_name: 字符串标量, 必须等于固定 SMI_TED_MODEL_NAME. 
-        - embedding: float32 数组, (768,); 必须全部为有限值. 
+        - pdb_id: 字符串标量, 必须等于参数 pdb_id.
+        - candidate_id: 整数标量, 在本模块中解释为 occurrence_id, 必须等于参数 occurrence_id.
+        - prepared_smiles: 字符串标量, 必须逐字符等于参数 smiles.
+        - model_name: 字符串标量, 必须等于固定 SMI_TED_MODEL_NAME.
+        - embedding: float32 数组, (768,); 必须全部为有限值.
 
     归档必须逐字段匹配 PDB、occurrence、精确 prepared_smiles 和固定模型名称; 本函数
-    不读取 model_smiles, 也不重新运行语言模型. 
+    不读取 model_smiles, 也不重新运行语言模型.
     """
 
     if not path.is_file():
@@ -201,15 +201,15 @@ def _read_occurrences_and_smiles(
     roots: SourceRoots,
     pdb_id: str,
 ) -> tuple[dict[int, dict[str, Any]], dict[int, str | None]]:
-    """按 occurrence_id 对齐 occurrence 类型与顶层精确 SMILES. 
+    """按 occurrence_id 对齐 occurrence 类型与顶层精确 SMILES.
 
-    - roots: 原始数据、Find_1 和 Matcher 输出根目录. 
-    - pdb_id: 当前蛋白质结构编号. 
-    - return[0]: dict[int, dict[str, Any]], occurrence_id 到 occurrences.jsonl 原始类型记录的完整映射. 
-    - return[1]: dict[int, str|None], occurrence_id 到精确顶层 SMILES 的映射; 缺少 PreparedLigand 记录或顶层 smiles 时为 None. 
+    - roots: 原始数据、Find_1 和 Matcher 输出根目录.
+    - pdb_id: 当前蛋白质结构编号.
+    - return[0]: dict[int, dict[str, Any]], occurrence_id 到 occurrences.jsonl 原始类型记录的完整映射.
+    - return[1]: dict[int, str|None], occurrence_id 到精确顶层 SMILES 的映射; 缺少 PreparedLigand 记录或顶层 smiles 时为 None.
 
-    PreparedLigand 可以不包含无法准备的 occurrence, 但不得凭空增加未知编号. 
-    缺失前景是否跳过由候选清单连接统一处理; 背景不依赖 SMILES. 
+    PreparedLigand 可以不包含无法准备的 occurrence, 但不得凭空增加未知编号.
+    缺失前景是否跳过由候选清单连接统一处理; 背景不依赖 SMILES.
     """
 
     occurrence_path = roots.data_root / "parse" / pdb_id / "occurrences.jsonl"
@@ -243,19 +243,19 @@ def _build_pdb_identities(
     smiles_by_id: dict[int, str | None],
     graph_store: SmilesGraphStore,
 ) -> list[dict[str, Any]]:
-    """把同一 PDB 的有效前景 occurrence 按精确 SMILES 合并成身份槽. 
+    """把同一 PDB 的有效前景 occurrence 按精确 SMILES 合并成身份槽.
 
-    - roots: 原始数据、Find_1 和 Matcher 输出根目录. 
-    - pdb_id: 当前蛋白质结构编号. 
-    - occurrence_by_id: occurrence_id 到类别记录的映射. 
-    - smiles_by_id: occurrence_id 到精确顶层 SMILES 的映射; 缺失项为 None. 
-    - graph_store: 已完整载入内存的全局 SMILES 图资产. 
-    - return: list[dict[str, Any]], 按类别和精确 SMILES 排序的身份记录列表; 每项字段与 _build_split 的 return[1][*] 相同. 
+    - roots: 原始数据、Find_1 和 Matcher 输出根目录.
+    - pdb_id: 当前蛋白质结构编号.
+    - occurrence_by_id: occurrence_id 到类别记录的映射.
+    - smiles_by_id: occurrence_id 到精确顶层 SMILES 的映射; 缺失项为 None.
+    - graph_store: 已完整载入内存的全局 SMILES 图资产.
+    - return: list[dict[str, Any]], 按类别和精确 SMILES 排序的身份记录列表; 每项字段与 _build_split 的 return[1][*] 相同.
 
     occurrence_ids 保存同一身份下全部图合法成员. 函数读取该 SMILES 的全部可用 occurrence
     SMI-TED 归档并审计向量一致性, 再发布最小可用 occurrence_id 的归档路径; 整组没有语言
     文件时不发布该身份. 相同公开模型输入的历史 float32 向量允许已审计的微小数值抖动;
-    超过固定绝对误差时失败关闭. 
+    超过固定绝对误差时失败关闭.
     """
 
     # dict[str, list[int]], 精确 SMILES 到同一 PDB 内全部有效 occurrence_id 的递增列表.
@@ -315,12 +315,12 @@ def _check_label_alignment(
     centered_box_index: np.ndarray,
     source_blob_index: np.ndarray,
 ) -> None:
-    """核验标签旁路文件与 centered 候选轴逐项一致. 
+    """核验标签旁路文件与 centered 候选轴逐项一致.
 
-    - labels: 已打开的 F2_centered_label.npz. 
-    - centered_box_index: centered 产物的候选编号轴. 
-    - source_blob_index: centered 产物的源 blob 编号轴. 
-    - return: None; 全部标签字段存在、同形且两个连接轴逐项相等时通过. 
+    - labels: 已打开的 F2_centered_label.npz.
+    - centered_box_index: centered 产物的候选编号轴.
+    - source_blob_index: centered 产物的源 blob 编号轴.
+    - return: None; 全部标签字段存在、同形且两个连接轴逐项相等时通过.
     """
 
     required = {
@@ -347,36 +347,36 @@ def _build_split(
     split: str,
     graph_store: SmilesGraphStore,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, int]]:
-    """连接一个划分的 centered、标签、PreparedLigand 和语言向量. 
+    """连接一个划分的 centered、标签、PreparedLigand 和语言向量.
 
-    - roots: 原始数据、Find_1 和 Matcher 输出根目录. 
-    - split: stage1_root 下的划分目录名. 
-    - graph_store: 已加载的全局图包; 同时充当合法精确 SMILES 集合. 
-    - return[0]: list[dict[str, Any]], 候选记录列表; 背景全部保留, 缺图或缺语言的前景整条排除. 
-        - return[0][*].split: str, 当前 Find_1 划分名称. 
-        - return[0][*].pdb_id: str, 候选所属 PDB 目录名. 
-        - return[0][*].centered_box_index: int, F2_centered.npz 中候选的稳定编号. 
-        - return[0][*].source_blob_index: int, 候选连接的 F2_blobs.npz blob_index. 
-        - return[0][*].stage1_selected: bool, Find_1 是否把候选选为 Stage1 输出. 
-        - return[0][*].class_index: int, 六分类下标. 
-        - return[0][*].matched_occurrence_id: int|None, 双向覆盖最佳 occurrence 编号; 标签值小于 0 时为 None. 
-        - return[0][*].matched_smiles: str|None, 前景候选的精确顶层 PreparedLigand.smiles; 背景为 None. 
-        - return[0][*].candidate_coverage: float, 交集唯一体素数除以候选唯一体素数. 
-        - return[0][*].occurrence_coverage: float, 交集唯一体素数除以 occurrence 唯一体素数. 
-        - return[0][*].overlap_score: float, 两个方向覆盖率乘积的平方根. 
-    - return[1]: list[dict[str, Any]], PDB 内身份记录列表; 每项由精确 SMILES 唯一定义. 
-        - return[1][*].pdb_id: str, 身份槽所属 PDB. 
-        - return[1][*].smiles: str, 身份槽的精确顶层 PreparedLigand.smiles. 
-        - return[1][*].class_index: int, 该身份槽唯一的前景类别下标. 
-        - return[1][*].occurrence_ids: list[int], 当前 PDB 中共享该精确 SMILES 的全部有效 occurrence 编号, 按整数递增. 
-        - return[1][*].language_relative_path: str, 相对 data_root 的 SMI-TED NPZ 路径, 固定选择最小可用 occurrence_id. 
-    - return[2]: dict[str, int], 当前划分计数摘要. 
-        - return[2].pdb_count: int, 至少保留一个候选的 PDB 数. 
-        - return[2].candidate_count: int, 保留的候选总数. 
-        - return[2].foreground_candidate_count: int, 保留且 class_index 大于 0 的候选数. 
-        - return[2].identity_count: int, 全部 PDB 内身份槽总数. 
-        - return[2].unique_smiles_count: int, 跨 PDB 去重后的精确 SMILES 数. 
-        - return[2].skipped_positive_candidate_count: int, 因图或语言资产不可用而整条排除的前景候选数. 
+    - roots: 原始数据、Find_1 和 Matcher 输出根目录.
+    - split: stage1_root 下的划分目录名.
+    - graph_store: 已加载的全局图包; 同时充当合法精确 SMILES 集合.
+    - return[0]: list[dict[str, Any]], 候选记录列表; 背景全部保留, 缺图或缺语言的前景整条排除.
+        - return[0][*].split: str, 当前 Find_1 划分名称.
+        - return[0][*].pdb_id: str, 候选所属 PDB 目录名.
+        - return[0][*].centered_box_index: int, F2_centered.npz 中候选的稳定编号.
+        - return[0][*].source_blob_index: int, 候选连接的 F2_blobs.npz blob_index.
+        - return[0][*].stage1_selected: bool, Find_1 是否把候选选为 Stage1 输出.
+        - return[0][*].class_index: int, 六分类下标.
+        - return[0][*].matched_occurrence_id: int|None, 双向覆盖最佳 occurrence 编号; 标签值小于 0 时为 None.
+        - return[0][*].matched_smiles: str|None, 前景候选的精确顶层 PreparedLigand.smiles; 背景为 None.
+        - return[0][*].candidate_coverage: float, 交集唯一体素数除以候选唯一体素数.
+        - return[0][*].occurrence_coverage: float, 交集唯一体素数除以 occurrence 唯一体素数.
+        - return[0][*].overlap_score: float, 两个方向覆盖率乘积的平方根.
+    - return[1]: list[dict[str, Any]], PDB 内身份记录列表; 每项由精确 SMILES 唯一定义.
+        - return[1][*].pdb_id: str, 身份槽所属 PDB.
+        - return[1][*].smiles: str, 身份槽的精确顶层 PreparedLigand.smiles.
+        - return[1][*].class_index: int, 该身份槽唯一的前景类别下标.
+        - return[1][*].occurrence_ids: list[int], 当前 PDB 中共享该精确 SMILES 的全部有效 occurrence 编号, 按整数递增.
+        - return[1][*].language_relative_path: str, 相对 data_root 的 SMI-TED NPZ 路径, 固定选择最小可用 occurrence_id.
+    - return[2]: dict[str, int], 当前划分计数摘要.
+        - return[2].pdb_count: int, 至少保留一个候选的 PDB 数.
+        - return[2].candidate_count: int, 保留的候选总数.
+        - return[2].foreground_candidate_count: int, 保留且 class_index 大于 0 的候选数.
+        - return[2].identity_count: int, 全部 PDB 内身份槽总数.
+        - return[2].unique_smiles_count: int, 跨 PDB 去重后的精确 SMILES 数.
+        - return[2].skipped_positive_candidate_count: int, 因图或语言资产不可用而整条排除的前景候选数.
     """
 
     split_root = roots.stage1_root / split
@@ -388,7 +388,7 @@ def _build_split(
     identities: list[dict[str, Any]] = []
     # int, 当前划分因身份图或语言向量不可用而排除的前景候选累计数.
     skipped_positive = 0
-    # PDB 目录名排序固定跨文件系统的清单发布顺序. 
+    # PDB 目录名排序固定跨文件系统的清单发布顺序.
     for pdb_root in sorted(path for path in split_root.iterdir() if path.is_dir()):
         pdb_id = pdb_root.name
         occurrence_by_id, smiles_by_id = _read_occurrences_and_smiles(roots, pdb_id)
@@ -399,7 +399,7 @@ def _build_split(
             smiles_by_id,
             graph_store,
         )
-        # 精确字符串到当前 PDB 有效身份记录的映射; 用于前景候选完整性门禁. 
+        # 精确字符串到当前 PDB 有效身份记录的映射; 用于前景候选完整性门禁.
         identity_by_smiles = {record["smiles"]: record for record in pdb_identities}
         with np.load(pdb_root / "centered/F2_centered.npz", allow_pickle=False) as centered:
             with np.load(pdb_root / "centered/F2_centered_label.npz", allow_pickle=False) as labels:
@@ -453,32 +453,32 @@ def _build_split(
 
 
 def build_manifest(roots: SourceRoots, splits: list[str]) -> Path:
-    """构建候选与身份 JSONL, 并最后原子发布入口 manifest.json. 
+    """构建候选与身份 JSONL, 并最后原子发布入口 manifest.json.
 
-    - roots: 三个正式来源根目录. 
-    - splits: 需要物化的 Find_1 划分名称; 调用方顺序会保存在入口文件. 
-    - return: Path, 发布后的 output_root/manifests/smiles_identity/manifest.json 路径. 
+    - roots: 三个正式来源根目录.
+    - splits: 需要物化的 Find_1 划分名称; 调用方顺序会保存在入口文件.
+    - return: Path, 发布后的 output_root/manifests/smiles_identity/manifest.json 路径.
 
     文件产物:
-        - <split>_candidates.jsonl: JSONL, 每个元素是一个保留的 Find_1 centered 候选; 字段由 _build_split 的 return[0] 契约定义. 
-        - <split>_identities.jsonl: JSONL, 每个元素是一个 PDB 内精确 SMILES 身份槽; 字段由 _build_split 的 return[1] 契约定义. 
-        - manifest.json: JSON object, 绑定固定类别、身份语言契约、来源根目录、图包位置、各划分 JSONL 位置和计数. 
+        - <split>_candidates.jsonl: JSONL, 每个元素是一个保留的 Find_1 centered 候选; 字段由 _build_split 的 return[0] 契约定义.
+        - <split>_identities.jsonl: JSONL, 每个元素是一个 PDB 内精确 SMILES 身份槽; 字段由 _build_split 的 return[1] 契约定义.
+        - manifest.json: JSON object, 绑定固定类别、身份语言契约、来源根目录、图包位置、各划分 JSONL 位置和计数.
 
     manifest.json 字段:
-        - schema: str, 固定为 smiles_identity_v1. 
-        - class_names: list[str], 长度 6; 与 CLASS_NAMES 顺序逐项相同. 
-        - identity_key: str, 固定为 PreparedLigand.smiles. 
-        - language_model: str, 固定为 SMI-TED Light 289M. 
-        - data_root: str, AdaLigand Ori_Data 根目录. 
-        - stage1_root: str, Find_1 artifacts/Find_1 根目录. 
-        - graph_asset_path: str, 全局 smiles_graphs_v1.npz 路径. 
-        - splits: dict[str, dict[str, str]], 划分名称到两个 JSONL 文件字段的映射. 
-            - splits[split].candidates: str, 当前划分候选 JSONL 相对 manifest.json 所在目录的文件名. 
-            - splits[split].identities: str, 当前划分身份 JSONL 相对 manifest.json 所在目录的文件名. 
-        - summary: dict[str, dict[str, int]], 每个划分的 PDB、候选、前景、身份、唯一 SMILES 和排除计数; 字段由 _build_split 的 return[2] 契约定义. 
+        - schema: str, 固定为 smiles_identity_v1.
+        - class_names: list[str], 长度 6; 与 CLASS_NAMES 顺序逐项相同.
+        - identity_key: str, 固定为 PreparedLigand.smiles.
+        - language_model: str, 固定为 SMI-TED Light 289M.
+        - data_root: str, AdaLigand Ori_Data 根目录.
+        - stage1_root: str, Find_1 artifacts/Find_1 根目录.
+        - graph_asset_path: str, 全局 smiles_graphs_v1.npz 路径.
+        - splits: dict[str, dict[str, str]], 划分名称到两个 JSONL 文件字段的映射.
+            - splits[split].candidates: str, 当前划分候选 JSONL 相对 manifest.json 所在目录的文件名.
+            - splits[split].identities: str, 当前划分身份 JSONL 相对 manifest.json 所在目录的文件名.
+        - summary: dict[str, dict[str, int]], 每个划分的 PDB、候选、前景、身份、唯一 SMILES 和排除计数; 字段由 _build_split 的 return[2] 契约定义.
 
-    每个正类候选只有在精确 SMILES 同时拥有合法图和有效 SMI-TED 向量时才写入; 
-    缺少任一项时整条候选跳过. 背景候选不需要 SMILES, 因此始终保留. 
+    每个正类候选只有在精确 SMILES 同时拥有合法图和有效 SMI-TED 向量时才写入;
+    缺少任一项时整条候选跳过. 背景候选不需要 SMILES, 因此始终保留.
     """
 
     if not splits or any(not split for split in splits) or len(set(splits)) != len(splits):
@@ -519,10 +519,10 @@ def build_manifest(roots: SourceRoots, splits: list[str]) -> Path:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """解析三个来源根目录和划分名称, 发布正式 manifest.json. 
+    """解析三个来源根目录和划分名称, 发布正式 manifest.json.
 
-    - argv: 可选命令行参数列表; None 表示读取当前进程命令行. 
-    - return: int, 入口 manifest.json 成功原子发布后返回 0. 
+    - argv: 可选命令行参数列表; None 表示读取当前进程命令行.
+    - return: int, 入口 manifest.json 成功原子发布后返回 0.
     """
 
     parser = argparse.ArgumentParser(description=__doc__)

@@ -1,7 +1,7 @@
-"""计算候选六分类、两个体素区域和单一 SMILES 闭集身份损失. 
+"""计算候选六分类、两个体素区域和单一 SMILES 闭集身份损失.
 
 主要入口 compute_matcher_loss 返回可反向的总损失、四个损失分量和两个真实聚合分母.
-本模块只执行张量计算, 不读取或写出文件. 
+本模块只执行张量计算, 不读取或写出文件.
 """
 
 from __future__ import annotations
@@ -21,12 +21,12 @@ IdentityLossVariant = Literal["oracle", "detached", "joint"]
 
 @dataclass(frozen=True)
 class LossWeights:
-    """保存四项非负损失系数. 
+    """保存四项非负损失系数.
 
-    - classification: 六分类交叉熵系数. 
-    - ligand_area: 配体区域平衡 BCE 与软 Dice 系数. 
-    - binding_area: 结合区域平衡 BCE 与软 Dice 系数. 
-    - identity: PDB 内精确 SMILES 交叉熵系数. 
+    - classification: 六分类交叉熵系数.
+    - ligand_area: 配体区域平衡 BCE 与软 Dice 系数.
+    - binding_area: 结合区域平衡 BCE 与软 Dice 系数.
+    - identity: PDB 内精确 SMILES 交叉熵系数.
     """
 
     classification: float
@@ -35,9 +35,9 @@ class LossWeights:
     identity: float
 
     def __post_init__(self) -> None:
-        """拒绝非有限、负数、布尔值或非数值损失系数. 
+        """拒绝非有限、负数、布尔值或非数值损失系数.
 
-        - return: None; 四项权重合法时保留实例, 否则在训练前抛出 ValueError. 
+        - return: None; 四项权重合法时保留实例, 否则在训练前抛出 ValueError.
         """
 
         if any(
@@ -51,15 +51,15 @@ class LossWeights:
 
 
 class LossOutput(TypedDict):
-    """保存可反向的四项损失、总损失和两个真实聚合分母. 
+    """保存可反向的四项损失、总损失和两个真实聚合分母.
 
-    - total: 浮点标量张量, 四项损失按 LossWeights 加权后的和. 
-    - classification: 浮点标量张量, 当前物理批次的六分类交叉熵. 
-    - ligand_area: 浮点标量张量, 当前物理批次的配体区域平衡 BCE 与软 Dice 均值. 
-    - binding_area: 浮点标量张量, 当前物理批次的受体结合区域平衡 BCE 与软 Dice 均值. 
-    - identity: 浮点标量张量, 合格前景候选的精确 SMILES 交叉熵; 关闭或没有合格候选时为连图零. 
-    - classification_denominator: 浮点标量张量, 未加权时为候选数 B, 使用 class_weights 时为真实类别权重之和. 
-    - identity_eligible_count: int64 标量张量, identity_target 非负并实际进入身份损失的候选数. 
+    - total: 浮点标量张量, 四项损失按 LossWeights 加权后的和.
+    - classification: 浮点标量张量, 当前物理批次的六分类交叉熵.
+    - ligand_area: 浮点标量张量, 当前物理批次的配体区域平衡 BCE 与软 Dice 均值.
+    - binding_area: 浮点标量张量, 当前物理批次的受体结合区域平衡 BCE 与软 Dice 均值.
+    - identity: 浮点标量张量, 合格前景候选的精确 SMILES 交叉熵; 关闭或没有合格候选时为连图零.
+    - classification_denominator: 浮点标量张量, 未加权时为候选数 B, 使用 class_weights 时为真实类别权重之和.
+    - identity_eligible_count: int64 标量张量, identity_target 非负并实际进入身份损失的候选数.
     """
 
     total: torch.Tensor
@@ -72,14 +72,14 @@ class LossOutput(TypedDict):
 
 
 def balanced_voxel_loss(logits: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
-    """计算逐候选正负平衡 BCE 与软 Dice 之和, 再沿批次取均值. 
+    """计算逐候选正负平衡 BCE 与软 Dice 之和, 再沿批次取均值.
 
-    - logits: 浮点张量, (B, Z, Y, X), 逐体素未归一化分数. 
-    - target: bool 或数值张量, 与 logits 同形; 非零位置是正类体素. 
-    - return: 可反向标量; 每个候选的平衡 BCE 加软 Dice 后沿 B 取均值. 
+    - logits: 浮点张量, (B, Z, Y, X), 逐体素未归一化分数.
+    - target: bool 或数值张量, 与 logits 同形; 非零位置是正类体素.
+    - return: 可反向标量; 每个候选的平衡 BCE 加软 Dice 后沿 B 取均值.
 
     含正体素的候选把正、负 BCE 各赋一半权重; 全负候选只使用负类 BCE. Dice 的
-    分子和分母都加一, 避免空目标产生除零. 
+    分子和分母都加一, 避免空目标产生除零.
     """
 
     if logits.shape != target.shape or logits.ndim != 4:
@@ -114,17 +114,17 @@ def _identity_loss(
     batch: dict[str, torch.Tensor],
     variant: IdentityLossVariant,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """对 identity_target 非负的全部前景候选计算 SMILES 身份交叉熵. 
+    """对 identity_target 非负的全部前景候选计算 SMILES 身份交叉熵.
 
-    - outputs.identity_logits: 浮点 (B, I), 已屏蔽补零槽的闭集身份分数. 
-    - outputs.class_logits: 浮点 (B, 6), detached 或 joint 模式的类别置信度来源. 
-    - batch.identity_mask: bool (B, I), 真实身份槽掩码. 
-    - batch.identity_class_index: int64 (B, I), 有效槽的五类前景下标. 
-    - batch.identity_target: int64 (B,), 背景为 -1, 前景指向有效身份槽. 
-    - batch.class_target: int64 (B,), 用于核对目标身份类别. 
-    - variant: oracle、detached 或 joint; 决定是否以真实类别概率缩放逐候选交叉熵. 
-    - return[0]: 可反向标量身份损失; 没有合格前景时为与 logits 连图的零. 
-    - return[1]: int64 标量张量; 身份损失实际候选数. 
+    - outputs.identity_logits: 浮点 (B, I), 已屏蔽补零槽的闭集身份分数.
+    - outputs.class_logits: 浮点 (B, 6), detached 或 joint 模式的类别置信度来源.
+    - batch.identity_mask: bool (B, I), 真实身份槽掩码.
+    - batch.identity_class_index: int64 (B, I), 有效槽的五类前景下标.
+    - batch.identity_target: int64 (B,), 背景为 -1, 前景指向有效身份槽.
+    - batch.class_target: int64 (B,), 用于核对目标身份类别.
+    - variant: oracle、detached 或 joint; 决定是否以真实类别概率缩放逐候选交叉熵.
+    - return[0]: 可反向标量身份损失; 没有合格前景时为与 logits 连图的零.
+    - return[1]: int64 标量张量; 身份损失实际候选数.
     """
 
     # 浮点张量, (B, I); 已在模型侧屏蔽补零槽的身份分数.
@@ -182,24 +182,24 @@ def compute_matcher_loss(
     identity_variant: IdentityLossVariant | None,
     class_weights: torch.Tensor | None = None,
 ) -> LossOutput:
-    """计算一个物理批次的候选和身份损失. 
+    """计算一个物理批次的候选和身份损失.
 
-    - outputs.class_logits: 浮点 (B, 6). 
+    - outputs.class_logits: 浮点 (B, 6).
     - outputs.ligand_area_logits: 浮点 (B, 48, 48, 48), 配体区域未归一化分数.
     - outputs.binding_area_logits: 浮点 (B, 48, 48, 48), 受体结合区域未归一化分数.
-    - outputs.identity_logits: 浮点 (B, I); identity_variant 非 None 时必需. 
-    - batch.class_target: int64 (B,). 
+    - outputs.identity_logits: 浮点 (B, I); identity_variant 非 None 时必需.
+    - batch.class_target: int64 (B,).
     - batch.ligand_area_target: bool (B, 48, 48, 48), 配体区域二值目标.
     - batch.binding_area_target: bool (B, 48, 48, 48), 受体结合区域二值目标.
-    - batch.identity_target: int64 (B,); 所有五类前景均以非负值进入身份监督. 
-    - weights: LossWeights, 四项非负系数分别缩放六分类、配体区域、受体结合区域和身份损失. 
-    - weights.classification: float, 六分类损失系数. 
-    - weights.ligand_area: float, 配体区域损失系数. 
-    - weights.binding_area: float, 受体结合区域损失系数. 
-    - weights.identity: float, 精确 SMILES 身份损失系数. 
-    - identity_variant: None 关闭身份损失; oracle、detached、joint 控制类别置信度乘数. 
-    - class_weights: None 或浮点张量, (6,); 六分类各真实类别的交叉熵权重. 
-    - return: LossOutput, 七个标量字段的形状、聚合分母和梯度语义见 LossOutput. 
+    - batch.identity_target: int64 (B,); 所有五类前景均以非负值进入身份监督.
+    - weights: LossWeights, 四项非负系数分别缩放六分类、配体区域、受体结合区域和身份损失.
+    - weights.classification: float, 六分类损失系数.
+    - weights.ligand_area: float, 配体区域损失系数.
+    - weights.binding_area: float, 受体结合区域损失系数.
+    - weights.identity: float, 精确 SMILES 身份损失系数.
+    - identity_variant: None 关闭身份损失; oracle、detached、joint 控制类别置信度乘数.
+    - class_weights: None 或浮点张量, (6,); 六分类各真实类别的交叉熵权重.
+    - return: LossOutput, 七个标量字段的形状、聚合分母和梯度语义见 LossOutput.
     """
 
     # 浮点张量, (B,); 每个候选的六分类交叉熵, 已应用可选真实类别权重.
@@ -245,4 +245,3 @@ def compute_matcher_loss(
         "classification_denominator": denominator,
         "identity_eligible_count": identity_count,
     }
-

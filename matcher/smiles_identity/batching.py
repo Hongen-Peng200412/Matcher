@@ -1,7 +1,7 @@
-"""按可复现顺序采样候选, 并补齐 token、身份和 SMILES 图字段. 
+"""按可复现顺序采样候选, 并补齐 token、身份和 SMILES 图字段.
 
-DataLoader 使用 spawn 和持久工作进程. 每个工作进程启动后完整载入一次全局图包, 
-后续 epoch 复用同一 Dataset 副本及其 PDB 最近使用缓存. 
+DataLoader 使用 spawn 和持久工作进程. 每个工作进程启动后完整载入一次全局图包,
+后续 epoch 复用同一 Dataset 副本及其 PDB 最近使用缓存.
 """
 
 from __future__ import annotations
@@ -21,11 +21,11 @@ from .schema import LANGUAGE_EMBEDDING_DIM
 
 
 def _pad_float(values: list[np.ndarray]) -> tuple[torch.Tensor, torch.Tensor]:
-    """沿第一维补零一组同宽浮点二维数组, 并返回有效位置掩码. 
+    """沿第一维补零一组同宽浮点二维数组, 并返回有效位置掩码.
 
-    - values: 非空二维数组列表; 第二维宽度必须相同, 第一维允许为零. 
-    - return[0]: float32 张量, (B, N_max, D), 无效位置补零. 
-    - return[1]: bool 张量, (B, N_max), 原数组覆盖位置为 True. 
+    - values: 非空二维数组列表; 第二维宽度必须相同, 第一维允许为零.
+    - return[0]: float32 张量, (B, N_max, D), 无效位置补零.
+    - return[1]: bool 张量, (B, N_max), 原数组覆盖位置为 True.
     """
 
     # int, N_max; 批内数组第一轴的最大长度.
@@ -45,11 +45,11 @@ def _pad_float(values: list[np.ndarray]) -> tuple[torch.Tensor, torch.Tensor]:
 
 
 def _pad_integer(values: list[np.ndarray]) -> tuple[torch.Tensor, torch.Tensor]:
-    """沿第一维补零一组 int64 二维索引, 并返回有效位置掩码. 
+    """沿第一维补零一组 int64 二维索引, 并返回有效位置掩码.
 
-    - values: 非空二维索引数组列表; 第二维宽度必须相同, 第一维允许为零. 
-    - return[0]: int64 张量, (B, N_max, D), 无效位置补零. 
-    - return[1]: bool 张量, (B, N_max), 原数组覆盖位置为 True. 
+    - values: 非空二维索引数组列表; 第二维宽度必须相同, 第一维允许为零.
+    - return[0]: int64 张量, (B, N_max, D), 无效位置补零.
+    - return[1]: bool 张量, (B, N_max), 原数组覆盖位置为 True.
     """
 
     # int, N_max; 批内索引数组第一轴的最大长度.
@@ -72,14 +72,14 @@ def _pad_integer(values: list[np.ndarray]) -> tuple[torch.Tensor, torch.Tensor]:
 
 
 class ShuffledBatchSampler(Sampler[list[int]]):
-    """用 seed+epoch 可复现洗牌, 再切成固定物理批次. 
+    """用 seed+epoch 可复现洗牌, 再切成固定物理批次.
 
-    - dataset: 只通过 len 读取候选总数. 
-    - batch_size: 每个物理批次的最大候选数. 
-    - shuffle: 是否洗牌. 
-    - drop_last: 是否丢弃不足一个物理批次的末批. 
-    - seed: 基准随机种子. 
-    - sample_count_multiple: 可选截短倍数; 用于保持梯度累积边界完整. 
+    - dataset: 只通过 len 读取候选总数.
+    - batch_size: 每个物理批次的最大候选数.
+    - shuffle: 是否洗牌.
+    - drop_last: 是否丢弃不足一个物理批次的末批.
+    - seed: 基准随机种子.
+    - sample_count_multiple: 可选截短倍数; 用于保持梯度累积边界完整.
     """
 
     def __init__(
@@ -91,14 +91,14 @@ class ShuffledBatchSampler(Sampler[list[int]]):
         seed: int,
         sample_count_multiple: int | None,
     ) -> None:
-        """验证批量约束并把首次 epoch 固定为零. 
+        """验证批量约束并把首次 epoch 固定为零.
 
-        - dataset: 只要求实现 len 的候选集合. 
-        - batch_size: 每个物理批次的最大候选数. 
-        - shuffle: True 时按 seed+epoch 洗牌全部候选下标. 
-        - drop_last: True 时不生成不足 batch_size 的末批. 
-        - seed: 洗牌基准种子. 
-        - sample_count_multiple: 可选候选截短倍数; 正式训练用它保持梯度累积完整. 
+        - dataset: 只要求实现 len 的候选集合.
+        - batch_size: 每个物理批次的最大候选数.
+        - shuffle: True 时按 seed+epoch 洗牌全部候选下标.
+        - drop_last: True 时不生成不足 batch_size 的末批.
+        - seed: 洗牌基准种子.
+        - sample_count_multiple: 可选候选截短倍数; 正式训练用它保持梯度累积完整.
         """
 
         if batch_size <= 0:
@@ -116,21 +116,21 @@ class ShuffledBatchSampler(Sampler[list[int]]):
         self.epoch = 0
 
     def set_epoch(self, epoch: int) -> None:
-        """更新下一次迭代使用的洗牌周期. 
+        """更新下一次迭代使用的洗牌周期.
 
-        - epoch: int, 与基准 seed 相加后播种当前周期的独立洗牌, 通常从 0 递增. 
-        - return: None, 只更新 self.epoch. 
+        - epoch: int, 与基准 seed 相加后播种当前周期的独立洗牌, 通常从 0 递增.
+        - return: None, 只更新 self.epoch.
         """
 
         self.epoch = int(epoch)
 
     def __iter__(self) -> Iterator[list[int]]:
-        """生成当前 epoch 的 Dataset 下标批次. 
+        """生成当前 epoch 的 Dataset 下标批次.
 
-        - return: 依次产生 list[int]; 每个列表是一个物理批次的 Dataset 下标. 
+        - return: 依次产生 list[int]; 每个列表是一个物理批次的 Dataset 下标.
 
         洗牌只依赖固定 seed 和当前 epoch; 可选截短发生在洗牌后, 因此每个 epoch
-        可能舍弃不同候选, 但总样本数和梯度累积边界保持不变. 
+        可能舍弃不同候选, 但总样本数和梯度累积边界保持不变.
         """
 
         indices = list(range(len(self.dataset)))
@@ -145,9 +145,9 @@ class ShuffledBatchSampler(Sampler[list[int]]):
                 yield batch
 
     def __len__(self) -> int:
-        """返回应用截短与末批规则后的物理批次数. 
+        """返回应用截短与末批规则后的物理批次数.
 
-        - return: int, sample_count_multiple 截短后按 batch_size 切分的批次数; drop_last=False 时向上取整. 
+        - return: int, sample_count_multiple 截短后按 batch_size 切分的批次数; drop_last=False 时向上取整.
         """
 
         sample_count = len(self.dataset)
@@ -157,10 +157,10 @@ class ShuffledBatchSampler(Sampler[list[int]]):
 
 
 def initialize_candidate_worker(_: int) -> None:
-    """在 DataLoader 工作进程中初始化该 Dataset 副本的全局图包. 
+    """在 DataLoader 工作进程中初始化该 Dataset 副本的全局图包.
 
-    - _: int, PyTorch 提供的工作进程编号; 初始化逻辑不依赖具体编号. 
-    - return: None, 当前工作进程的 CandidateDataset.graph_store 完整载入一次图包. 
+    - _: int, PyTorch 提供的工作进程编号; 初始化逻辑不依赖具体编号.
+    - return: None, 当前工作进程的 CandidateDataset.graph_store 完整载入一次图包.
     """
 
     information = get_worker_info()
@@ -170,13 +170,13 @@ def initialize_candidate_worker(_: int) -> None:
 
 
 def collate_candidates(items: list[CandidateItem]) -> CandidateBatch:
-    """把非空 CandidateItem 列表补齐并连接全部有效身份图. 
+    """把非空 CandidateItem 列表补齐并连接全部有效身份图.
 
-    - items: list[CandidateItem], 非空候选列表; 列表顺序定义 CandidateBatch 的 B 轴. 
-    - return: CandidateBatch, 完整字段、形状、补零与连接图索引契约见 contracts.CandidateBatch. 
+    - items: list[CandidateItem], 非空候选列表; 列表顺序定义 CandidateBatch 的 B 轴.
+    - return: CandidateBatch, 完整字段、形状、补零与连接图索引契约见 contracts.CandidateBatch.
 
     token 补零仅发生在批内最大长度之后; 对应 mask 标记有效位置. 每个有效身份恰好
-    连接一张图, graph_to_sample 和 graph_to_identity 把图表示写回身份槽. 
+    连接一张图, graph_to_sample 和 graph_to_identity 把图表示写回身份槽.
     """
 
     if not items:
@@ -296,14 +296,14 @@ def build_candidate_loader(
     prefetch_factor: int,
     worker_generator_seed: int,
 ) -> DataLoader[CandidateBatch]:
-    """构造候选 DataLoader; 始终启用页锁定内存, num_workers>0 时启用 spawn 和持久工作进程. 
+    """构造候选 DataLoader; 始终启用页锁定内存, num_workers>0 时启用 spawn 和持久工作进程.
 
-    - dataset: 单一 SMILES 身份 CandidateDataset. 
-    - sampler: 唯一决定候选顺序和物理批次. 
-    - num_workers: 非负工作进程数; 为零时在主进程读取. 
-    - prefetch_factor: 工作进程预取批次数; 只在 num_workers>0 时传给 PyTorch. 
-    - worker_generator_seed: DataLoader 工作进程播种使用的独立种子. 
-    - return: DataLoader[CandidateBatch], sampler 决定批次顺序, collate_candidates 生成每个 CandidateBatch. 
+    - dataset: 单一 SMILES 身份 CandidateDataset.
+    - sampler: 唯一决定候选顺序和物理批次.
+    - num_workers: 非负工作进程数; 为零时在主进程读取.
+    - prefetch_factor: 工作进程预取批次数; 只在 num_workers>0 时传给 PyTorch.
+    - worker_generator_seed: DataLoader 工作进程播种使用的独立种子.
+    - return: DataLoader[CandidateBatch], sampler 决定批次顺序, collate_candidates 生成每个 CandidateBatch.
     """
 
     if num_workers < 0:
@@ -329,4 +329,3 @@ def build_candidate_loader(
             }
         )
     return cast(DataLoader[CandidateBatch], DataLoader(**keyword))
-

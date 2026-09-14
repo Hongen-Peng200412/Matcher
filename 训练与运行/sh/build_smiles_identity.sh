@@ -2,8 +2,8 @@
 set -euo pipefail
 
 # 提交命令: bash 训练与运行/submit_task.sh --sh 训练与运行/sh/build_smiles_identity.sh --resource cpu --cpus 16
-# 构建全局 SMILES 图、自同构、Find_1 validation 标签旁路和正式清单. 
-# TASK_PROJECT_ROOT 由 submit_task.sh 绑定到本次 release; 本脚本不回退到本地检出目录. 
+# 构建全局 SMILES 图、自同构、Find_1 validation 标签旁路和正式清单.
+# TASK_PROJECT_ROOT 由 submit_task.sh 绑定到本次 release; 本脚本不回退到本地检出目录.
 # CONDA_BASE 是 Conda 安装根目录; allocation 环境可显式覆盖.
 CONDA_BASE="${CONDA_BASE:-${HOME}/anaconda3}"
 # CHEMISTRY_ENV_NAME 是含 RDKit 的资产构建环境; MATCHER_CHEMISTRY_ENV 可显式覆盖.

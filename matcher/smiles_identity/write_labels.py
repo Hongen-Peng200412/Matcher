@@ -1,11 +1,11 @@
-"""为 Find_1 centered 候选生成紧邻的六分类与 occurrence 匹配标签. 
+"""为 Find_1 centered 候选生成紧邻的六分类与 occurrence 匹配标签.
 
 正式命令示例:
     python -m matcher.smiles_identity.write_labels --data-root /storage/penghongen/AdaLigand/Ori_Data --stage1-root /storage/penghongen/AdaLigand_stage1_inference/Find_1/真实受体/artifacts/Find_1 --split validation --mode skip --workers 16
 
 主要入口 write_pdb_labels 为一个 PDB 写出
 stage1_root/<split>/<pdb_id>/centered/F2_centered_label.npz. 标签文件不保存 SMILES、
-模板键或体素副本, 只用 source_blob_index 连接原 centered 与 blobs 产物. 
+模板键或体素副本, 只用 source_blob_index 连接原 centered 与 blobs 产物.
 """
 
 from __future__ import annotations
@@ -23,10 +23,10 @@ from .labels import OccurrenceMask, assign_candidate_target
 
 
 def _run_task(arguments: tuple[Path, Path, str, str, float, bool]) -> dict[str, int | str]:
-    """把可序列化参数元组展开给进程池调用. 
+    """把可序列化参数元组展开给进程池调用.
 
-    - arguments: tuple[Path, Path, str, str, float, bool], 依次为 data_root、stage1_root、split、pdb_id、coverage_threshold 和 overwrite. 
-    - return: dict[str, int|str], write_pdb_labels 返回的 PDB 标签计数摘要. 
+    - arguments: tuple[Path, Path, str, str, float, bool], 依次为 data_root、stage1_root、split、pdb_id、coverage_threshold 和 overwrite.
+    - return: dict[str, int|str], write_pdb_labels 返回的 PDB 标签计数摘要.
     """
 
     return write_pdb_labels(*arguments)
@@ -43,29 +43,29 @@ def write_pdb_labels(
     coverage_threshold: float,
     overwrite: bool,
 ) -> dict[str, int | str]:
-    """生成一个 PDB 的标签旁路文件, 并返回候选计数摘要. 
+    """生成一个 PDB 的标签旁路文件, 并返回候选计数摘要.
 
-    - data_root: AdaLigand Ori_Data 根目录. 
-    - stage1_root: Find_1 artifacts/Find_1 根目录. 
-    - split: centered 产物划分名称. 
-    - pdb_id: 小写 PDB 标识. 
-    - coverage_threshold: 候选和 occurrence 共用的双向覆盖阈值. 
-    - overwrite: True 覆盖现有完整标签; False 时直接跳过. 
+    - data_root: AdaLigand Ori_Data 根目录.
+    - stage1_root: Find_1 artifacts/Find_1 根目录.
+    - split: centered 产物划分名称.
+    - pdb_id: 小写 PDB 标识.
+    - coverage_threshold: 候选和 occurrence 共用的双向覆盖阈值.
+    - overwrite: True 覆盖现有完整标签; False 时直接跳过.
 
     文件字段:
-        - centered_box_index: int32 数组, (N_candidate,); 与 F2_centered.npz 同名字段逐项相同, 标识标签第一轴上的候选. 
-        - source_blob_index: int32 数组, (N_candidate,); 与 F2_centered.npz 同名字段逐项相同, 每项指向 F2_blobs.npz 的 blob_index. 
-        - class_index: int8 数组, (N_candidate,); 六分类下标, 0:6 依次为 background、ion、nucleotide_like、peptide_like、small_molecule、sugar. 
-        - matched_occurrence_id: int32 数组, (N_candidate,); 最佳真实 occurrence 编号, 没有双向覆盖命中时为 -1. 
-        - candidate_coverage: float32 数组, (N_candidate,); 交集唯一体素数除以候选唯一体素数. 
-        - occurrence_coverage: float32 数组, (N_candidate,); 交集唯一体素数除以 occurrence 唯一体素数. 
-        - overlap_score: float32 数组, (N_candidate,); 两个方向覆盖率乘积的平方根. 
+        - centered_box_index: int32 数组, (N_candidate,); 与 F2_centered.npz 同名字段逐项相同, 标识标签第一轴上的候选.
+        - source_blob_index: int32 数组, (N_candidate,); 与 F2_centered.npz 同名字段逐项相同, 每项指向 F2_blobs.npz 的 blob_index.
+        - class_index: int8 数组, (N_candidate,); 六分类下标, 0:6 依次为 background、ion、nucleotide_like、peptide_like、small_molecule、sugar.
+        - matched_occurrence_id: int32 数组, (N_candidate,); 最佳真实 occurrence 编号, 没有双向覆盖命中时为 -1.
+        - candidate_coverage: float32 数组, (N_candidate,); 交集唯一体素数除以候选唯一体素数.
+        - occurrence_coverage: float32 数组, (N_candidate,); 交集唯一体素数除以 occurrence 唯一体素数.
+        - overlap_score: float32 数组, (N_candidate,); 两个方向覆盖率乘积的平方根.
 
     返回字段:
-        - result.pdb_id: str, 当前 PDB 标识. 
-        - result.status: str, written 表示本次原子发布文件, skipped 表示 overwrite=False 且文件已存在. 
-        - result.candidate_count: int, written 时为 N_candidate, skipped 时为 0. 
-        - result.foreground_count: int, written 时为 class_index 大于 0 的候选数, skipped 时为 0. 
+        - result.pdb_id: str, 当前 PDB 标识.
+        - result.status: str, written 表示本次原子发布文件, skipped 表示 overwrite=False 且文件已存在.
+        - result.candidate_count: int, written 时为 N_candidate, skipped 时为 0.
+        - result.foreground_count: int, written 时为 class_index 大于 0 的候选数, skipped 时为 0.
     """
 
     pdb_root = stage1_root / split / pdb_id
@@ -150,25 +150,25 @@ def run_label_build(
     overwrite: bool,
     workers: int,
 ) -> int:
-    """并行处理一个划分的全部 PDB, 并打印汇总 JSON. 
+    """并行处理一个划分的全部 PDB, 并打印汇总 JSON.
 
-    - data_root: Path, AdaLigand Ori_Data 根目录. 
-    - stage1_root: Path, Find_1 artifacts/Find_1 根目录; 标签写入该目录对应 split 的 centered 子目录. 
-    - split: str, 要处理的 centered 划分名称, 如 validation. 
-    - coverage_threshold: float, 候选和 occurrence 共用的双向覆盖阈值. 
-    - overwrite: bool, True 原子覆盖现有标签, False 保留现有标签并把对应 PDB 计为 skipped. 
-    - workers: int, ProcessPoolExecutor 并行进程数; 必须为正整数. 
-    - return: int, 全部 PDB 标签任务成功完成并输出汇总后返回 0. 
+    - data_root: Path, AdaLigand Ori_Data 根目录.
+    - stage1_root: Path, Find_1 artifacts/Find_1 根目录; 标签写入该目录对应 split 的 centered 子目录.
+    - split: str, 要处理的 centered 划分名称, 如 validation.
+    - coverage_threshold: float, 候选和 occurrence 共用的双向覆盖阈值.
+    - overwrite: bool, True 原子覆盖现有标签, False 保留现有标签并把对应 PDB 计为 skipped.
+    - workers: int, ProcessPoolExecutor 并行进程数; 必须为正整数.
+    - return: int, 全部 PDB 标签任务成功完成并输出汇总后返回 0.
 
     标准输出 JSON:
-        - split: str, 本次处理的 centered 划分名称. 
-        - pdb_count: int, stage1_root/<split> 下参与进程池的 PDB 目录数. 
-        - written_pdb_count: int, 本次实际发布标签文件的 PDB 数. 
-        - candidate_count: int, 本次实际写入的候选总数; skipped PDB 贡献 0. 
-        - foreground_count: int, 本次实际写入且 class_index 大于 0 的候选总数. 
+        - split: str, 本次处理的 centered 划分名称.
+        - pdb_count: int, stage1_root/<split> 下参与进程池的 PDB 目录数.
+        - written_pdb_count: int, 本次实际发布标签文件的 PDB 数.
+        - candidate_count: int, 本次实际写入的候选总数; skipped PDB 贡献 0.
+        - foreground_count: int, 本次实际写入且 class_index 大于 0 的候选总数.
 
     PDB 目录名先排序再交给进程池; 每个任务只写自己的 centered 旁路文件, 不共享
-    输出目标. 任一子进程异常会由 executor.map 传播, 不能用较小汇总静默收口. 
+    输出目标. 任一子进程异常会由 executor.map 传播, 不能用较小汇总静默收口.
     """
 
     if workers <= 0:
@@ -199,10 +199,10 @@ def run_label_build(
 
 
 def main(argv: list[str] | None = None) -> int:
-    """解析命令行并把六个参数交给正式标签构建入口. 
+    """解析命令行并把六个参数交给正式标签构建入口.
 
-    - argv: 可选命令行参数列表; None 表示读取当前进程命令行. 
-    - return: int, run_label_build 返回的进程退出码. 
+    - argv: 可选命令行参数列表; None 表示读取当前进程命令行.
+    - return: int, run_label_build 返回的进程退出码.
     """
 
     parser = argparse.ArgumentParser(description=__doc__)
