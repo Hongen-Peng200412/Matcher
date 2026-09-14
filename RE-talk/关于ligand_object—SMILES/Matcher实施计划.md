@@ -1,8 +1,17 @@
 # Matcher 单一 SMILES 身份实施计划
 
+> **现行结论（2026-09-14）**：本文以下正文保留 2026-09-13 讨论收口前的设计轨迹，
+> 其中“等待许可”、schema 5、每 PDB 图包、拒绝多片段和不单独保存自同构等说法已经
+> 被后续授权取代，不能继续作为实现契约。现行实现采用
+> `matcher/smiles_identity/`、`smiles_identity_v1`、版本化全局
+> `smiles_graphs_v1.npz` 与同序 `smiles_symmetries_v1.npz`；合法断开组分保留，严格
+> RDKit 解析或 sanitize 失败的字符串排除。当前字段、目录和正式命令以
+> [精确 SMILES 身份管线 README](../../matcher/smiles_identity/README.md) 和
+> [执行记录](执行记录.md) 为准。
+
 ## 状态与授权边界
 
-- 当前状态：设计完成，等待用户明确允许后才能修改代码、配置、正式数据或服务器文件。
+- 历史状态：本文初稿写成时设计完成、尚待用户许可；用户随后已明确授权实施。
 - 本文允许落盘的内容仅是计划，不代表任何步骤已经执行。
 - 后续实现允许重新定义监督任务、修改模型输入并从头训练；不要求加载联合身份 schema 4 的 checkpoint。
 - 开始实现前还需确认一个数据口径：是否接受统一严格 SMILES 门禁排除 held-out PDB `9oq7` 的 3 个 `model_failed` occurrence。详细证据见 [信息.md](信息.md)。

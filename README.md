@@ -1,21 +1,19 @@
 # Matcher
 
-本仓库独立承载 AdaLigand 的单候选闭集配体身份分类阶段。AdaLigand 生产 A–G 解析产物、密度图和 Stage1 Find_0 候选；Matcher 对每个候选执行六分类，并按配置从同一 PDB 的去重配体身份清单中选择身份。清单 v4 用 `(object_key, PreparedLigand.smiles)` 联合定义一个身份槽：前者定位 LigandObject 模板图，后者逐字采用交给语言模型公开接口的顶层字符串。身份范围可限定为 `small_molecule`，也可覆盖 `ion/nucleotide_like/peptide_like/small_molecule/sugar` 五类非背景配体；当前联合身份、语言表示或配体图不可用的候选仍保留六分类和区域监督。
+本仓库独立承载 AdaLigand 的单候选闭集配体身份分类阶段。AdaLigand 生产 A–G 解析产物、密度图和 Stage1 Find_1 候选；Matcher 对每个候选执行六分类，并从同一 PDB 的精确 `PreparedLigand.smiles` 身份清单中选择身份。当前从头训练入口把交给 SMI-TED 公开接口的顶层字符串同时作为监督身份和全局重原子图查询键；它不读取 `object_key` 或 LigandObject。无法取得合法 SMILES 图，或其 SMILES 身份没有任何有效语言向量的前景候选整条跳过；背景候选继续保留。
 
 ## 当前科学入口
 
-- `candidate_pretrain`：对全部 Find_0 候选预测 `background/ion/nucleotide_like/peptide_like/small_molecule/sugar`，同时监督候选配体区域和受体结合区域；不读取配体语言表示或配体图。
-- `full_matcher`：保留相同候选编码器，再读取当前 PDB 的配体语言表示、未池化配体原子图和排除自身的身份清单，输出闭集身份分数。
-- `calibration`：入口已经实现，但只有全部开发批次结束且用户明确确认最终方案后，才允许读取已完成阶段的 `BEST.pt` 运行一次正式评估。claim 文件保留期间，同一稳定数据指纹只能绑定一个选择，`claimed` 允许同一选择在失败后重试，`completed` 禁止再次评估。该入口不训练、不选模。支持类 macro-F1 只平均真实候选数大于零的类别；固定六类 macro-F1 把零支持类 F1 记为 0 后仍平均全部六类。
+- `matcher.smiles_identity`：当前正式管线。它读取 Find_1 已提供的 `48³` supplied crop，在内存连接 56 个密度通道和 50 个受体通道，并构造 A/P/V/PP token、六分类监督、两个区域监督和五类前景 SMILES 身份监督。
 - 候选与真实 occurrence 的全局组件覆盖率和 occurrence 覆盖率都至少为 `0.30` 才命中。多个命中使用两侧覆盖率几何平均的最大值，并采用稳定并列规则。
-- RAUNet 输入候选级 `48³` 的 105 个通道。第 0/1 批固定裁取 `[16,64)³`；第 2 批起可按完整权威 V 的体素质心解析起点。A/P token 保留 Stage1 `80³` 上下文且不受 RAUNet 调制；V/PP 与两个区域目标共享同一 `48³`，只有 V/PP 读取 RAUNet 特征增量。
-- 完整 Matcher 支持 `oracle/detached/joint` 三种身份门控损失；三者都以同一 global batch 中真实类别属于配置身份范围且身份目标有效的候选数为身份损失分母。
-
-旧的双模式 Matcher 实现已从活动 Python 入口移除，但仍保留在 Git 历史中，不能把旧规划或旧实验结果解释为当前实现。
+- 一个 PDB 内的相同精确顶层 SMILES 共享一个身份槽；不同 PDB 不共享同一次闭集归一化。新清单不保存 `object_key`、`model_smiles`、seen/unseen、语言家族或另造的图编号。
+- `matcher/data`、`matcher/datasets`、`matcher/model`、`matcher/training` 和 `matcher/evaluation` 保留联合身份 v4 历史管线，供既有实验复现。新管线只复用其中不读取 LigandObject 的密度通道、字节预算缓存、特征融合和 RAUNet 数值模块。
+- 当前驻留任务只在 Find_1 validation 上训练并在同一 validation 上监测运行健康；它不读取 calibration，也不能解释为独立泛化评估。
 
 ## 目录
 
-- `matcher/data/`：Stage1 与 A–G 来源适配、标签、候选几何、冻结清单、105 通道体素缓存和 PP token 缓存。
+- `matcher/smiles_identity/`：精确 SMILES 图资产、Find_1 标签和清单、Dataset、批次、模型、损失、训练与验收入口；详细契约见该目录 README。
+- `matcher/data/`：联合身份 v4 的 Stage1 与 A–G 来源适配、标签、候选几何、冻结清单、105 通道体素缓存和 PP token 缓存。
 - `matcher/datasets/`：`CandidateDataset`、样本与批次字段、全局随机采样器、批量合并和 `DataLoader` 构造。
 - `matcher/model/`：RAUNet、A/P/V/PP 四模态候选聚合、候选辅助头和闭集身份模型。
 - `matcher/training/`：实验配置、损失、候选预训练初始化、checkpoint、W&B online 追踪、阶段训练和实验计划入口。
@@ -27,6 +25,7 @@
 - `configs/experiments/batch2/`：第 2 批五个自包含 YAML；统一 V 质心 `48³` 与采样统计，比较三种完整 Matcher 损失和两种候选聚合。
 - `configs/experiments/batch3/`：第 3 批四个自包含 YAML；为候选条件注意力加入按模态独立、末层零初始化的实体分数偏置。
 - `训练与运行/`：通用 Slurm、release、launch、四锁控制，以及 Matcher 的预计算、训练和一次性 calibration shell 入口。
+- `configs/experiments/smiles_identity/`：精确 SMILES 身份管线的完整正式训练配置。
 - `与服务器交互/`：只面向 `/home/penghongen/My_Project/Matcher` 的安全同步入口。
 - `文档/exec_plan/`：逐项命令、Job ID、审查发现、临时决定和结果证据。
 - `文档/记录/`：按单任务、批次和全局三个层次维护 validation 结果、对照结论与后续决策。
@@ -38,6 +37,7 @@
 python -m compileall -q matcher
 python -m mypy matcher
 python -m pytest matcher\tests -q
+python -m pytest matcher\tests_smiles -q
 git diff --check
 ```
 
