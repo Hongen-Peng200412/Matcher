@@ -2,8 +2,8 @@
 set -euo pipefail
 
 # 提交命令: bash 训练与运行/submit_task.sh --sh 训练与运行/sh/train_smiles_identity.sh --resource a800 --gpus 1 --cpus 16 --time 3-00:00:00 --after_hold
-# 启动 Find_1 validation 自训练与自验证驻留任务; 配置明确关闭 checkpoint 并启用 W&B online. 
-# TASK_PROJECT_ROOT 由 submit_task.sh 绑定到本次 release; 本脚本不回退到本地检出目录. 
+# 启动 Find_1 validation 自训练与自验证驻留任务; 配置明确关闭 checkpoint 并启用 W&B online.
+# TASK_PROJECT_ROOT 由 submit_task.sh 绑定到本次 release; 本脚本不回退到本地检出目录.
 # CONDA_BASE 是 Conda 安装根目录; allocation 环境可显式覆盖.
 CONDA_BASE="${CONDA_BASE:-${HOME}/anaconda3}"
 # CONDA_ENV_NAME 是正式 Matcher 训练环境; MATCHER_CONDA_ENV 可显式覆盖.

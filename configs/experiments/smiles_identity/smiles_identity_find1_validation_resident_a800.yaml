@@ -1,76 +1,76 @@
-# matcher.smiles_identity.experiment.main 通过 load_smiles_experiment 读取本文件; 单张 A800 在 Find_1 validation 上训练并以同一清单自验证. 
-# 本任务只用于新数据主链的持续运行与曲线观察; 同集指标不能解释为独立泛化性能. 
-# 顶层八个字段无隐式默认值; 未知字段和缺失字段均在模型或 Dataset 构造前失败. 
-name: smiles_identity_find1_validation_resident_a800  # str: 本次运行目录名和 W&B 名称前缀. 
-output_root: /storage/penghongen/tmp/Matcher/experiments  # Path: run.json、history.jsonl 等运行证据根目录. 
-seed: 3409  # int: Python、NumPy、PyTorch、CUDA、候选洗牌和 worker 的共同基准种子. 
+# matcher.smiles_identity.experiment.main 通过 load_smiles_experiment 读取本文件; 单张 A800 在 Find_1 validation 上训练并以同一清单自验证.
+# 本任务只用于新数据主链的持续运行与曲线观察; 同集指标不能解释为独立泛化性能.
+# 顶层八个字段无隐式默认值; 未知字段和缺失字段均在模型或 Dataset 构造前失败.
+name: smiles_identity_find1_validation_resident_a800  # str: 本次运行目录名和 W&B 名称前缀.
+output_root: /storage/penghongen/tmp/Matcher/experiments  # Path: run.json、history.jsonl 等运行证据根目录.
+seed: 3409  # int: Python、NumPy、PyTorch、CUDA、候选洗牌和 worker 的共同基准种子.
 
 data:
-  # manifest_path (Path): 单一 PreparedLigand.smiles 身份入口; 文件内固定 AdaLigand、Find_1 和图包来源. 
+  # manifest_path (Path): 单一 PreparedLigand.smiles 身份入口; 文件内固定 AdaLigand、Find_1 和图包来源.
   manifest_path: /storage/penghongen/tmp/Matcher/manifests/smiles_identity/manifest.json
-  # train_split (str): 故意使用 validation 清单训练, 仅服务本轮驻留验收. 
+  # train_split (str): 故意使用 validation 清单训练, 仅服务本轮驻留验收.
   train_split: validation
-  # validation_split (str): 使用完整 validation 清单自验证, 不解释为独立泛化性能. 
+  # validation_split (str): 使用完整 validation 清单自验证, 不解释为独立泛化性能.
   validation_split: validation
-  # batch_size (正整数): 单卡每次前向包含 8 个候选. 
+  # batch_size (正整数): 单卡每次前向包含 8 个候选.
   batch_size: 8
-  # accumulation_steps (正整数): 累积 4 个物理批次后完成一次参数更新. 
+  # accumulation_steps (正整数): 累积 4 个物理批次后完成一次参数更新.
   accumulation_steps: 4
-  # num_workers (非负整数): 每个 DataLoader 使用 4 个持久工作进程. 
+  # num_workers (非负整数): 每个 DataLoader 使用 4 个持久工作进程.
   num_workers: 4
-  # prefetch_factor (正整数): 每个 DataLoader 工作进程预取 2 个物理批次. 
+  # prefetch_factor (正整数): 每个 DataLoader 工作进程预取 2 个物理批次.
   prefetch_factor: 2
-  # pp_top_k (正整数): 按概率降序、C 顺序下标升序保留 1024 个 PP token. 
+  # pp_top_k (正整数): 按概率降序、C 顺序下标升序保留 1024 个 PP token.
   pp_top_k: 1024
-  # cache_gib_per_worker (非负 float): 每个 Dataset 工作进程的 PDB 数组 LRU 预算, 不是进程 RSS 上限. 
+  # cache_gib_per_worker (非负 float): 每个 Dataset 工作进程的 PDB 数组 LRU 预算, 不是进程 RSS 上限.
   cache_gib_per_worker: 8.0
 
 model:
-  # 下列字段完整构造 MatcherModelConfig; 所有维度和门初值均属于正式科学配置. 
-  # aggregation (枚举): 连接完整 mean/max 摘要与条件注意力摘要, 再用零输出残差融合. 
+  # 下列字段完整构造 MatcherModelConfig; 所有维度和门初值均属于正式科学配置.
+  # aggregation (枚举): 连接完整 mean/max 摘要与条件注意力摘要, 再用零输出残差融合.
   aggregation: mean_max_candidate_cross_attention_concat
-  use_manual_features: true  # bool: 同时使用 A/P/V/PP 的数量、概率均值和概率最大值. 
-  use_sampling_features: true  # bool: 使用 supplied crop 的边界、中心偏移和 V 保留率. 
-  use_candidate_token_attention_bias: false  # bool: 摘要拼接结构不启用独立 token 注意力偏置. 
-  initial_graph_gate: 0.0  # float: [0, 1] 初值; SMILES 图分数增量从严格零门开始. 
-  initial_inventory_gate: 0.0  # float: [0, 1] 初值; 同 PDB 其它 SMILES 分数增量从严格零门开始. 
-  model_dim: 256  # int: 候选、语言身份、图身份和清单身份的共同表示宽度. 
-  attention_heads: 8  # int: 候选条件注意力、图注意力和身份清单注意力的头数. 
-  dropout: 0.10  # float: [0, 1); token、候选、图和身份打分子网络共用的丢弃率. 
-  voxel_feature_channels: 48  # int: RAUNet 最高分辨率特征与两个区域头的通道数. 
-  # raunet_planes (九项正整数): enc0、enc1、enc2、enc3、bottleneck、dec3、dec2、dec1、dec0. 
+  use_manual_features: true  # bool: 同时使用 A/P/V/PP 的数量、概率均值和概率最大值.
+  use_sampling_features: true  # bool: 使用 supplied crop 的边界、中心偏移和 V 保留率.
+  use_candidate_token_attention_bias: false  # bool: 摘要拼接结构不启用独立 token 注意力偏置.
+  initial_graph_gate: 0.0  # float: [0, 1] 初值; SMILES 图分数增量从严格零门开始.
+  initial_inventory_gate: 0.0  # float: [0, 1] 初值; 同 PDB 其它 SMILES 分数增量从严格零门开始.
+  model_dim: 256  # int: 候选、语言身份、图身份和清单身份的共同表示宽度.
+  attention_heads: 8  # int: 候选条件注意力、图注意力和身份清单注意力的头数.
+  dropout: 0.10  # float: [0, 1); token、候选、图和身份打分子网络共用的丢弃率.
+  voxel_feature_channels: 48  # int: RAUNet 最高分辨率特征与两个区域头的通道数.
+  # raunet_planes (九项正整数): enc0、enc1、enc2、enc3、bottleneck、dec3、dec2、dec1、dec0.
   raunet_planes: [64, 256, 256, 256, 256, 256, 128, 64, 64]
-  recycle_iterations: 3  # int: 同一候选体素在 RAUNet 内的回收轮数. 
-  gradient_checkpointing: true  # bool: 训练时对 RAUNet 高开销子模块执行激活重计算. 
-  bottleneck_attention_layers: 4  # int: RAUNet 最深网格串联的三轴位置注意力层数. 
-  graph_layers: 4  # int: SMILES 原子图沿双向化学键执行的消息传递层数. 
+  recycle_iterations: 3  # int: 同一候选体素在 RAUNet 内的回收轮数.
+  gradient_checkpointing: true  # bool: 训练时对 RAUNet 高开销子模块执行激活重计算.
+  bottleneck_attention_layers: 4  # int: RAUNet 最深网格串联的三轴位置注意力层数.
+  graph_layers: 4  # int: SMILES 原子图沿双向化学键执行的消息传递层数.
 
 loss:
-  # 四项权重相乘后求和为总损失; identity_variant 单独决定身份损失的前景置信度处理. 
-  classification: 1.0  # 非负 float: 候选六分类交叉熵权重. 
-  ligand_area: 0.10  # 非负 float: 配体区域平衡 BCE 与软 Dice 权重. 
-  binding_area: 0.10  # 非负 float: 受体结合区域平衡 BCE 与软 Dice 权重. 
-  identity: 1.0  # 非负 float: 五类前景精确 SMILES 闭集交叉熵权重. 
-  # identity_variant (枚举): oracle 不以当前六分类置信度缩放精确 SMILES 交叉熵. 
+  # 四项权重相乘后求和为总损失; identity_variant 单独决定身份损失的前景置信度处理.
+  classification: 1.0  # 非负 float: 候选六分类交叉熵权重.
+  ligand_area: 0.10  # 非负 float: 配体区域平衡 BCE 与软 Dice 权重.
+  binding_area: 0.10  # 非负 float: 受体结合区域平衡 BCE 与软 Dice 权重.
+  identity: 1.0  # 非负 float: 五类前景精确 SMILES 闭集交叉熵权重.
+  # identity_variant (枚举): oracle 不以当前六分类置信度缩放精确 SMILES 交叉熵.
   identity_variant: oracle
 
 optimization:
-  # AdamW、梯度裁剪、完整验证间隔和两种正常停止条件均由 engine.run_smiles_training 读取. 
-  learning_rate: 1.0e-4  # 正 float: AdamW 的共同学习率. 
-  weight_decay: 1.0e-4  # 非负 float: AdamW 的解耦权重衰减. 
-  # gradient_clip_norm (正 float): 200 是宽松裁剪; W&B 逐更新记录裁剪前范数和是否触发. 
+  # AdamW、梯度裁剪、完整验证间隔和两种正常停止条件均由 engine.run_smiles_training 读取.
+  learning_rate: 1.0e-4  # 正 float: AdamW 的共同学习率.
+  weight_decay: 1.0e-4  # 非负 float: AdamW 的解耦权重衰减.
+  # gradient_clip_norm (正 float): 200 是宽松裁剪; W&B 逐更新记录裁剪前范数和是否触发.
   gradient_clip_norm: 200.0
-  max_epochs: 10000  # 正 int: 墙钟限制未先到达时允许的最大完整数据遍历次数. 
-  max_hours: 72.0  # 正 float: 从训练入口开始计算的最长驻留小时数. 
-  # validation_every_updates (正整数): 每 500 次参数更新完整遍历一次 validation. 
+  max_epochs: 10000  # 正 int: 墙钟限制未先到达时允许的最大完整数据遍历次数.
+  max_hours: 72.0  # 正 float: 从训练入口开始计算的最长驻留小时数.
+  # validation_every_updates (正整数): 每 500 次参数更新完整遍历一次 validation.
   validation_every_updates: 500
-  # save_checkpoints (bool): 驻留验收不写模型参数文件. 
+  # save_checkpoints (bool): 驻留验收不写模型参数文件.
   save_checkpoints: false
 
 tracking:
-  # tracking 子映射只控制 W&B 外部记录; 不改变 Dataset、模型前向、损失或优化器更新. 
-  mode: online  # online 把标量曲线和首个验证候选的区域最大投影图同步到 W&B. 
-  entity: pencounkdual-111  # str|null: W&B 账号或团队; 本任务固定写入该实体. 
-  project: AdaLigand-Matcher-SmilesIdentity  # str: W&B 项目名. 
-  group: find1-validation-resident-a800  # str: 同类驻留验收运行的 W&B 分组名. 
-  log_every_updates: 1  # 正 int: 每次参数更新均记录损失、梯度范数和裁剪标志. 
+  # tracking 子映射只控制 W&B 外部记录; 不改变 Dataset、模型前向、损失或优化器更新.
+  mode: online  # online 把标量曲线和首个验证候选的区域最大投影图同步到 W&B.
+  entity: pencounkdual-111  # str|null: W&B 账号或团队; 本任务固定写入该实体.
+  project: AdaLigand-Matcher-SmilesIdentity  # str: W&B 项目名.
+  group: find1-validation-resident-a800  # str: 同类驻留验收运行的 W&B 分组名.
+  log_every_updates: 1  # 正 int: 每次参数更新均记录损失、梯度范数和裁剪标志.

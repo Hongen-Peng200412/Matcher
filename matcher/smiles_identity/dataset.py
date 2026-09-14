@@ -1,8 +1,8 @@
-"""把 Find_1 centered 候选物化为单一 SMILES 身份 Matcher 样本. 
+"""把 Find_1 centered 候选物化为单一 SMILES 身份 Matcher 样本.
 
 每个持久 DataLoader 工作进程完整载入一次全局 SMILES 图包, 并用一个按字节预算的
 PDB 最近使用缓存保存 centered、受体、occurrence 掩码和语言向量. 106 通道
-体素输入只在内存构造, 不额外落盘. 
+体素输入只在内存构造, 不额外落盘.
 """
 
 from __future__ import annotations
@@ -41,15 +41,15 @@ def _scatter_receptor(
     voxel_size_xyz: np.ndarray,
     crop_start_zyx: np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """把完整受体的 50 维特征求和散射到给定 48 立方体. 
+    """把完整受体的 50 维特征求和散射到给定 48 立方体.
 
-    - coordinates_xyz: float32 (N, 3), 受体原子的世界 X/Y/Z 坐标. 
-    - features: float32 (N, 50), 与原子轴对齐的受体特征. 
-    - box_origin_xyz: float32 (3,), 80 立方体的世界坐标原点, 轴顺序为 XYZ, 单位 Å. 
-    - voxel_size_xyz: float32 (3,), 80 立方体每轴体素尺寸, 轴顺序为 XYZ, 单位 Å. 
-    - crop_start_zyx: int64 (3,), 48 立方体在 80 立方体内的 Z/Y/X 起点. 
-    - return[0]: float32 (50, 48, 48, 48); 落入同一体素的原子特征按通道求和. 
-    - return[1]: bool (48, 48, 48); 至少含一个受体原子的体素为 True. 
+    - coordinates_xyz: float32 (N, 3), 受体原子的世界 X/Y/Z 坐标.
+    - features: float32 (N, 50), 与原子轴对齐的受体特征.
+    - box_origin_xyz: float32 (3,), 80 立方体的世界坐标原点, 轴顺序为 XYZ, 单位 Å.
+    - voxel_size_xyz: float32 (3,), 80 立方体每轴体素尺寸, 轴顺序为 XYZ, 单位 Å.
+    - crop_start_zyx: int64 (3,), 48 立方体在 80 立方体内的 Z/Y/X 起点.
+    - return[0]: float32 (50, 48, 48, 48); 落入同一体素的原子特征按通道求和.
+    - return[1]: bool (48, 48, 48); 至少含一个受体原子的体素为 True.
     """
 
     # int64 数组, (N, 3); 世界 XYZ 坐标减候选原点并除以各轴 spacing 后向下取整, 得到 80 立方体局部 XYZ 下标.
@@ -73,13 +73,13 @@ def _build_dense_tokens(
     crop_start_zyx: np.ndarray,
     modality: str,
 ) -> np.ndarray:
-    """构造保留完整候选范围的 A 或 P token, 并以 supplied crop 中心定义相对坐标. 
+    """构造保留完整候选范围的 A 或 P token, 并以 supplied crop 中心定义相对坐标.
 
-    - centered: 当前 PDB 的完整 centered 数组映射. 
-    - position: 当前候选在 centered 第一轴的位置. 
-    - crop_start_zyx: supplied crop 在 80 立方体内的 Z/Y/X 起点. 
-    - modality: A 或 P; 决定读取字段集合和输出宽度. 
-    - return: float32 (N_A, 230) 或 (N_P, 116); 最后四列为概率、相对 X/Y/Z. 
+    - centered: 当前 PDB 的完整 centered 数组映射.
+    - position: 当前候选在 centered 第一轴的位置.
+    - crop_start_zyx: supplied crop 在 80 立方体内的 Z/Y/X 起点.
+    - modality: A 或 P; 决定读取字段集合和输出宽度.
+    - return: float32 (N_A, 230) 或 (N_P, 116); 最后四列为概率、相对 X/Y/Z.
     """
 
     # 两个整数, 当前候选在对应模态连接 token 轴上的左闭右开区间.
@@ -127,13 +127,13 @@ def _build_v_tokens(
     position: int,
     crop_start_zyx: np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """筛选 supplied crop 内的 V, 并拼接 64 维特征、概率和相对坐标. 
+    """筛选 supplied crop 内的 V, 并拼接 64 维特征、概率和相对坐标.
 
-    - centered: 当前 PDB 的完整 centered 数组映射. 
-    - position: 当前候选在 centered 第一轴的位置. 
-    - crop_start_zyx: supplied crop 在 80 立方体内的 Z/Y/X 起点. 
-    - return[0]: float32 (N_V, 68); 64 维 V 特征、概率和相对 X/Y/Z. 
-    - return[1]: int64 (N_V, 3); 同一 token 在 48 立方体内的 Z/Y/X 下标. 
+    - centered: 当前 PDB 的完整 centered 数组映射.
+    - position: 当前候选在 centered 第一轴的位置.
+    - crop_start_zyx: supplied crop 在 80 立方体内的 Z/Y/X 起点.
+    - return[0]: float32 (N_V, 68); 64 维 V 特征、概率和相对 X/Y/Z.
+    - return[1]: int64 (N_V, 3); 同一 token 在 48 立方体内的 Z/Y/X 下标.
     """
 
     start, stop = centered["voxel_offsets"][position : position + 2]
@@ -162,12 +162,12 @@ def _build_v_tokens(
 
 
 def _build_pp_tokens(probability: np.ndarray, top_k: int) -> tuple[np.ndarray, np.ndarray]:
-    """按概率降序、C 顺序下标升序稳定选择 supplied 48 立方体的 PP token. 
+    """按概率降序、C 顺序下标升序稳定选择 supplied 48 立方体的 PP token.
 
-    - probability: float32 (48, 48, 48), Find_1 supplied crop 的源概率. 
-    - top_k: 正整数; 最多保留的体素数. 
-    - return[0]: float32 (K, 4); 概率和相对 X/Y/Z, K=min(top_k, 48^3). 
-    - return[1]: int64 (K, 3); 与 token 对齐的局部 Z/Y/X 下标. 
+    - probability: float32 (48, 48, 48), Find_1 supplied crop 的源概率.
+    - top_k: 正整数; 最多保留的体素数.
+    - return[0]: float32 (K, 4); 概率和相对 X/Y/Z, K=min(top_k, 48^3).
+    - return[1]: int64 (K, 3); 与 token 对齐的局部 Z/Y/X 下标.
     """
 
     grid = np.asarray(probability, dtype=np.float32)
@@ -195,12 +195,12 @@ def _build_ligand_target(
     box_start_zyx: np.ndarray,
     crop_start_zyx: np.ndarray,
 ) -> np.ndarray:
-    """把当前 PDB 全部 occurrence 掩码在 supplied crop 内取并集. 
+    """把当前 PDB 全部 occurrence 掩码在 supplied crop 内取并集.
 
-    - occurrence_masks: 每项为 int64 (N_i, 3) 的全局 Z/Y/X 稀疏掩码. 
-    - box_start_zyx: 当前 80 立方体在全局密度图中的 Z/Y/X 起点. 
-    - crop_start_zyx: supplied 48 立方体在当前 80 立方体内的 Z/Y/X 起点. 
-    - return: bool (48, 48, 48); 所有 occurrence 落入当前 crop 的体素并集. 
+    - occurrence_masks: 每项为 int64 (N_i, 3) 的全局 Z/Y/X 稀疏掩码.
+    - box_start_zyx: 当前 80 立方体在全局密度图中的 Z/Y/X 起点.
+    - crop_start_zyx: supplied 48 立方体在当前 80 立方体内的 Z/Y/X 起点.
+    - return: bool (48, 48, 48); 所有 occurrence 落入当前 crop 的体素并集.
     """
 
     # int64 数组, (3,); supplied crop 在全局密度图中的 Z/Y/X 起点.
@@ -223,14 +223,14 @@ def _build_binding_target(
     voxel_size_xyz: np.ndarray,
     crop_start_zyx: np.ndarray,
 ) -> np.ndarray:
-    """把完整受体中的 binding_atom 散射到 supplied crop. 
+    """把完整受体中的 binding_atom 散射到 supplied crop.
 
-    - coordinates_xyz: float32 (N, 3), 受体原子的世界 X/Y/Z 坐标. 
-    - binding_atom: bool (N,), 与受体原子轴对齐的结合标签. 
-    - box_origin_xyz: float32 (3,), 80 立方体的世界坐标原点, 轴顺序为 XYZ, 单位 Å. 
-    - voxel_size_xyz: float32 (3,), 80 立方体每轴体素尺寸, 轴顺序为 XYZ, 单位 Å. 
-    - crop_start_zyx: supplied 48 立方体在 80 立方体内的 Z/Y/X 起点. 
-    - return: bool (48, 48, 48); 含至少一个 binding_atom 的局部体素为 True. 
+    - coordinates_xyz: float32 (N, 3), 受体原子的世界 X/Y/Z 坐标.
+    - binding_atom: bool (N,), 与受体原子轴对齐的结合标签.
+    - box_origin_xyz: float32 (3,), 80 立方体的世界坐标原点, 轴顺序为 XYZ, 单位 Å.
+    - voxel_size_xyz: float32 (3,), 80 立方体每轴体素尺寸, 轴顺序为 XYZ, 单位 Å.
+    - crop_start_zyx: supplied 48 立方体在 80 立方体内的 Z/Y/X 起点.
+    - return: bool (48, 48, 48); 含至少一个 binding_atom 的局部体素为 True.
     """
 
     # int64 数组, (N, 3); 受体世界 XYZ 坐标转换为 80 立方体局部 XYZ 下标.
@@ -251,15 +251,15 @@ def _manual_features(
     v_tokens: np.ndarray,
     pp_tokens: np.ndarray,
 ) -> np.ndarray:
-    """按 A、P、V、PP 顺序汇总数量、概率均值和概率最大值. 
+    """按 A、P、V、PP 顺序汇总数量、概率均值和概率最大值.
 
-    - a_tokens: float32 (N_A, 230), 当前候选的 A token; 第 226 列为 Stage1 概率. 
-    - p_tokens: float32 (N_P, 116), 当前候选的 P token; 第 112 列为 Stage1 概率. 
-    - v_tokens: float32 (N_V, 68), 当前候选的 V token; 第 64 列为 Stage1 概率. 
-    - pp_tokens: float32 (N_PP, 4), 当前候选的 PP token; 第 0 列为 Stage1 概率. 
-    - return: float32 (12,); 每类依次保存 token 数、概率均值和概率最大值. 
+    - a_tokens: float32 (N_A, 230), 当前候选的 A token; 第 226 列为 Stage1 概率.
+    - p_tokens: float32 (N_P, 116), 当前候选的 P token; 第 112 列为 Stage1 概率.
+    - v_tokens: float32 (N_V, 68), 当前候选的 V token; 第 64 列为 Stage1 概率.
+    - pp_tokens: float32 (N_PP, 4), 当前候选的 PP token; 第 0 列为 Stage1 概率.
+    - return: float32 (12,); 每类依次保存 token 数、概率均值和概率最大值.
 
-    空 token 集合的均值和最大值统一写零; 计数保留原始数值, 模型侧再执行 log1p. 
+    空 token 集合的均值和最大值统一写零; 计数保留原始数值, 模型侧再执行 log1p.
     """
 
     values: list[float] = []
@@ -283,16 +283,16 @@ def _manual_features(
 
 
 class CandidateDataset(Dataset[CandidateItem]):
-    """按清单顺序读取 Find_1 候选和同 PDB 精确 SMILES 身份轴. 
+    """按清单顺序读取 Find_1 候选和同 PDB 精确 SMILES 身份轴.
 
     构造参数:
-        - manifest_path: smiles_identity_v1 的 manifest.json. 
-        - split: 入口清单中存在的划分名称. 
-        - pp_top_k: 每个候选从 source_probability_48 选择的固定 token 上限. 
-        - cache_gib_per_worker: 当前 Dataset 副本的 PDB 数组缓存预算; 不是进程 RSS 上限. 
+        - manifest_path: smiles_identity_v1 的 manifest.json.
+        - split: 入口清单中存在的划分名称.
+        - pp_top_k: 每个候选从 source_probability_48 选择的固定 token 上限.
+        - cache_gib_per_worker: 当前 Dataset 副本的 PDB 数组缓存预算; 不是进程 RSS 上限.
 
     初始化只读取小型 JSON/JSONL. 图包和 PDB NPZ 在主进程直接索引或工作进程初始化后
-    首次需要时读取. 缺少图或语言向量的正类候选已经在清单构建阶段整条排除. 
+    首次需要时读取. 缺少图或语言向量的正类候选已经在清单构建阶段整条排除.
     """
 
     def __init__(
@@ -302,17 +302,17 @@ class CandidateDataset(Dataset[CandidateItem]):
         pp_top_k: int,
         cache_gib_per_worker: float,
     ) -> None:
-        """冻结候选顺序、PDB 身份记录与两个内存存储. 
+        """冻结候选顺序、PDB 身份记录与两个内存存储.
 
-        - manifest_path: manifest.json 路径; 文件同时绑定图包、数据根和 Find_1 根. 
-        - split: 要读取的候选与身份 JSONL 划分名. 
-        - pp_top_k: 每个候选保留的 PP token 上限, 必须为正. 
-        - cache_gib_per_worker: 当前 Dataset 副本的 PDB 数组缓存预算, 必须为非负有限数. 
+        - manifest_path: manifest.json 路径; 文件同时绑定图包、数据根和 Find_1 根.
+        - split: 要读取的候选与身份 JSONL 划分名.
+        - pp_top_k: 每个候选保留的 PP token 上限, 必须为正.
+        - cache_gib_per_worker: 当前 Dataset 副本的 PDB 数组缓存预算, 必须为非负有限数.
 
-        - self.candidates: 清单顺序的候选记录列表, 决定 Dataset 下标语义. 
-        - self.identities_by_pdb: PDB 到身份记录列表; 每个列表按类别、精确 SMILES 排序. 
-        - self.graph_store: 延迟完整载入的全局 SMILES 图存储. 
-        - self.pdb_cache: 按估算数组字节数淘汰的 PDB 级最近使用缓存. 
+        - self.candidates: 清单顺序的候选记录列表, 决定 Dataset 下标语义.
+        - self.identities_by_pdb: PDB 到身份记录列表; 每个列表按类别、精确 SMILES 排序.
+        - self.graph_store: 延迟完整载入的全局 SMILES 图存储.
+        - self.pdb_cache: 按估算数组字节数淘汰的 PDB 级最近使用缓存.
         """
 
         if pp_top_k <= 0:
@@ -338,39 +338,39 @@ class CandidateDataset(Dataset[CandidateItem]):
         self.pdb_cache: ByteBudgetLru[str, dict[str, Any]] = ByteBudgetLru(maximum_bytes)
 
     def __len__(self) -> int:
-        """返回清单中已通过正类完整性门禁的候选数. 
+        """返回清单中已通过正类完整性门禁的候选数.
 
-        - return: int, self.candidates 的长度; Dataset 下标取值属于 [0, return). 
+        - return: int, self.candidates 的长度; Dataset 下标取值属于 [0, return).
         """
 
         return len(self.candidates)
 
     def initialize_worker(self) -> None:
-        """在当前进程完整载入图包. 
+        """在当前进程完整载入图包.
 
-        - return: None, 供 DataLoader worker_init_fn 调用; 重复调用复用 self.graph_store 已有内存. 
+        - return: None, 供 DataLoader worker_init_fn 调用; 重复调用复用 self.graph_store 已有内存.
         """
 
         self.graph_store.initialize()
 
     def __getitem__(self, index: int) -> CandidateItem:
-        """物化一个候选的 106 通道体素、四类 token、区域目标和身份轴. 
+        """物化一个候选的 106 通道体素、四类 token、区域目标和身份轴.
 
-        - index: self.candidates 的零基下标. 
-        - return: CandidateItem, 候选字段只描述当前 centered 框, 身份字段覆盖当前 PDB 的全部有效精确 SMILES 槽; 完整字段契约见 contracts.CandidateItem. 
+        - index: self.candidates 的零基下标.
+        - return: CandidateItem, 候选字段只描述当前 centered 框, 身份字段覆盖当前 PDB 的全部有效精确 SMILES 槽; 完整字段契约见 contracts.CandidateItem.
 
         PDB 级数组只在缓存未命中时打开. 当前候选的 supplied crop 决定受体散射、密度
-        通道、V/PP token 和两个区域目标的共同 48 立方体坐标系. 
+        通道、V/PP token 和两个区域目标的共同 48 立方体坐标系.
         """
 
-        # 候选清单对象; centered_box_index 是跨文件对齐键, 不假定等于当前列表下标. 
+        # 候选清单对象; centered_box_index 是跨文件对齐键, 不假定等于当前列表下标.
         record = self.candidates[index]
         pdb_id = str(record["pdb_id"])
         payload = self.pdb_cache.get(pdb_id)
         if payload is None:
             payload = self._load_pdb(pdb_id)
             self.pdb_cache.put(pdb_id, payload)
-        # 字段名到完整 PDB centered 数组的映射; 第一轴由 centered_box_index 标识. 
+        # 字段名到完整 PDB centered 数组的映射; 第一轴由 centered_box_index 标识.
         centered = cast(dict[str, np.ndarray], payload["centered"])
         try:
             position = cast(dict[int, int], payload["position_by_centered_index"])[
@@ -378,17 +378,17 @@ class CandidateDataset(Dataset[CandidateItem]):
             ]
         except KeyError as error:
             raise ValueError(f"{pdb_id}: 清单 centered_box_index 不在 centered NPZ 中。") from error
-        # int64 (3,); supplied 48 立方体在当前 80 立方体候选框内的 Z/Y/X 起点. 
+        # int64 (3,); supplied 48 立方体在当前 80 立方体候选框内的 Z/Y/X 起点.
         crop_start_zyx = np.asarray(centered["crop_start_local_zyx"][position], dtype=np.int64)
-        # float32 (3,); 80 立方体零号体素的世界 X/Y/Z 原点, 单位 Å. 
+        # float32 (3,); 80 立方体零号体素的世界 X/Y/Z 原点, 单位 Å.
         box_origin_xyz = np.asarray(centered["box_origin_world"][position], dtype=np.float32)
-        # float32 (3,); 80 立方体 X/Y/Z 各轴的体素尺寸, 单位 Å/voxel. 
+        # float32 (3,); 80 立方体 X/Y/Z 各轴的体素尺寸, 单位 Å/voxel.
         voxel_size_xyz = np.asarray(centered["voxel_size_world"][position], dtype=np.float32)
         if crop_start_zyx.shape != (3,) or np.any(crop_start_zyx < 0) or np.any(
             crop_start_zyx + LOCAL_BOX_SIZE > centered["box_shape_zyx"][position]
         ):
             raise ValueError(f"{pdb_id}: Find_1 crop_start_local_zyx 超出候选框。")
-        # receptor_grid 为 float32 (50, 48, 48, 48), hardmask 为同空间 bool 占据掩码. 
+        # receptor_grid 为 float32 (50, 48, 48, 48), hardmask 为同空间 bool 占据掩码.
         receptor_grid, receptor_hardmask = _scatter_receptor(
             cast(np.ndarray, payload["receptor_coords"]),
             cast(np.ndarray, payload["receptor_features"]),
@@ -396,7 +396,7 @@ class CandidateDataset(Dataset[CandidateItem]):
             voxel_size_xyz,
             crop_start_zyx,
         )
-        # float32 (56, 48, 48, 48); 实验密度、模拟密度和受体占据派生通道. 
+        # float32 (56, 48, 48, 48); 实验密度、模拟密度和受体占据派生通道.
         density_channels = build_density_channels(
             centered["experimental_density_48"][position],
             centered["simulated_density_48"][position],
@@ -425,11 +425,11 @@ class CandidateDataset(Dataset[CandidateItem]):
             voxel_size_xyz,
             crop_start_zyx,
         )
-        # 身份记录列表; 顺序同时定义字符串、类别、语言向量、图和监督下标的 I 轴. 
+        # 身份记录列表; 顺序同时定义字符串、类别、语言向量、图和监督下标的 I 轴.
         identities = self.identities_by_pdb.get(pdb_id, [])
         identity_smiles = [str(identity["smiles"]) for identity in identities]
         matched_smiles = record["matched_smiles"]
-        # 整数; 背景为 -1, 前景为匹配精确 SMILES 在当前 PDB 身份轴中的唯一位置. 
+        # 整数; 背景为 -1, 前景为匹配精确 SMILES 在当前 PDB 身份轴中的唯一位置.
         identity_target = -1 if matched_smiles is None else identity_smiles.index(str(matched_smiles))
         manual_features = _manual_features(a_tokens, p_tokens, v_tokens, pp_tokens)
         full_voxel_count = int(centered["source_voxel_count"][position])
@@ -478,46 +478,46 @@ class CandidateDataset(Dataset[CandidateItem]):
         )
 
     def _load_pdb(self, pdb_id: str) -> dict[str, Any]:
-        """一次打开一个 PDB 的 centered、受体、occurrence 掩码和身份向量. 
+        """一次打开一个 PDB 的 centered、受体、occurrence 掩码和身份向量.
 
-        - pdb_id: 当前候选所属的小写 PDB 标识. 
-        - return.centered: dict[str, np.ndarray], F2_centered.npz 的全部数组副本; 下列字段由当前 Dataset 读取. 
-            - return.centered.centered_box_index: 整数数组, (N_candidate,); 每个 centered 候选的稳定编号. 
-            - return.centered.crop_start_local_zyx: 整数数组, (N_candidate, 3); supplied 48 立方体在各 80 立方体候选内的 Z/Y/X 起点. 
-            - return.centered.box_origin_world: float32 数组, (N_candidate, 3); 各 80 立方体零号体素的世界 X/Y/Z 原点. 
-            - return.centered.voxel_size_world: float32 数组, (N_candidate, 3); 各候选 X/Y/Z 三轴的世界体素尺寸. 
-            - return.centered.box_shape_zyx: 整数数组, (N_candidate, 3); 各候选完整框的 Z/Y/X 单轴体素数. 
-            - return.centered.experimental_density_48: 数值数组, (N_candidate, 48, 48, 48); supplied crop 内实验密度, 空间轴为 Z/Y/X. 
-            - return.centered.simulated_density_48: 数值数组, (N_candidate, 48, 48, 48); supplied crop 内模拟密度, 空间轴为 Z/Y/X. 
-            - return.centered.A_offsets: 整数数组, (N_candidate + 1,); 同步切分 A 坐标、四层特征和概率的候选区间. 
-            - return.centered.A_coord_local_xyz: 数值数组, (N_A_total, 3); 每个 A token 在所属 80 立方体中的局部 X/Y/Z 坐标. 
-            - return.centered.A_feat_L0: 数值数组, (N_A_total, 50); A token 的 L0 特征. 
-            - return.centered.A_feat_L1: 数值数组, (N_A_total, 64); A token 的 L1 特征. 
-            - return.centered.A_feat_L2: 数值数组, (N_A_total, 64); A token 的 L2 特征. 
-            - return.centered.A_feat_L3: 数值数组, (N_A_total, 48); A token 的 L3 特征. 
-            - return.centered.A_probability: 数值数组, (N_A_total,); 与 A token 逐项对齐的 Stage1 概率. 
-            - return.centered.P_offsets: 整数数组, (N_candidate + 1,); 同步切分 P 坐标、两层特征和概率的候选区间. 
-            - return.centered.P_coord_local_xyz: 数值数组, (N_P_total, 3); 每个 P token 在所属 80 立方体中的局部 X/Y/Z 坐标. 
-            - return.centered.P_feat_L2: 数值数组, (N_P_total, 64); P token 的 L2 特征. 
-            - return.centered.P_feat_L3: 数值数组, (N_P_total, 48); P token 的 L3 特征. 
-            - return.centered.P_probability: 数值数组, (N_P_total,); 与 P token 逐项对齐的 Stage1 概率. 
-            - return.centered.voxel_offsets: 整数数组, (N_candidate + 1,); 同步切分 V 下标、特征和概率的候选区间. 
-            - return.centered.voxel_index_local_zyx: 整数数组, (N_V_total, 3); 每个 V token 在所属 80 立方体中的局部 Z/Y/X 下标. 
-            - return.centered.voxel_final: 数值数组, (N_V_total, 64); 与 V token 逐项对齐的 64 维特征. 
-            - return.centered.centered_probability: 数值数组, (N_V_total,); 与 V token 逐项对齐的 Stage1 概率. 
-            - return.centered.source_probability_48: 数值数组, (N_candidate, 48, 48, 48); supplied crop 内用于 PP top-k 的 Stage1 概率, 空间轴为 Z/Y/X. 
-            - return.centered.box_start_zyx: 整数数组, (N_candidate, 3); 各 80 立方体候选在全局密度图中的 Z/Y/X 起点. 
-            - return.centered.source_voxel_count: 整数数组, (N_candidate,); 各候选裁剪前 source blob 的体素数. 
-            - return.centered.crop_clipped_axis_mask: bool 数组, (N_candidate, 3); True 表示 supplied crop 对应 Z/Y/X 起点曾受候选边界限制. 
-            - return.centered.crop_center_offset_zyx: 数值数组, (N_candidate, 3); supplied crop 中心到 V 质心的 Z/Y/X 偏移, 单位为体素. 
-        - return.position_by_centered_index: centered_box_index 到第一轴位置的唯一映射. 
-        - return.receptor_coords: float32 数组, (N_receptor, 3); 完整受体原子的世界 X/Y/Z 坐标. 
-        - return.receptor_features: float32 数组, (N_receptor, 50); 49 维 receptor feat 后连接 is_backbone 的 0/1 列. 
-        - return.binding_atom: bool (N_receptor,), 受体原子结合标签. 
-        - return.occurrence_masks: list[np.ndarray], 按 mask_数字中的 occurrence 编号递增; 每项为 int64 (N_i, 3) 全局 Z/Y/X 稀疏体素下标, 仅用于取全部 occurrence 并集. 
-        - return.embedding_by_smiles: dict[str, np.ndarray], 精确 SMILES 到有限 float32 (768,) SMI-TED 向量的映射. 
+        - pdb_id: 当前候选所属的小写 PDB 标识.
+        - return.centered: dict[str, np.ndarray], F2_centered.npz 的全部数组副本; 下列字段由当前 Dataset 读取.
+            - return.centered.centered_box_index: 整数数组, (N_candidate,); 每个 centered 候选的稳定编号.
+            - return.centered.crop_start_local_zyx: 整数数组, (N_candidate, 3); supplied 48 立方体在各 80 立方体候选内的 Z/Y/X 起点.
+            - return.centered.box_origin_world: float32 数组, (N_candidate, 3); 各 80 立方体零号体素的世界 X/Y/Z 原点.
+            - return.centered.voxel_size_world: float32 数组, (N_candidate, 3); 各候选 X/Y/Z 三轴的世界体素尺寸.
+            - return.centered.box_shape_zyx: 整数数组, (N_candidate, 3); 各候选完整框的 Z/Y/X 单轴体素数.
+            - return.centered.experimental_density_48: 数值数组, (N_candidate, 48, 48, 48); supplied crop 内实验密度, 空间轴为 Z/Y/X.
+            - return.centered.simulated_density_48: 数值数组, (N_candidate, 48, 48, 48); supplied crop 内模拟密度, 空间轴为 Z/Y/X.
+            - return.centered.A_offsets: 整数数组, (N_candidate + 1,); 同步切分 A 坐标、四层特征和概率的候选区间.
+            - return.centered.A_coord_local_xyz: 数值数组, (N_A_total, 3); 每个 A token 在所属 80 立方体中的局部 X/Y/Z 坐标.
+            - return.centered.A_feat_L0: 数值数组, (N_A_total, 50); A token 的 L0 特征.
+            - return.centered.A_feat_L1: 数值数组, (N_A_total, 64); A token 的 L1 特征.
+            - return.centered.A_feat_L2: 数值数组, (N_A_total, 64); A token 的 L2 特征.
+            - return.centered.A_feat_L3: 数值数组, (N_A_total, 48); A token 的 L3 特征.
+            - return.centered.A_probability: 数值数组, (N_A_total,); 与 A token 逐项对齐的 Stage1 概率.
+            - return.centered.P_offsets: 整数数组, (N_candidate + 1,); 同步切分 P 坐标、两层特征和概率的候选区间.
+            - return.centered.P_coord_local_xyz: 数值数组, (N_P_total, 3); 每个 P token 在所属 80 立方体中的局部 X/Y/Z 坐标.
+            - return.centered.P_feat_L2: 数值数组, (N_P_total, 64); P token 的 L2 特征.
+            - return.centered.P_feat_L3: 数值数组, (N_P_total, 48); P token 的 L3 特征.
+            - return.centered.P_probability: 数值数组, (N_P_total,); 与 P token 逐项对齐的 Stage1 概率.
+            - return.centered.voxel_offsets: 整数数组, (N_candidate + 1,); 同步切分 V 下标、特征和概率的候选区间.
+            - return.centered.voxel_index_local_zyx: 整数数组, (N_V_total, 3); 每个 V token 在所属 80 立方体中的局部 Z/Y/X 下标.
+            - return.centered.voxel_final: 数值数组, (N_V_total, 64); 与 V token 逐项对齐的 64 维特征.
+            - return.centered.centered_probability: 数值数组, (N_V_total,); 与 V token 逐项对齐的 Stage1 概率.
+            - return.centered.source_probability_48: 数值数组, (N_candidate, 48, 48, 48); supplied crop 内用于 PP top-k 的 Stage1 概率, 空间轴为 Z/Y/X.
+            - return.centered.box_start_zyx: 整数数组, (N_candidate, 3); 各 80 立方体候选在全局密度图中的 Z/Y/X 起点.
+            - return.centered.source_voxel_count: 整数数组, (N_candidate,); 各候选裁剪前 source blob 的体素数.
+            - return.centered.crop_clipped_axis_mask: bool 数组, (N_candidate, 3); True 表示 supplied crop 对应 Z/Y/X 起点曾受候选边界限制.
+            - return.centered.crop_center_offset_zyx: 数值数组, (N_candidate, 3); supplied crop 中心到 V 质心的 Z/Y/X 偏移, 单位为体素.
+        - return.position_by_centered_index: centered_box_index 到第一轴位置的唯一映射.
+        - return.receptor_coords: float32 数组, (N_receptor, 3); 完整受体原子的世界 X/Y/Z 坐标.
+        - return.receptor_features: float32 数组, (N_receptor, 50); 49 维 receptor feat 后连接 is_backbone 的 0/1 列.
+        - return.binding_atom: bool (N_receptor,), 受体原子结合标签.
+        - return.occurrence_masks: list[np.ndarray], 按 mask_数字中的 occurrence 编号递增; 每项为 int64 (N_i, 3) 全局 Z/Y/X 稀疏体素下标, 仅用于取全部 occurrence 并集.
+        - return.embedding_by_smiles: dict[str, np.ndarray], 精确 SMILES 到有限 float32 (768,) SMI-TED 向量的映射.
 
-        返回值交给 PDB 缓存整体保存; 所有 NPZ 上下文在返回前关闭. 
+        返回值交给 PDB 缓存整体保存; 所有 NPZ 上下文在返回前关闭.
         """
 
         centered_path = self.stage1_root / self.split / pdb_id / "centered/F2_centered.npz"
@@ -575,4 +575,3 @@ class CandidateDataset(Dataset[CandidateItem]):
             "occurrence_masks": occurrence_masks,
             "embedding_by_smiles": embedding_by_smiles,
         }
-

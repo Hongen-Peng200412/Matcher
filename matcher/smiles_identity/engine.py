@@ -1,7 +1,7 @@
-"""运行单一 SMILES 身份 Matcher 的单卡训练与完整验证. 
+"""运行单一 SMILES 身份 Matcher 的单卡训练与完整验证.
 
 主要入口 run_smiles_training 创建唯一运行目录, 写出 run.json、history.jsonl 和正常结束时
-的 summary.json, 并按 TrackingConfig 记录 W&B 标量与验证图像. 本模块不构建数据资产或清单. 
+的 summary.json, 并按 TrackingConfig 记录 W&B 标量与验证图像. 本模块不构建数据资产或清单.
 """
 
 from __future__ import annotations
@@ -35,16 +35,16 @@ def _validation_images(
     batch: CandidateBatch,
     tracker: Any,
 ) -> dict[str, Any]:
-    """把首个验证候选的预测与目标沿 Z 轴最大投影为四张 W&B 图像. 
+    """把首个验证候选的预测与目标沿 Z 轴最大投影为四张 W&B 图像.
 
-    - outputs: 当前验证批次的模型输出, 读取两类区域 logits 的候选零位置. 
-    - batch: 与 outputs 对齐的 CandidateBatch, 读取两类区域目标的候选零位置. 
-    - tracker: W&B 运行或 None; None 时不导入 wandb 并返回空字典. 
-    - return: dict[str, Any], 四个 W&B Image 的映射; tracker=None 时返回空字典. 
-        - return.validation_image/ligand_probability_max_z: wandb.Image, 配体区域预测概率的 Y/X 最大投影. 
-        - return.validation_image/ligand_target_max_z: wandb.Image, 配体区域二值目标的 Y/X 最大投影. 
-        - return.validation_image/binding_probability_max_z: wandb.Image, 受体结合区域预测概率的 Y/X 最大投影. 
-        - return.validation_image/binding_target_max_z: wandb.Image, 受体结合区域二值目标的 Y/X 最大投影. 
+    - outputs: 当前验证批次的模型输出, 读取两类区域 logits 的候选零位置.
+    - batch: 与 outputs 对齐的 CandidateBatch, 读取两类区域目标的候选零位置.
+    - tracker: W&B 运行或 None; None 时不导入 wandb 并返回空字典.
+    - return: dict[str, Any], 四个 W&B Image 的映射; tracker=None 时返回空字典.
+        - return.validation_image/ligand_probability_max_z: wandb.Image, 配体区域预测概率的 Y/X 最大投影.
+        - return.validation_image/ligand_target_max_z: wandb.Image, 配体区域二值目标的 Y/X 最大投影.
+        - return.validation_image/binding_probability_max_z: wandb.Image, 受体结合区域预测概率的 Y/X 最大投影.
+        - return.validation_image/binding_target_max_z: wandb.Image, 受体结合区域二值目标的 Y/X 最大投影.
     """
 
     if tracker is None:
@@ -68,7 +68,7 @@ def _validation_images(
 
 
 def _move_batch(batch: CandidateBatch, device: torch.device) -> CandidateBatch:
-    """把批次中的全部张量异步移到 GPU, 字符串与 metadata 保留在 CPU. 
+    """把批次中的全部张量异步移到 GPU, 字符串与 metadata 保留在 CPU.
 
     - batch: CandidateBatch, DataLoader 在固定 CPU 内存中生成的候选批次.
     - device: torch.device, 本次单卡训练使用的 CUDA 设备.
@@ -82,13 +82,13 @@ def _move_batch(batch: CandidateBatch, device: torch.device) -> CandidateBatch:
 
 
 def _start_tracking(config: SmilesExperimentConfig, metadata: dict[str, Any]) -> Any:
-    """按配置启动 W&B; disabled 返回 None. 
+    """按配置启动 W&B; disabled 返回 None.
 
-    - config: 运行名称、项目、分组、实体、模式和完整实验配置的来源. 
-    - metadata: 已落盘的 run.json 来源记录; 同一对象作为 provenance 上传. 
-    - return: wandb Run; tracking.mode=disabled 时返回 None. 
+    - config: 运行名称、项目、分组、实体、模式和完整实验配置的来源.
+    - metadata: 已落盘的 run.json 来源记录; 同一对象作为 provenance 上传.
+    - return: wandb Run; tracking.mode=disabled 时返回 None.
 
-    Path 等非 JSON 原生配置叶节点先转为字符串, 不依赖 W&B 的隐式序列化行为. 
+    Path 等非 JSON 原生配置叶节点先转为字符串, 不依赖 W&B 的隐式序列化行为.
     """
 
     if config.tracking.mode == "disabled":
@@ -109,7 +109,7 @@ def _start_tracking(config: SmilesExperimentConfig, metadata: dict[str, Any]) ->
 
 
 def _track(tracker: Any, values: dict[str, Any], global_step: int) -> None:
-    """向已启用的 W&B 运行写一次同 global_step 指标. 
+    """向已启用的 W&B 运行写一次同 global_step 指标.
 
     - tracker: W&B Run 或 None; None 时不产生外部记录.
     - values: dict[str, Any], 本次参数更新或完整验证对应的标量与图像.
@@ -152,7 +152,7 @@ def _summarize_training_window(records: list[dict[str, float]]) -> dict[str, flo
 
 
 def _set_seed(seed: int) -> None:
-    """固定 Python、NumPy、CPU 和当前主机全部 CUDA 随机源. 
+    """固定 Python、NumPy、CPU 和当前主机全部 CUDA 随机源.
 
     - seed: int, Python、NumPy、PyTorch CPU 和全部可见 CUDA 设备共用的基准种子.
     - return: None.
@@ -179,27 +179,27 @@ def _validate(
     global_step: int,
     tracker: Any,
 ) -> dict[str, float | int]:
-    """遍历完整 validation 清单并记录损失、分类准确率和条件身份准确率. 
+    """遍历完整 validation 清单并记录损失、分类准确率和条件身份准确率.
 
-    - model: 当前 ClosedSetMatcher; 进入函数后切换到评估模式, 返回前恢复训练模式. 
-    - loader: 完整 validation DataLoader; 不得只取前缀或随机子集. 
-    - config: 损失权重和身份损失模式的来源. 
-    - device: 本次单卡 CUDA 设备. 
-    - global_step: 当前已完成的参数更新数; 初始验证为零. 
-    - tracker: W&B 运行或 None; 只影响记录, 不改变指标计算. 
-    - return: dict[str, float | int], 本次完整验证的计数、损失和准确率. 
-        - return.global_step: int, 启动本次验证前已完成的 AdamW 参数更新数. 
-        - return.candidate_count: int, validation DataLoader 实际遍历的候选总数. 
-        - return.identity_eligible_count: int, identity_target 非负且参与身份准确率的前景候选数. 
-        - return.classification_loss: float, 以各物理批次 classification_denominator 聚合的六分类损失. 
-        - return.ligand_area_loss: float, 以各物理批次候选数聚合的配体区域损失. 
-        - return.binding_area_loss: float, 以各物理批次候选数聚合的受体结合区域损失. 
-        - return.identity_loss: float, 以各物理批次身份监督候选数聚合的精确 SMILES 身份损失; 分母为零时为 0. 
-        - return.total_loss: float, 四个完整验证分量分别聚合后按 LossWeights 重新加权求和的总损失. 
-        - return.class_accuracy: float, 全部候选的六分类 Top-1 准确率. 
-        - return.identity_top1: float, 有身份监督候选的精确 SMILES 闭集 Top-1 准确率; 分母为零时为 NaN. 
+    - model: 当前 ClosedSetMatcher; 进入函数后切换到评估模式, 返回前恢复训练模式.
+    - loader: 完整 validation DataLoader; 不得只取前缀或随机子集.
+    - config: 损失权重和身份损失模式的来源.
+    - device: 本次单卡 CUDA 设备.
+    - global_step: 当前已完成的参数更新数; 初始验证为零.
+    - tracker: W&B 运行或 None; 只影响记录, 不改变指标计算.
+    - return: dict[str, float | int], 本次完整验证的计数、损失和准确率.
+        - return.global_step: int, 启动本次验证前已完成的 AdamW 参数更新数.
+        - return.candidate_count: int, validation DataLoader 实际遍历的候选总数.
+        - return.identity_eligible_count: int, identity_target 非负且参与身份准确率的前景候选数.
+        - return.classification_loss: float, 以各物理批次 classification_denominator 聚合的六分类损失.
+        - return.ligand_area_loss: float, 以各物理批次候选数聚合的配体区域损失.
+        - return.binding_area_loss: float, 以各物理批次候选数聚合的受体结合区域损失.
+        - return.identity_loss: float, 以各物理批次身份监督候选数聚合的精确 SMILES 身份损失; 分母为零时为 0.
+        - return.total_loss: float, 四个完整验证分量分别聚合后按 LossWeights 重新加权求和的总损失.
+        - return.class_accuracy: float, 全部候选的六分类 Top-1 准确率.
+        - return.identity_top1: float, 有身份监督候选的精确 SMILES 闭集 Top-1 准确率; 分母为零时为 NaN.
 
-    六分类分母由 LossOutput.classification_denominator 给出; 两个区域损失各以 candidate_count 为分母; 身份损失与身份 Top-1 各以 identity_eligible_count 为分母. 
+    六分类分母由 LossOutput.classification_denominator 给出; 两个区域损失各以 candidate_count 为分母; 身份损失与身份 Top-1 各以 identity_eligible_count 为分母.
     """
 
     model.eval()
@@ -312,43 +312,43 @@ def _validate(
 
 
 def run_smiles_training(config: SmilesExperimentConfig, config_path: Path) -> Path:
-    """创建唯一运行目录, 执行初始验证和限时训练, 并记录 W&B 曲线. 
+    """创建唯一运行目录, 执行初始验证和限时训练, 并记录 W&B 曲线.
 
-    - config: 已完成字段门禁的训练配置. 
-    - config_path: 正式 YAML 路径; 解析后的绝对路径写入 run.json. 
-    - return: Path, 正常达到 epoch 或墙钟停止条件后的唯一运行目录. 
+    - config: 已完成字段门禁的训练配置.
+    - config_path: 正式 YAML 路径; 解析后的绝对路径写入 run.json.
+    - return: Path, 正常达到 epoch 或墙钟停止条件后的唯一运行目录.
 
     文件产物:
-        - <run_directory>/run.json: JSON object, 先在数据集和模型构造前发布来源记录, 再在 W&B 启动后覆盖补入 tracking. 
-            - schema: str, 固定为 smiles_training_v1. 
-            - name: str, config.name. 
-            - run_stamp: str, TASK_RUN_STAMP 或当前 UTC 时间戳, 同时定义本次运行目录名. 
-            - hostname: str, 当前训练主机名. 
-            - slurm_job_id: str|None, SLURM_JOB_ID 环境变量. 
-            - task_launch_dir: str|None, TASK_LAUNCH_DIR 环境变量. 
-            - config_path: str, 正式 YAML 的解析后绝对路径. 
-            - manifest_path: str, manifest.json 的解析后绝对路径. 
-            - started_at_utc: str, ISO 8601 UTC 启动时间. 
-            - save_checkpoints: bool, 本次运行是否允许写 LAST.pt. 
-            - tracking: dict[str, Any], W&B 启动后补入的记录模式和运行定位字段; 启动前失败时该字段不存在. 
-                - tracking.mode: str, online、offline 或 disabled, 与正式 YAML 一致. 
-                - tracking.run_id: str|None, W&B 运行标识; disabled 时为 None. 
-                - tracking.url: str|None, W&B 运行页面地址; disabled 时为 None. 
-            - worker_provenance: dict[str, Any], 项目根、Python、PyTorch、CUDA、GPU 和 DataLoader worker 来源. 
-                - worker_provenance.task_project_root: str|None, TASK_PROJECT_ROOT 环境变量. 
-                - worker_provenance.python: str, Python 版本. 
-                - worker_provenance.torch: str, PyTorch 版本. 
-                - worker_provenance.cuda_runtime: str|None, PyTorch 绑定的 CUDA runtime 版本. 
-                - worker_provenance.cuda_available: bool, 构建训练对象前 CUDA 是否可用. 
-                - worker_provenance.gpu_name: str|None, 当前 CUDA 设备名称. 
-                - worker_provenance.data_loader_workers: int, 每个 DataLoader 的工作进程数. 
-                - worker_provenance.prefetch_factor: int, 每个工作进程预取的物理批次数. 
-        - <run_directory>/history.jsonl: JSONL, 每项是一次完整验证事件; initial_validation 含 event 与 _validate 返回字段, 后续 validation 另含 epoch. 
-        - <run_directory>/LAST.pt: PyTorch checkpoint, 仅 save_checkpoints=True 且完成周期验证时覆盖写入; 含 model、optimizer 和 global_step. 
-        - <run_directory>/summary.json: JSON object, 仅正常停止时写出; 复制最终 run.json 字段并追加 finished_at_utc、global_step、stopped_by_time、last_validation 和 tracking_url. 
+        - <run_directory>/run.json: JSON object, 先在数据集和模型构造前发布来源记录, 再在 W&B 启动后覆盖补入 tracking.
+            - schema: str, 固定为 smiles_training_v1.
+            - name: str, config.name.
+            - run_stamp: str, TASK_RUN_STAMP 或当前 UTC 时间戳, 同时定义本次运行目录名.
+            - hostname: str, 当前训练主机名.
+            - slurm_job_id: str|None, SLURM_JOB_ID 环境变量.
+            - task_launch_dir: str|None, TASK_LAUNCH_DIR 环境变量.
+            - config_path: str, 正式 YAML 的解析后绝对路径.
+            - manifest_path: str, manifest.json 的解析后绝对路径.
+            - started_at_utc: str, ISO 8601 UTC 启动时间.
+            - save_checkpoints: bool, 本次运行是否允许写 LAST.pt.
+            - tracking: dict[str, Any], W&B 启动后补入的记录模式和运行定位字段; 启动前失败时该字段不存在.
+                - tracking.mode: str, online、offline 或 disabled, 与正式 YAML 一致.
+                - tracking.run_id: str|None, W&B 运行标识; disabled 时为 None.
+                - tracking.url: str|None, W&B 运行页面地址; disabled 时为 None.
+            - worker_provenance: dict[str, Any], 项目根、Python、PyTorch、CUDA、GPU 和 DataLoader worker 来源.
+                - worker_provenance.task_project_root: str|None, TASK_PROJECT_ROOT 环境变量.
+                - worker_provenance.python: str, Python 版本.
+                - worker_provenance.torch: str, PyTorch 版本.
+                - worker_provenance.cuda_runtime: str|None, PyTorch 绑定的 CUDA runtime 版本.
+                - worker_provenance.cuda_available: bool, 构建训练对象前 CUDA 是否可用.
+                - worker_provenance.gpu_name: str|None, 当前 CUDA 设备名称.
+                - worker_provenance.data_loader_workers: int, 每个 DataLoader 的工作进程数.
+                - worker_provenance.prefetch_factor: int, 每个工作进程预取的物理批次数.
+        - <run_directory>/history.jsonl: JSONL, 每项是一次完整验证事件; initial_validation 含 event 与 _validate 返回字段, 后续 validation 另含 epoch.
+        - <run_directory>/LAST.pt: PyTorch checkpoint, 仅 save_checkpoints=True 且完成周期验证时覆盖写入; 含 model、optimizer 和 global_step.
+        - <run_directory>/summary.json: JSON object, 仅正常停止时写出; 复制最终 run.json 字段并追加 finished_at_utc、global_step、stopped_by_time、last_validation 和 tracking_url.
 
     驻留任务可在外部 kill_lock 到达时由 allocation 终止; 这种情况下不会伪造正常
-    summary.json. save_checkpoints=false 时整个运行不写模型参数文件. 
+    summary.json. save_checkpoints=false 时整个运行不写模型参数文件.
     """
 
     # str, TASK_RUN_STAMP 或当前 UTC 时间戳; 同一 output_root/name 下必须唯一.
