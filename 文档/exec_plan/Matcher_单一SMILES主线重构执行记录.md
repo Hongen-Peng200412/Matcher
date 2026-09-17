@@ -26,8 +26,8 @@
 | 阶段 B | 四变体、二分类、直接身份交叉熵、训练、BEST/LAST 与阈值 | 已完成训练前实现与 CPU 门禁 |
 | 阶段 C 本轮范围 | 测试连接、Stage1-only 元数据、Emap2lig 门禁与两张预览图 | 已完成 checkpoint-independent 范围 |
 | 独立审查 | 三个独立方向各一轮全面审查，修复后只复核报告问题 | 科学逻辑、函数布局/Git、注释与 YAML 均已独立 PASS |
-| 阶段 D | 删除平行和过时活动主线，刷新 README、mapping 与 handoff | 活动代码与 README 已完成；双线 Git 与 handoff 收口中 |
-| 双线 Git | 实现历史、学习历史、端点等价与唯一最新累计分支 | 未开始 |
+| 阶段 D | 删除平行和过时活动主线，刷新 README、mapping 与 handoff | 已完成 |
+| 双线 Git | 实现历史、学习历史、端点等价与唯一最新累计分支 | 学习历史重建与端点等价核验中 |
 
 ## 正式运行命令
 
@@ -54,6 +54,14 @@ git diff --check
 ```
 
 审查修复后的本地结果为 `23 passed`，30 个非测试 Matcher 模块全部可导入，语法编译、注释标点机械门禁与差异空白检查通过。`pytest.ini` 把正式测试范围固定为 `matcher/tests`，不再误收集 ignored `tmp/` 中保留的历史审计脚本。
+
+一次性 GPU 门禁原拟通过以下机械命令提交；它不属于正式训练命令：
+
+```bash
+bash 训练与运行/submit_task.sh --sh tmp/matcher_gpu_preflight.sh --resource a100 --gpus 1 --cpus 16 --time 06:00:00 --job-name MatchGate
+```
+
+该命令产生待调度的 Job 385011，但作业始终处于 `PENDING (Priority)`，没有获得节点、没有创建 release、没有执行 Python 门禁。用户随后明确要求把 GPU 门禁延后到阶段 E 正式运行之前；Job 385011 已用精确 `scancel 385011` 取消并确认从 `squeue` 消失。阶段 E 应基于届时最终代码重新生成一次性门禁，门禁通过后使用新的正式启动命令，不复用本次未执行的 Job 或脚本快照。
 
 服务器真实 validation batch 门禁在 gnode10 使用 PocketXMol 可运行的 PyTorch 2.6.0 环境执行，只读取 CPU 与共享存储，不使用或干扰 Job 378693 的 GPU 进程。四个变体的 Dataset 长度均为 5,544：
 
@@ -84,7 +92,7 @@ git diff --check
 - Stage1-only JSON SHA-256 为 `482f4e7edcf6f855af65c7b4272d1ba92cd3c0696780fb61fbbc2732bc2ec83d`。Emap2lig top-3/4/5 严格复现 87/89/90，且两种 Find_1 排序引用的 Emap2lig 曲线逐点相同。
 - 两张预览图分别为 `topk_gaussian_stage1_only_preview.png` 和 `topk_source_probability_mean_stage1_only_preview.png`；SHA-256 分别为 `dbc1a8a19295752bd83a09dc6965515b810575074c99f40e89bf884d40fa4b30` 与 `2955736592e5cbcf8d184eadfa87b0df6b2222694929c9dd53f056f752c39775`。两图没有 Matcher 数值，也未被称为最终图。
 - 删除六分类、类别概率到 PairScorer 的连接、旧身份损失变体、seen/unseen、calibration、历史活动 YAML 和平行 `matcher/smiles_identity/` 包。旧实现仍可由 Git 恢复。
-- Job 378693 当前由 PocketXMol 真实训练占用，GPU0 显存约 73 GiB 且持续计算；本轮没有触碰其锁或进程。Matcher GPU 前后向和完整 validation 门禁将在独立审查与正式 release 后另行提交短门禁任务，不借用该 GPU。
+- Job 378693 当前由 PocketXMol 真实训练占用，GPU0 显存约 73 GiB 且持续计算；本轮没有触碰其锁或进程。Matcher BF16 前后向和完整 validation GPU 门禁按用户最新决定延后到阶段 E 正式运行之前，不借用该 GPU。
 
 ### 2026-09-17：一轮独立全面审查与定向修复
 
@@ -95,3 +103,10 @@ git diff --check
 - 测试结果不再写 validation 专用 `selection`。正式训练与测试代码也不再计算或持久化 SHA-256；运行目录改为保存 `resolved_config.json` 和 `manifest.snapshot.json`，checkpoint 保存解析配置与 manifest 快照路径。一次性 SHA 证据仍只保留在本执行记录。
 - Dataset/Batch、坐标变换、损失、梯度累积、指标和冻结 JSON 的注释已按真实字段、形状、掩码、索引和分母补全；正式代码注释与 Docstring 已统一使用技能要求的英文标点，结构化字段保持一项一行。
 - 修复后只对三份原报告中的明确问题做窄口径复核，再对窄复核指出的具体行做最后一次小范围确认。科学逻辑、函数布局与 Git 边界、代码注释与 YAML 三条审查线均返回最终 `PASS`，没有继续扩大审查范围。
+
+### 2026-09-17：阶段 D 与训练前停止点
+
+- 活动包只保留 `matcher/data`、`datasets`、`model`、`training`、`evaluation` 和 `utils` 的单一管线；平行 `matcher/smiles_identity`、旧 calibration、六分类、历史活动 YAML 与旧 shell 均已从当前树删除，仍可由 Git 历史恢复。
+- 四份正式 YAML、四个从头训练 shell、数据构建入口、冻结测试入口和各目录 README 已连接到同一精确 SMILES 契约。阶段 C 的 Stage1-only 元数据与两张预览图已冻结，未生成任何虚构 Matcher 数值。
+- 三条独立审查均已 PASS，本机完整回归为 23 passed。尚未执行的 GPU 门禁、四项正式训练、冻结 Matcher 测试、Stage1+Matcher 曲线、第一张七栏图和三张最终图全部属于阶段 E。
+- 阶段 E 启动还必须等待用户对本轮代码的修改意见以及独立任务完成第 6 片推理的通知；未完成分片没有写入任何正式训练 manifest。
