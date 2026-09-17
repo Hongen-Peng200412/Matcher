@@ -27,7 +27,7 @@
 | 阶段 C 本轮范围 | 测试连接、Stage1-only 元数据、Emap2lig 门禁与两张预览图 | 已完成 checkpoint-independent 范围 |
 | 独立审查 | 三个独立方向各一轮全面审查，修复后只复核报告问题 | 科学逻辑、函数布局/Git、注释与 YAML 均已独立 PASS |
 | 阶段 D | 删除平行和过时活动主线，刷新 README、mapping 与 handoff | 已完成 |
-| 双线 Git | 实现历史、学习历史、端点等价与唯一最新累计分支 | 学习历史重建与端点等价核验中 |
+| 双线 Git | 实现历史、学习历史、端点等价与唯一最新累计分支 | 已完成 |
 
 ## 正式运行命令
 
@@ -110,3 +110,10 @@ bash 训练与运行/submit_task.sh --sh tmp/matcher_gpu_preflight.sh --resource
 - 四份正式 YAML、四个从头训练 shell、数据构建入口、冻结测试入口和各目录 README 已连接到同一精确 SMILES 契约。阶段 C 的 Stage1-only 元数据与两张预览图已冻结，未生成任何虚构 Matcher 数值。
 - 三条独立审查均已 PASS，本机完整回归为 23 passed。尚未执行的 GPU 门禁、四项正式训练、冻结 Matcher 测试、Stage1+Matcher 曲线、第一张七栏图和三张最终图全部属于阶段 E。
 - 阶段 E 启动还必须等待用户对本轮代码的修改意见以及独立任务完成第 6 片推理的通知；未完成分片没有写入任何正式训练 manifest。
+
+### 2026-09-17：双线 Git 收口
+
+- 实现分支 `codex/matcher-single-pipeline-refactor` 保存真实实施、审查修复和治理回填过程。
+- 学习历史从共同基点 `75ac5eaa5f4ec682724b72110605c74ec9b846a2` 开始，按删除旧主线、建立数据契约、连接 Dataset/Batch、定义四变体、实现训练评估、连接文档配置、锁定测试的顺序重建。
+- 实现端点与学习端点通过完整树比较，结果无差异；学习端点重新执行完整测试，结果仍为 23 passed。
+- `Learn/CUMULATIVE` 已推进到学习端点，隔离学习工作树和临时学习分支已删除。最终只保留 `C:/Users/15919/Desktop/Matcher` 一个工作树，用户未暂存的 `talk_new/反馈/re-9-16.md` 在分支切换前后保持同一字节哈希。
