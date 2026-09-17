@@ -6,4 +6,4 @@
 - `run_syncWithClean.bat` 与 `sync_codeWithClean.ps1` 会先删除整个远端 Matcher 目录，只允许人类手动运行。
 - `other/Invoke-PasswordSsh.ps1` 是共享安全连接入口；主机密钥必须已经写入本机 `known_hosts`，脚本不会自动接受变化后的密钥。
 
-正式任务由 `训练与运行/submit_task.sh` 提交，控制证据位于 `/home/penghongen/Feedback/Matcher`。Matcher 清单、缓存、checkpoint、指标和评估结果统一位于 `/storage/penghongen/tmp/Matcher/`；输入的 A–G 与 Stage1 产物仍从 AdaLigand 的正式存储目录只读加载。
+正式任务由 `训练与运行/submit_task.sh` 提交，控制证据位于 `/home/penghongen/Feedback/Matcher`。Matcher manifest、checkpoint、指标和评估派生产物统一位于 `/storage/penghongen/Matcher/`；AdaLigand 数据资产、Find_1 与 Emap2lig 产物保持只读。
