@@ -33,6 +33,21 @@ DENSITY_CHANNEL_NAMES = tuple(
 )
 
 
+def build_experimental_density_channel(experimental: np.ndarray) -> np.ndarray:
+    """构造 density_blob_only 唯一允许读取的实验密度通道。
+
+    - experimental: 数组，形状为 (Z,Y,X)；Stage1 supplied crop 内的实验密度。
+    - return: float32 数组，形状为 (1,Z,Y,X)；按现有 exp_clipnorm_nopost 的
+      0.1%/99.9% 分位截断与全网格 z-score 规则归一化。
+
+    本函数不读取模拟密度或受体 hardmask，因而不会为单密度变体触发被禁用输入的
+    文件访问和派生计算。
+    """
+
+    grid = _validated_grid(experimental, "experimental")
+    return _clip_normalize(grid)[None].astype(np.float32, copy=False)
+
+
 def build_density_channels(
     experimental: np.ndarray,
     simulated: np.ndarray,

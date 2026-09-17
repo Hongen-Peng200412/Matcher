@@ -772,7 +772,7 @@ class RaUnetBackbone(nn.Module):
         返回值：
             - voxel_features: 浮点张量，(B,C_v,48,48,48)；最后一轮 _forward_once 的 feature_projection 输出，dtype 由参数、设备与自动混合精度上下文共同决定。
 
-        第 0 到 R-2 轮在 torch.no_grad 中运行，只保存 detached decoded0；每轮后调用 torch.clear_autocast_cache 清除当前自动混合精度权重转换缓存。第 R-1 轮使用上一轮状态且不受本函数内部 no_grad 包裹；是否建立计算图服从外层梯度模式及参与运算张量的 requires_grad，外层 no_grad 或 inference_mode 下不建图。缓存清理是进程内 PyTorch 自动混合精度状态副作用，不写文件或修改输入张量。
+        第 0 到 R-2 轮在 torch.no_grad 中运行，只保存已停止梯度的 decoded0；每轮后调用 torch.clear_autocast_cache 清除当前自动混合精度权重转换缓存。第 R-1 轮使用上一轮状态且不受本函数内部 no_grad 包裹；是否建立计算图服从外层梯度模式及参与运算张量的 requires_grad，外层 no_grad 或 inference_mode 下不建图。缓存清理是进程内 PyTorch 自动混合精度状态副作用，不写文件或修改输入张量。
         """
 
         if voxel_input.ndim != 5 or voxel_input.shape[1] != self.input_channels:
@@ -815,7 +815,7 @@ class RaUnetBackbone(nn.Module):
 
         输入参数：
             - voxel_input: 浮点张量，(B,C_in,48,48,48)；每轮都重新经过同一 input_projection。
-            - recycle: 浮点张量，(B,enc0,48,48,48)；首轮为零，后续轮为上一轮 detached decoded0。
+            - recycle: 浮点张量，(B,enc0,48,48,48)；首轮为零，后续轮为上一轮已停止梯度的 decoded0。
 
         返回值：
             - voxel_features: 浮点张量，(B,C_v,48,48,48)；三个卷积核分支连接并投影后的特征。

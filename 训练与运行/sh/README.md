@@ -1,20 +1,23 @@
-# 任务脚本目录
+# Matcher 正式 shell 入口
 
-本目录保存 Matcher 正式任务的人类入口脚本。每个脚本应自包含地说明所用项目入口、配置、数据位置、结果位置和必要环境变量；不要把某次作业编号或临时目录固化为默认值。
+本目录只保存简短、自包含的人类入口。每个脚本在文件头给出 `训练与运行/submit_task.sh` 提交命令；Job、release、launch、SHA-256、锁操作和一次性取证只进入任务执行记录。
 
-完整使用说明见 [训练与运行说明](../README.md)。
+## 数据与评估
 
-## 精确 SMILES 身份入口
+| 脚本 | 作用 |
+|---|---|
+| `build_smiles_assets.sh` | 发布版本一全局 SMILES 图包和 Stage3 自同构包 |
+| `build_stage1_manifest.sh` | 扫描一个已经闭合的 Stage1 划分并写入同一 manifest |
+| `build_stage1_only_preview.sh` | 冻结 Find_1 与 Emap2lig 的 Stage1-only top-k 元数据 |
+| `plot_stage1_only_preview.sh` | 从冻结元数据绘制一张明确标记的预览图 |
+| `evaluate_frozen_test.sh` | 阶段 E 用同一 BEST 评估真实受体、CryoAtom2 和可选 test_1 子集 |
 
-- `build_smiles_identity.sh`：构建全局 SMILES 图包、自同构包、Find_1 validation 标签旁路和单一 SMILES 身份清单。
-- `train_smiles_identity.sh`：读取完整 YAML，在 Find_1 validation 上从头训练并以 W&B online 记录同划分监测曲线。
+`build_stage1_manifest.sh` 不应对仍在写入的训练分片运行。当前负责第 6 片推理的独立任务不由这些脚本接管。
 
-两个文件头分别给出正式提交命令。哈希、短批门禁、`strace` 和 release/launch 取证只进入临时运维脚本与执行记录，不写入正式脚本或 YAML。
+## 四项正式训练
 
-## 固定批次训练入口
+[`final_smiles/`](final_smiles/README.md) 只有 `strongest`、`density_blob_only`、`pocket_only` 和 `trunk_only` 四个从零训练入口。它们在阶段 E 读取同一份冻结 train/validation manifest。
 
-[批次训练](批次训练/README.md) 保存第 1–5 批共 21 个零参数入口。每个脚本固定对应一份 YAML，并在头部给出 `submit_task.sh` 提交命令；脚本按当前代码和依赖解释历史配置，不承诺复现最初实验环境。
+## 历史目录
 
-## 最优变体从头训练入口
-
-[最优变体推荐](最优变体推荐/README.md) 保存综合全部 validation 实验后推荐的三个当前入口。每个脚本固定对应一份正式 YAML，并从零开始训练，不包含 Job、release、launch、锁或一次性取证逻辑。
+旧批次 YAML 与启动脚本已经退出活动科学主线，由 Git 历史保持可恢复。`批次训练/` 和 `最优变体推荐/` 中若只剩空目录或旧 README，不是当前训练入口。

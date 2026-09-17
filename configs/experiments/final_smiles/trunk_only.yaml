@@ -1,0 +1,68 @@
+# name: 字符串；训练输出子目录名和 W&B 运行名前缀。
+name: trunk_only
+# output_root: POSIX 绝对路径；四项正式实验共同的训练输出根目录。
+output_root: /storage/penghongen/Matcher/runs
+# seed: 整数；固定 Python、NumPy、PyTorch、采样器和 DataLoader 随机源。
+seed: 3409
+data:
+  # manifest_path: POSIX 绝对路径；阶段 E 冻结后由四项实验共同读取。
+  manifest_path: /storage/penghongen/Matcher/manifests/final_train_validation/manifest.json
+  # train_split / validation_split: manifest.splits 中的训练和验证键。
+  train_split: train
+  validation_split: validation
+  # selected_only: true 只训练 Stage1 已选候选；validation 也固定为 true。
+  selected_only: true
+  # batch_size × accumulation_steps: 名义 global batch；A800 首选 32 × 1。
+  batch_size: 32
+  accumulation_steps: 1
+  # num_workers / prefetch_factor: 持久工作进程数和每个进程预取批次数。
+  num_workers: 8
+  prefetch_factor: 2
+  # pp_top_k: 每个候选按 Stage1 概率保留的 PP token 上限。
+  pp_top_k: 2048
+  # cache_gib_per_worker: 每个 Dataset 副本的 PDB 数组最近使用缓存预算。
+  cache_gib_per_worker: 8.0
+model:
+  # variant: 候选侧与 strongest 相同；身份侧只保留语言投影和 native PairScorer。
+  variant: trunk_only
+  model_dim: 256
+  # attention_heads: 候选条件注意力的头数；身份增量注意力不实例化。
+  attention_heads: 8
+  # dropout: 模型内部丢弃概率。
+  dropout: 0.10
+  # voxel_feature_channels: U-Net 最高分辨率输出通道数。
+  voxel_feature_channels: 64
+  # raunet_planes: 九项 U-Net 编解码通道宽度，顺序由 RaUnetBackbone 固定读取。
+  raunet_planes: [64, 256, 256, 256, 256, 256, 128, 64, 64]
+  # recycle_iterations / bottleneck_attention_layers: U-Net 回收次数和瓶颈注意力层数。
+  recycle_iterations: 3
+  # gradient_checkpointing: true 在训练时用激活重计算降低显存。
+  gradient_checkpointing: true
+  bottleneck_attention_layers: 4
+  # graph_layers: 公共结构字段；trunk_only 不实例化图编码器。
+  graph_layers: 4
+loss:
+  # 四个浮点系数依次缩放前景 BCE、两个区域辅助项和直接 SMILES 交叉熵。
+  foreground: 1.0
+  ligand_area: 0.10
+  binding_area: 0.10
+  identity: 1.0
+optimization:
+  # learning_rate / weight_decay: AdamW 初始学习率和权重衰减。
+  learning_rate: 1.0e-4
+  weight_decay: 1.0e-4
+  # gradient_clip_norm: 全局梯度范数阈值；200 是固定宽松裁剪。
+  gradient_clip_norm: 200.0
+  # max_epochs / patience_bad_epochs: 最多轮数与连续未改善 validation 数。
+  max_epochs: 100
+  patience_bad_epochs: 2
+tracking:
+  # mode: online 直接写入 W&B。
+  mode: online
+  # entity: null 使用当前 W&B 登录账户的默认实体。
+  entity: null
+  # project / group: W&B 项目和四变体共同分组名称。
+  project: Matcher
+  group: final_smiles_four_variants
+  # log_every_updates: 每 20 次参数更新记录训练标量。
+  log_every_updates: 20

@@ -1,0 +1,475 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import numpy as np
+import pytest
+import torch
+
+from matcher.data.density import (
+    DENSITY_CHANNEL_NAMES,
+    build_density_channels,
+    build_experimental_density_channel,
+)
+from matcher.data.labels import OccurrenceMask, assign_candidate_target
+from matcher.data.smiles_graph import SmilesGraph, SmilesGraphStore
+from matcher.datasets.batching import collate_candidates
+from matcher.datasets.candidate_data import load_manifest_dataset
+from matcher.evaluation.metrics import (
+    fit_foreground_threshold,
+    foreground_average_precision,
+    smiles_match_metrics,
+)
+from matcher.evaluation.test_set import (
+    _candidate_hit_mask,
+    _matcher_curve,
+    _metrics_from_rows,
+    _ranked_hit_curve,
+)
+from matcher.model.config import MatcherModelConfig
+from matcher.model.ligand_matcher import ClosedSetMatcher
+from matcher.training.config import load_smiles_experiment
+from matcher.training.losses import (
+    LossWeights,
+    compute_matcher_loss,
+    smiles_identity_cross_entropy,
+)
+
+
+def _graph() -> SmilesGraph:
+    return SmilesGraph(
+        element=np.asarray([6, 6], dtype=np.int64),
+        charge=np.asarray([0, 0], dtype=np.int64),
+        atom_in_ring=np.zeros((2, 4), dtype=np.float32),
+        edge_index=np.asarray([[0, 1], [1, 0]], dtype=np.int64),
+        edge_features=np.asarray(
+            [[1, 0, 0, 0, 0, 0, 0, 0, 0], [1, 0, 0, 0, 0, 0, 0, 0, 0]],
+            dtype=np.float32,
+        ),
+    )
+
+
+def _item(variant: str) -> dict[str, object]:
+    spatial = 48
+    if variant == "pocket_only":
+        voxel = np.empty((0, spatial, spatial, spatial), dtype=np.float16)
+        a_tokens = np.ones((2, 50), dtype=np.float32)
+    else:
+        voxel_channels = 1 if variant == "density_blob_only" else 106
+        voxel = np.zeros((voxel_channels, spatial, spatial, spatial), dtype=np.float16)
+        a_tokens = (
+            np.empty((0, 230), dtype=np.float32)
+            if variant == "density_blob_only"
+            else np.ones((1, 230), dtype=np.float32)
+        )
+    v_tokens = (
+        np.ones((1, 68), dtype=np.float32)
+        if variant != "pocket_only"
+        else np.empty((0, 68), dtype=np.float32)
+    )
+    return {
+        "metadata": {
+            "split": "validation",
+            "pdb_id": "1abc",
+            "centered_box_index": 0,
+            "source_blob_index": 0,
+            "candidate_selected": True,
+            "gaussian_score": 1.0,
+            "source_probability_mean": 0.5,
+            "foreground_target": True,
+            "target_category": "small_molecule",
+            "matched_occurrence_id": 0,
+            "target_smiles": "CC",
+            "identity_supported": True,
+        },
+        "voxel_input": voxel,
+        "a_tokens": a_tokens,
+        "p_tokens": np.empty((0, 116), dtype=np.float32),
+        "v_tokens": v_tokens,
+        "v_index_zyx": np.zeros((len(v_tokens), 3), dtype=np.int64),
+        "pp_tokens": np.empty((0, 4), dtype=np.float32),
+        "pp_index_zyx": np.empty((0, 3), dtype=np.int64),
+        "foreground_target": True,
+        "ligand_area_target": np.zeros((spatial,) * 3, dtype=np.bool_),
+        "binding_area_target": np.zeros((spatial,) * 3, dtype=np.bool_),
+        "full_candidate_voxel_count": 1,
+        "candidate_manual_features": np.zeros(12, dtype=np.float32),
+        "candidate_sampling_features": np.zeros(4, dtype=np.float32),
+        "identity_smiles": ["CC"],
+        "language_embeddings": np.ones((1, 768), dtype=np.float32),
+        "smiles_graphs": [] if variant == "trunk_only" else [_graph()],
+        "identity_target": 0,
+    }
+
+
+def _config(variant: str) -> MatcherModelConfig:
+    return MatcherModelConfig(
+        variant=variant,
+        model_dim=24,
+        attention_heads=2,
+        dropout=0.0,
+        voxel_feature_channels=8,
+        raunet_planes=(8, 8, 8, 8, 8, 8, 8, 8, 8),
+        recycle_iterations=1,
+        gradient_checkpointing=False,
+        bottleneck_attention_layers=1,
+        graph_layers=1,
+    )
+
+
+def test_maximum_overlap_target_is_unique_and_uses_smaller_occurrence_id() -> None:
+    candidate = np.asarray([[0, 0, 0], [0, 0, 1]], dtype=np.int64)
+    occurrences = [
+        OccurrenceMask(2, "small_molecule", candidate.copy()),
+        OccurrenceMask(1, "sugar", candidate.copy()),
+    ]
+    target = assign_candidate_target(candidate, occurrences, 0.30)
+    assert target.foreground_target is True
+    assert target.matched_occurrence_id == 1
+    assert target.target_category == "sugar"
+
+
+def test_single_density_channel_matches_exp_clipnorm_nopost() -> None:
+    experimental = np.arange(64, dtype=np.float32).reshape(4, 4, 4)
+    simulated = np.flip(experimental).copy()
+    hardmask = np.zeros_like(experimental, dtype=np.bool_)
+    complete = build_density_channels(experimental, simulated, hardmask)
+    index = DENSITY_CHANNEL_NAMES.index("exp_clipnorm_nopost")
+    single = build_experimental_density_channel(experimental)
+    np.testing.assert_allclose(single[0], complete[index], rtol=0, atol=0)
+
+
+@pytest.mark.parametrize("variant", ["strongest", "density_blob_only", "pocket_only", "trunk_only"])
+def test_four_model_variants_forward_and_direct_identity_loss(variant: str) -> None:
+    batch = collate_candidates([_item(variant)])
+    model = ClosedSetMatcher(_config(variant)).eval()
+    output = model(batch)
+    assert output["foreground_logit"].shape == (1,)
+    assert output["identity_logits"].shape == (1, 1)
+    assert torch.isfinite(output["foreground_logit"]).all()
+    weights = LossWeights(1.0, 0.0 if variant == "pocket_only" else 0.1, 0.0 if variant == "pocket_only" else 0.1, 1.0)
+    loss = compute_matcher_loss(output, batch, weights)
+    assert torch.isfinite(loss["total"])
+    assert int(loss["identity_eligible_count"]) == 1
+
+
+def test_trunk_only_parameter_tree_has_no_identity_increment_modules() -> None:
+    names = list(dict(ClosedSetMatcher(_config("trunk_only")).named_parameters()))
+    assert not any("graph_encoder" in name for name in names)
+    assert not any("graph_attention" in name for name in names)
+    assert not any("inventory_attention" in name for name in names)
+    assert not any("graph_gate" in name for name in names)
+    assert not any("inventory_gate" in name for name in names)
+
+
+@pytest.mark.parametrize(
+    ("variant", "disabled_fields"),
+    [
+        ("strongest", ()),
+        ("density_blob_only", ("a_tokens", "p_tokens", "pp_tokens")),
+        (
+            "pocket_only",
+            (
+                "voxel_input",
+                "p_tokens",
+                "v_tokens",
+                "pp_tokens",
+                "candidate_manual_features",
+                "candidate_sampling_features",
+            ),
+        ),
+        (
+            "trunk_only",
+            (
+                "graph_element",
+                "graph_charge",
+                "graph_atom_in_ring",
+                "graph_edge_features",
+            ),
+        ),
+    ],
+)
+def test_disabled_inputs_do_not_change_model_output(
+    variant: str,
+    disabled_fields: tuple[str, ...],
+) -> None:
+    """扰动监督字段和当前变体禁用的模态，不得改变任何模型输出。"""
+
+    batch = collate_candidates([_item(variant)])
+    changed = {
+        key: value.clone() if isinstance(value, torch.Tensor) else value
+        for key, value in batch.items()
+    }
+    changed["foreground_target"] = ~changed["foreground_target"]
+    changed["identity_target"] = torch.full_like(changed["identity_target"], -1)
+    changed["ligand_area_target"] = ~changed["ligand_area_target"]
+    changed["binding_area_target"] = ~changed["binding_area_target"]
+    for field in disabled_fields:
+        if field == "voxel_input":
+            changed[field] = torch.full((1, 2, 48, 48, 48), 7.0)
+        elif field in ("a_tokens", "p_tokens", "v_tokens", "pp_tokens"):
+            width = {"a_tokens": 230, "p_tokens": 116, "v_tokens": 68, "pp_tokens": 4}[field]
+            changed[field] = torch.full((1, 2, width), 7.0)
+            prefix = field.removesuffix("_tokens")
+            changed[f"{prefix}_mask"] = torch.ones((1, 2), dtype=torch.bool)
+            if prefix in ("v", "pp"):
+                changed[f"{prefix}_index_zyx"] = torch.zeros((1, 2, 3), dtype=torch.int64)
+        elif field.startswith("graph_"):
+            changed["graph_element"] = torch.asarray([6, 8], dtype=torch.int64)
+            changed["graph_charge"] = torch.asarray([0, -1], dtype=torch.int64)
+            changed["graph_atom_in_ring"] = torch.ones((2, 4))
+            changed["graph_node_graph_index"] = torch.zeros(2, dtype=torch.int64)
+            changed["graph_edge_index"] = torch.asarray([[0, 1], [1, 0]], dtype=torch.int64)
+            changed["graph_edge_features"] = torch.ones((2, 9))
+            changed["graph_to_sample"] = torch.zeros(1, dtype=torch.int64)
+            changed["graph_to_identity"] = torch.zeros(1, dtype=torch.int64)
+        else:
+            changed[field] = torch.full_like(changed[field], 7)
+    model = ClosedSetMatcher(_config(variant)).eval()
+    with torch.no_grad():
+        reference = model(batch)
+        perturbed = model(changed)
+    assert set(reference) == set(perturbed)
+    for field in reference:
+        if reference[field] is None:
+            assert perturbed[field] is None
+        else:
+            torch.testing.assert_close(reference[field], perturbed[field], rtol=0, atol=0)
+
+
+def test_smiles_graph_store_opens_package_only_once(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """同一个工作进程内重复初始化和取图只允许打开一次图包。"""
+
+    path = tmp_path / "smiles_graphs_v1.npz"
+    np.savez_compressed(
+        path,
+        schema_version=np.asarray(1, dtype=np.int64),
+        smiles=np.asarray(["CC"]),
+        atom_offsets=np.asarray([0, 2], dtype=np.int64),
+        element=np.asarray([6, 6], dtype=np.int16),
+        charge=np.asarray([0, 0], dtype=np.int8),
+        atom_in_ring=np.zeros((2, 4), dtype=np.bool_),
+        bond_offsets=np.asarray([0, 1], dtype=np.int64),
+        bond_index=np.asarray([[0], [1]], dtype=np.int32),
+        bond_type=np.asarray([0], dtype=np.uint8),
+        bond_in_ring=np.zeros((1, 4), dtype=np.bool_),
+    )
+    original_load = np.load
+    open_count = 0
+
+    def counted_load(*args: object, **kwargs: object) -> object:
+        nonlocal open_count
+        open_count += 1
+        return original_load(*args, **kwargs)
+
+    monkeypatch.setattr(np, "load", counted_load)
+    store = SmilesGraphStore(path)
+    store.initialize()
+    store.initialize()
+    assert store.get("CC").element.tolist() == [6, 6]
+    assert "CC" in store
+    assert open_count == 1
+
+
+def test_manifest_dataset_skips_only_unsupported_foreground_outside_test(tmp_path: Path) -> None:
+    """训练和 validation 跳过不受支持真前景，test 保留且背景始终保留。"""
+
+    candidates = [
+        {
+            "split": "validation",
+            "pdb_id": "1abc",
+            "centered_box_index": index,
+            "source_blob_index": index,
+            "candidate_selected": True,
+            "gaussian_score": 1.0 - index / 10,
+            "source_probability_mean": 0.5,
+            "foreground_target": foreground,
+            "target_category": "small_molecule" if foreground else None,
+            "matched_occurrence_id": index if foreground else None,
+            "target_smiles": smiles,
+            "candidate_coverage": 0.5 if foreground else 0.0,
+            "occurrence_coverage": 0.5 if foreground else 0.0,
+            "overlap_score": 0.5 if foreground else 0.0,
+        }
+        for index, (foreground, smiles) in enumerate(
+            ((True, "CC"), (True, "unsupported"), (False, None))
+        )
+    ]
+    identities = [
+        {
+            "pdb_id": "1abc",
+            "smiles": "CC",
+            "language_relative_path": "language/1abc/candidate_0.npz",
+        }
+    ]
+    (tmp_path / "validation_candidates.jsonl").write_text(
+        "".join(json.dumps(record) + "\n" for record in candidates),
+        encoding="utf-8",
+    )
+    (tmp_path / "validation_identities.jsonl").write_text(
+        "".join(json.dumps(record) + "\n" for record in identities),
+        encoding="utf-8",
+    )
+    manifest = {
+        "schema": "matcher_stage1_manifest_v1",
+        "class_names": [
+            "background",
+            "ion",
+            "nucleotide_like",
+            "peptide_like",
+            "small_molecule",
+            "sugar",
+        ],
+        "identity_key": "PreparedLigand.smiles",
+        "language_model": "SMI-TED Light 289M",
+        "data_root": str(tmp_path),
+        "stage1_root": str(tmp_path),
+        "graph_asset_path": str(tmp_path / "smiles_graphs_v1.npz"),
+        "splits": {
+            "validation": {
+                "candidates": "validation_candidates.jsonl",
+                "identities": "validation_identities.jsonl",
+            }
+        },
+        "summary": {},
+    }
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    common = {
+        "split": "validation",
+        "selected_only": True,
+        "variant": "trunk_only",
+        "pp_top_k": 1,
+        "cache_gib_per_worker": 0.0,
+    }
+    validation = load_manifest_dataset(manifest_path, mode="validation", **common)
+    test = load_manifest_dataset(manifest_path, mode="test", **common)
+    assert len(validation) == 2
+    assert len(test) == 3
+
+
+def test_identity_accumulation_weight_matches_one_global_batch() -> None:
+    """物理批次身份数不等时，按合格数加权必须等于一次 global-batch CE。"""
+
+    first_logits = torch.asarray([[2.0, 0.0]])
+    second_logits = torch.asarray([[0.0, 1.0], [1.0, 0.0]])
+    first_loss, first_count = smiles_identity_cross_entropy(
+        first_logits,
+        torch.ones_like(first_logits, dtype=torch.bool),
+        torch.asarray([0]),
+        torch.asarray([True]),
+    )
+    second_loss, second_count = smiles_identity_cross_entropy(
+        second_logits,
+        torch.ones_like(second_logits, dtype=torch.bool),
+        torch.asarray([1, 0]),
+        torch.asarray([True, True]),
+    )
+    merged_loss, _ = smiles_identity_cross_entropy(
+        torch.cat((first_logits, second_logits)),
+        torch.ones((3, 2), dtype=torch.bool),
+        torch.asarray([0, 1, 0]),
+        torch.asarray([True, True, True]),
+    )
+    accumulated = (
+        first_loss * first_count / (first_count + second_count)
+        + second_loss * second_count / (first_count + second_count)
+    )
+    torch.testing.assert_close(accumulated, merged_loss, rtol=0, atol=1e-7)
+
+
+def test_identity_loss_does_not_depend_on_foreground_prediction() -> None:
+    batch = collate_candidates([_item("trunk_only")])
+    output = ClosedSetMatcher(_config("trunk_only")).eval()(batch)
+    first = compute_matcher_loss(output, batch, LossWeights(0.0, 0.0, 0.0, 1.0))["identity"]
+    changed = dict(output)
+    changed["foreground_logit"] = output["foreground_logit"] + 100
+    second = compute_matcher_loss(changed, batch, LossWeights(0.0, 0.0, 0.0, 1.0))["identity"]
+    torch.testing.assert_close(first, second, rtol=0, atol=0)
+
+
+def test_metrics_use_tied_average_precision_and_highest_best_threshold() -> None:
+    target = np.asarray([True, False, True, False])
+    probability = np.asarray([0.8, 0.8, 0.2, 0.1])
+    assert foreground_average_precision(target, probability) == pytest.approx(7 / 12)
+    threshold, metrics = fit_foreground_threshold(target, probability)
+    assert threshold == pytest.approx(0.2)
+    assert metrics["f1"] == pytest.approx(0.8)
+
+
+def test_smiles_metrics_return_none_for_zero_support() -> None:
+    metrics = smiles_match_metrics(
+        ["CC"], ["CC"], ["small_molecule"], np.asarray([True]), np.asarray([True])
+    )
+    assert metrics["overall"]["accuracy"] == 1.0
+    assert metrics["nucleotide_like"] == {
+        "correct_count": 0,
+        "eligible_count": 0,
+        "accuracy": None,
+    }
+
+
+def test_stage1_hit_and_ranking_keep_selected_candidates_only() -> None:
+    intersections = np.asarray([[3, 0], [0, 2], [3, 0]])
+    pred_sizes = np.asarray([10, 10, 10])
+    gt_sizes = np.asarray([10, 10])
+    hit = _candidate_hit_mask(intersections, pred_sizes, gt_sizes)
+    curve = _ranked_hit_curve(
+        np.asarray([0.5, 0.9, 0.5]),
+        np.asarray([2, 1, 0]),
+        np.asarray([True, False, True]),
+        hit,
+    )
+    assert curve[0] is True
+    assert all(curve)
+
+
+def test_final_metrics_and_topk_keep_empty_pdb_in_fixed_denominator(tmp_path: Path) -> None:
+    rows = {
+        "nonempty": [
+            {
+                "foreground_target": True,
+                "foreground_probability": 0.9,
+                "predicted_smiles": "CC",
+                "target_smiles": "CC",
+                "target_category": "small_molecule",
+                "identity_supported": True,
+                "centered_box_index": 0,
+                "source_blob_index": 0,
+                "matched_occurrence_id": 0,
+            },
+            {
+                "foreground_target": False,
+                "foreground_probability": 0.1,
+                "predicted_smiles": None,
+                "target_smiles": None,
+                "target_category": None,
+                "identity_supported": False,
+                "centered_box_index": 1,
+                "source_blob_index": 1,
+                "matched_occurrence_id": None,
+            },
+        ]
+    }
+    metrics = _metrics_from_rows(rows, 0.5, {"nonempty", "empty"})
+    assert metrics["pdb_count"] == 2
+    pdb_ids = [f"pdb{index:03d}" for index in range(179)]
+    curve = _matcher_curve("test", {}, pdb_ids, "gaussian_score", tmp_path / "best.pt")
+    assert curve["pdb_count"] == 179
+    assert curve["hit_count"] == [0] * 20
+
+
+def test_four_formal_yaml_files_differ_only_by_registered_variant_and_area_boundary() -> None:
+    root = Path("configs/experiments/final_smiles")
+    configs = {path.stem: load_smiles_experiment(path) for path in sorted(root.glob("*.yaml"))}
+    assert set(configs) == {"strongest", "density_blob_only", "pocket_only", "trunk_only"}
+    assert {config.seed for config in configs.values()} == {3409}
+    assert {config.data.selected_only for config in configs.values()} == {True}
+    for name, config in configs.items():
+        assert config.model.variant == name
+        assert config.optimization.gradient_clip_norm == 200.0
+        if name == "pocket_only":
+            assert config.loss_weights.ligand_area == config.loss_weights.binding_area == 0.0
+        else:
+            assert config.loss_weights.ligand_area == config.loss_weights.binding_area == 0.1

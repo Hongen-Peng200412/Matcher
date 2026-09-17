@@ -1,11 +1,4 @@
-"""定义候选编码器与闭集身份匹配器共享的结构配置。
-
-主要入口 MatcherModelConfig 在实例化时检查模型宽度、注意力头数、特征开关、
-身份增量门、RAUNet 通道表和层数。to_dict 返回 checkpoint 与运行记录使用的
-普通字典，from_dict 从该字典恢复配置，并补齐第 0–4 批历史配置缺少的字段。
-本模块不构造模型，也不检查 candidate_pretrain 阶段必须把两个身份门设为零；
-后一个跨字段规则由 matcher.training.config 读取正式 YAML 时执行。
-"""
+"""定义四个且仅四个 Matcher 模型变体及其共同结构参数。"""
 
 from __future__ import annotations
 
@@ -13,43 +6,44 @@ import math
 from dataclasses import asdict, dataclass
 from typing import Any, Literal
 
-AggregationName = Literal[
-    "mean_max",
-    "candidate_cross_attention",
-    "mean_max_candidate_cross_attention_concat",
+
+ModelVariant = Literal[
+    "strongest",
+    "density_blob_only",
+    "pocket_only",
+    "trunk_only",
 ]
+
+MODEL_VARIANTS = (
+    "strongest",
+    "density_blob_only",
+    "pocket_only",
+    "trunk_only",
+)
 
 
 @dataclass(frozen=True)
 class MatcherModelConfig:
-    """保存候选编码器和身份匹配器的完整结构参数。
+    """保存具名模型变体和四项实验共同使用的结构超参数。
 
     配置字段：
-        - aggregation: mean_max、candidate_cross_attention 或 mean_max_candidate_cross_attention_concat；依次选择四模态掩码均值/最大值、以候选体素摘要查询四模态 token，或拼接前两种完整摘要并把零输出残差加回 mean/max 主表示。
-        - use_manual_features: 布尔值；控制候选聚合是否拼接 A/P/V/PP 各三项固化统计，也控制三个身份打分器是否拼接同一 12 维统计和停止梯度的身份类别概率。
-        - use_sampling_features: 布尔值；控制候选聚合和三个身份打分器是否拼接四项裁剪几何统计。
-        - use_candidate_token_attention_bias: 布尔值；只允许与 candidate_cross_attention 同时启用，为 A/P/V/PP 各建立一套由相对坐标和 Stage1 概率生成注意力偏置的网络。
-        - initial_graph_gate: 有限数值，范围 [0,1]；IdentityScorer 图分数增量的可学习标量门初值，candidate_pretrain 必须为零的规则由训练配置层另行检查。
-        - initial_inventory_gate: 有限数值，范围 [0,1]；IdentityScorer 同 PDB 自排除身份清单增量的可学习标量门初值，candidate_pretrain 必须为零的规则由训练配置层另行检查。
-        - model_dim: 正整数 D_m；候选摘要、四模态投影、语言身份和图身份的共同通道宽度，必须能被 attention_heads 整除。
-        - attention_heads: 正整数 K；候选条件注意力、配体图注意力和身份清单注意力共用的头数。
-        - dropout: 有限数值，范围 [0,1)；token 投影、三种候选聚合路径、候选分类头、图消息、配体图注意力、身份清单注意力和三个身份配对残差网络共用的丢弃概率。
-        - voxel_feature_channels: 正整数 C_v；RAUNet 最高分辨率输出及两个体素二分类头的输入通道数。
-        - raunet_planes: 含九个正整数的元组；顺序为 enc0、enc1、enc2、enc3、bottleneck、dec3、dec2、dec1、dec0，本类不检查 enc3=bottleneck=dec3 与 dec0=enc0，RaUnetBackbone 构造时才检查这两项关系。
-        - recycle_iterations: 正整数；RAUNet 对同一候选体素输入执行的回收轮数，前置轮显式禁用梯度，最后一轮不受该内部 no_grad 包裹；是否建图仍服从调用位置的外层梯度模式。
-        - gradient_checkpointing: 布尔值；训练且启用梯度时，是否对 RAUNet 的高开销子模块使用非重入激活重计算。
-        - bottleneck_attention_layers: 正整数；RAUNet 最深网格串联的三轴旋转位置编码自注意力层数。
-        - graph_layers: 正整数；LigandGraphEncoder 沿双向化学键执行的消息传递层数。
+        - variant: 四个正式变体之一；该字段同时决定候选输入和身份增量模块。
+        - model_dim: 候选与身份表示共同宽度 D_m，必须能被 attention_heads 整除。
+        - attention_heads: 候选条件、配体图和身份清单注意力的头数。
+        - dropout: 模型丢弃概率，范围为 [0,1)。
+        - voxel_feature_channels: U-Net 最高分辨率输出宽度 C_v。
+        - raunet_planes: 九项 U-Net 编解码通道宽度。
+        - recycle_iterations: U-Net 回收次数。
+        - gradient_checkpointing: 是否在训练时启用激活重计算。
+        - bottleneck_attention_layers: U-Net 瓶颈注意力层数。
+        - graph_layers: SMILES 图消息传递层数；trunk_only 不实例化对应模块。
 
-    该 dataclass 为 frozen，只阻止字段重新绑定；raunet_planes 本身是不可变元组。
+    图分支和身份清单分支的门初值固定为 0，不作为 YAML 可变字段。strongest 与 trunk_only
+    使用 mean/max 和候选条件注意力摘要拼接；density_blob_only 使用单密度 U-Net、V token、
+    V 三项统计和四项采样统计；pocket_only 只使用 A token 的原始 50 维 L0。
     """
 
-    aggregation: AggregationName
-    use_manual_features: bool
-    use_sampling_features: bool
-    use_candidate_token_attention_bias: bool
-    initial_graph_gate: float
-    initial_inventory_gate: float
+    variant: ModelVariant
     model_dim: int
     attention_heads: int
     dropout: float
@@ -61,154 +55,101 @@ class MatcherModelConfig:
     graph_layers: int
 
     def __post_init__(self) -> None:
-        """拒绝本配置层能够确定的非法结构参数。
+        """在模型构造前核对有限的结构约束。
 
-        校验字段：
-            - self.aggregation: 必须属于 mean_max、candidate_cross_attention 或 mean_max_candidate_cross_attention_concat。
-            - self.use_manual_features: 必须是精确 bool，不接受整数 0 或 1。
-            - self.use_sampling_features: 必须是精确 bool，不接受整数 0 或 1。
-            - self.use_candidate_token_attention_bias: 必须是精确 bool，且为真时 aggregation 必须是 candidate_cross_attention。
-            - self.initial_graph_gate: 不接受 bool，必须是可转换为 float 的有限 int 或 float，范围 [0,1]。
-            - self.initial_inventory_gate: 不接受 bool，必须是可转换为 float 的有限 int 或 float，范围 [0,1]。
-            - self.model_dim: 必须是正的精确 int，且能被 attention_heads 整除。
-            - self.attention_heads: 必须是正的精确 int。
-            - self.dropout: 不接受 bool，必须是有限 int 或 float，范围 [0,1)。
-            - self.voxel_feature_channels: 必须是正的精确 int。
-            - self.raunet_planes: 必须是长度九的 tuple，每项都是正的精确 int。
-            - self.recycle_iterations: 必须是正的精确 int。
-            - self.gradient_checkpointing: 必须是精确 bool。
-            - self.bottleneck_attention_layers: 必须是正的精确 int。
-            - self.graph_layers: 必须是正的精确 int。
-
-        返回值：
-            - return: None；字段全部通过时保留实例，失败时在模型构造前抛出 TypeError 或 ValueError。
-
-        本方法不检查 RAUNet 编解码通道间的相等关系，也不检查任务类型与身份门的组合；这些规则分别在 RaUnetBackbone 和训练配置层执行。
+        - return: 全部字段合法时返回 None；否则抛出 TypeError 或 ValueError。
         """
 
-        if self.aggregation not in (
-            "mean_max",
-            "candidate_cross_attention",
-            "mean_max_candidate_cross_attention_concat",
-        ):
-            raise ValueError(f"不支持 aggregation={self.aggregation!r}。")
-        if type(self.use_manual_features) is not bool:
-            raise TypeError("use_manual_features 必须是布尔值。")
-        if type(self.use_sampling_features) is not bool:
-            raise TypeError("use_sampling_features 必须是布尔值。")
-        if type(self.use_candidate_token_attention_bias) is not bool:
-            raise TypeError("use_candidate_token_attention_bias 必须是布尔值。")
-        if self.use_candidate_token_attention_bias and self.aggregation != "candidate_cross_attention":
-            raise ValueError("候选实体注意力偏置只适用于 candidate_cross_attention 聚合。")
-        for name, value in (
-            ("initial_graph_gate", self.initial_graph_gate),
-            ("initial_inventory_gate", self.initial_inventory_gate),
-        ):
-            if isinstance(value, bool) or not isinstance(value, (int, float)):
-                raise TypeError(f"{name} 必须是数值。")
-            if not math.isfinite(float(value)) or not 0.0 <= float(value) <= 1.0:
-                raise ValueError(f"{name} 必须位于 [0,1]。")
-        # str 到配置值的映射；集中保证六个宽度、头数与层数字段都是精确 int，避免 bool 作为 int 子类通过。
-        integer_fields = {
-            "model_dim": self.model_dim,
-            "attention_heads": self.attention_heads,
-            "voxel_feature_channels": self.voxel_feature_channels,
-            "recycle_iterations": self.recycle_iterations,
-            "bottleneck_attention_layers": self.bottleneck_attention_layers,
-            "graph_layers": self.graph_layers,
-        }
-        if any(type(value) is not int for value in integer_fields.values()):
-            raise TypeError("模型宽度、头数、通道数和层数必须是整数。")
-        if self.attention_heads <= 0:
-            raise ValueError("attention_heads 必须为正整数。")
-        if self.model_dim <= 0 or self.model_dim % self.attention_heads != 0:
-            raise ValueError("model_dim 必须为正数且能被 attention_heads 整除。")
+        if self.variant not in MODEL_VARIANTS:
+            raise ValueError(f"不支持 model.variant={self.variant!r}。")
+        integer_fields = (
+            self.model_dim,
+            self.attention_heads,
+            self.voxel_feature_channels,
+            self.recycle_iterations,
+            self.bottleneck_attention_layers,
+            self.graph_layers,
+        )
+        if any(type(value) is not int or value <= 0 for value in integer_fields):
+            raise ValueError("模型宽度、头数、通道数、回收次数和层数必须是正整数。")
+        if self.model_dim % self.attention_heads != 0:
+            raise ValueError("model_dim 必须能被 attention_heads 整除。")
         if isinstance(self.dropout, bool) or not isinstance(self.dropout, (int, float)):
             raise TypeError("dropout 必须是数值。")
-        if not math.isfinite(self.dropout) or not 0.0 <= self.dropout < 1.0:
+        if not math.isfinite(float(self.dropout)) or not 0.0 <= float(self.dropout) < 1.0:
             raise ValueError("dropout 必须位于 [0,1)。")
-        if self.voxel_feature_channels <= 0:
-            raise ValueError("voxel_feature_channels 必须为正整数。")
         if (
             not isinstance(self.raunet_planes, tuple)
             or len(self.raunet_planes) != 9
             or any(type(value) is not int or value <= 0 for value in self.raunet_planes)
         ):
-            raise ValueError("raunet_planes 必须含九个正整数通道宽度。")
+            raise ValueError("raunet_planes 必须含九个正整数。")
         if type(self.gradient_checkpointing) is not bool:
             raise TypeError("gradient_checkpointing 必须是布尔值。")
-        if self.recycle_iterations <= 0 or self.bottleneck_attention_layers <= 0:
-            raise ValueError("RAUNet recycle 次数和瓶颈注意力层数必须为正整数。")
-        if self.graph_layers <= 0:
-            raise ValueError("graph_layers 必须为正整数。")
+
+    @property
+    def use_manual_features(self) -> bool:
+        """判断是否消费 12 项候选手动统计。
+
+        - return: pocket_only 为 False，其余三个变体为 True。
+        """
+
+        return self.variant != "pocket_only"
+
+    @property
+    def use_sampling_features(self) -> bool:
+        """判断是否消费四项候选裁剪统计。
+
+        - return: pocket_only 为 False，其余三个变体为 True。
+        """
+
+        return self.variant != "pocket_only"
+
+    @property
+    def initial_graph_gate(self) -> float:
+        """给出正式 SMILES 图增量门初值。
+
+        - return: 固定 0.0；不由 YAML 改写。
+        """
+
+        return 0.0
+
+    @property
+    def initial_inventory_gate(self) -> float:
+        """给出正式同 PDB 身份清单增量门初值。
+
+        - return: 固定 0.0；不由 YAML 改写。
+        """
+
+        return 0.0
+
+    @property
+    def uses_identity_increments(self) -> bool:
+        """判断是否实例化两个身份增量分支。
+
+        - return: trunk_only 为 False，其余三个变体为 True。
+        """
+
+        return self.variant != "trunk_only"
 
     def to_dict(self) -> dict[str, Any]:
-        """返回包含全部配置字段的顶层普通字典。
+        """序列化当前结构配置。
 
-        返回字段：
-            - result.aggregation: 字符串；与 self.aggregation 相同。
-            - result.use_manual_features: 布尔值；与 self.use_manual_features 相同。
-            - result.use_sampling_features: 布尔值；与 self.use_sampling_features 相同。
-            - result.use_candidate_token_attention_bias: 布尔值；与 self.use_candidate_token_attention_bias 相同。
-            - result.initial_graph_gate: int 或 float；与 self.initial_graph_gate 的运行时类型和值相同。
-            - result.initial_inventory_gate: int 或 float；与 self.initial_inventory_gate 的运行时类型和值相同。
-            - result.model_dim: 整数；与 self.model_dim 相同。
-            - result.attention_heads: 整数；与 self.attention_heads 相同。
-            - result.dropout: int 或 float；与 self.dropout 的运行时类型和值相同。
-            - result.voxel_feature_channels: 整数；与 self.voxel_feature_channels 相同。
-            - result.raunet_planes: 九项整数元组；asdict 不把元组改成列表，JSON 序列化器写出时才会编码为数组。
-            - result.recycle_iterations: 整数；与 self.recycle_iterations 相同。
-            - result.gradient_checkpointing: 布尔值；与 self.gradient_checkpointing 相同。
-            - result.bottleneck_attention_layers: 整数；与 self.bottleneck_attention_layers 相同。
-            - result.graph_layers: 整数；与 self.graph_layers 相同。
+        - return: 只含正式 dataclass 字段的普通字典，供 checkpoint 保存。
         """
 
         return asdict(self)
 
     @classmethod
     def from_dict(cls, values: dict[str, Any]) -> "MatcherModelConfig":
-        """从配置字典恢复模型参数，并显式迁移第 0–4 批历史模型配置。
+        """从当前版本字典恢复模型配置。
 
-        输入参数：
-            - values: 字符串到 Python 配置值的映射；预期键与 MatcherModelConfig 字段同名，JSON 解码字典是常见来源，但本函数也接受 raunet_planes 元组；先复制且绝不就地修改调用者字典。
-            - values.aggregation: 必需字符串；mean_max 或 candidate_cross_attention。
-            - values.use_manual_features: 可缺省布尔值；缺省时补 False，第 1 批已保存的 True 保持不变。
-            - values.use_sampling_features: 可缺省布尔值；缺省时补 False。
-            - values.use_candidate_token_attention_bias: 可缺省布尔值；缺省时补 False，使第 0–2 批保持无偏置结构。
-            - values.initial_graph_gate: 可缺省数值；缺省时补 0.0，使第 0–4 批保持图分数零增量初始化。
-            - values.initial_inventory_gate: 可缺省数值；缺省时补 0.0，使第 0–4 批保持清单分数零增量初始化。
-            - values.model_dim: 必需整数；候选与身份共同宽度。
-            - values.attention_heads: 必需整数；候选条件、配体图和身份清单注意力共用头数，不控制 RAUNet 瓶颈头数。
-            - values.dropout: 必需数值；token 投影、候选聚合与分类、图/清单注意力、图消息和身份配对网络共用的丢弃概率。
-            - values.voxel_feature_channels: 必需整数；RAUNet 输出通道数。
-            - values.raunet_planes: 必需整数列表或元组；在构造 dataclass 前统一转换成元组。
-            - values.recycle_iterations: 必需整数；RAUNet 回收轮数。
-            - values.gradient_checkpointing: 必需布尔值；RAUNet 激活重计算开关。
-            - values.bottleneck_attention_layers: 必需整数；RAUNet 瓶颈注意力层数。
-            - values.graph_layers: 必需整数；配体图消息层数。
-
-        返回值：
-            - config: MatcherModelConfig；迁移缺省字段并通过 __post_init__ 当前门禁的冻结配置。
-
-        未知键、除五个明确迁移字段外的缺失键，以及不能作为 dataclass 参数的结构由构造调用直接失败；本函数不静默删除未知键。
+        - values: checkpoint 或 YAML 提供的完整正式字段；raunet_planes 可以是列表或元组。
+        - return: 经 dataclass 边界检查的 MatcherModelConfig，不迁移历史开关。
         """
 
-        # dict[str, Any]，调用者配置的浅拷贝；只在该副本上补历史字段和规范化通道元组。
         normalized = dict(values)
-        if "use_manual_features" not in normalized:
-            normalized["use_manual_features"] = False
-        if "use_sampling_features" not in normalized:
-            normalized["use_sampling_features"] = False
-        if "use_candidate_token_attention_bias" not in normalized:
-            normalized["use_candidate_token_attention_bias"] = False
-        if "initial_graph_gate" not in normalized:
-            normalized["initial_graph_gate"] = 0.0
-        if "initial_inventory_gate" not in normalized:
-            normalized["initial_inventory_gate"] = 0.0
-        if "raunet_planes" in normalized:
-            # Any，历史 JSON 通常恢复为列表，内存配置也可已经是元组；其它容器在此失败。
-            raw_planes = normalized["raunet_planes"]
-            if not isinstance(raw_planes, (list, tuple)):
-                raise TypeError("raunet_planes 必须是整数列表。")
-            normalized["raunet_planes"] = tuple(raw_planes)
+        planes = normalized.get("raunet_planes")
+        if isinstance(planes, list):
+            normalized["raunet_planes"] = tuple(planes)
         return cls(**normalized)
