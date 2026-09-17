@@ -27,7 +27,8 @@ from .raunet import RaUnetBackbone
 
 
 class CandidateEncoderOutput(TypedDict):
-    """保存候选编码器的数值输出.
+    """
+    保存候选编码器的数值输出.
 
     字段:
     - candidate_embedding: 浮点张量, (B,D_m); 候选统一表示.
@@ -35,8 +36,7 @@ class CandidateEncoderOutput(TypedDict):
     - ligand_area_logits: 浮点张量或 None; 有区域主干时为 (B,48,48,48).
     - binding_area_logits: 浮点张量或 None; 有区域主干时为 (B,48,48,48).
     - voxel_features: 浮点张量或 None; 有 U-Net 时为 (B,C_v,48,48,48).
-"""
-
+    """
     candidate_embedding: torch.Tensor
     foreground_logit: torch.Tensor
     ligand_area_logits: torch.Tensor | None
@@ -45,18 +45,18 @@ class CandidateEncoderOutput(TypedDict):
 
 
 class VoxelBinaryHead(nn.Module):
-    """从同分辨率三维特征生成区域 logit.
+    """
+    从同分辨率三维特征生成区域 logit.
 
     - 输入: 浮点 (B,C_v,Z,Y,X) U-Net 特征.
     - 输出: 浮点 (B,Z,Y,X); 每个体素一个未归一化二分类分数.
-"""
-
+    """
     def __init__(self, channels: int) -> None:
-        """建立两个一乘一乘一卷积.
+        """
+        建立两个一乘一乘一卷积.
 
         - channels: 输入与隐藏通道数 C_v.
-"""
-
+        """
         super().__init__()
         self.layers = nn.Sequential(
             nn.Conv3d(channels, channels, kernel_size=1),
@@ -65,30 +65,30 @@ class VoxelBinaryHead(nn.Module):
         )
 
     def forward(self, features: torch.Tensor) -> torch.Tensor:
-        """执行逐体素区域分类.
+        """
+        执行逐体素区域分类.
 
         - features: 浮点 (B,C_v,Z,Y,X); 空间分辨率保持不变.
         - return: 浮点 (B,Z,Y,X); 删除卷积输出的单通道轴.
-"""
-
+        """
         return self.layers(features)[:, 0]
 
 
 class PocketMeanMaxEncoder(nn.Module):
-    """编码 pocket-only 的 A-L0 token.
+    """
+    编码 pocket-only 的 A-L0 token.
 
     - 输入: 浮点 (B,N_A,50) 原始 L0 特征和 bool (B,N_A) 有效掩码.
     - 输出: 浮点 (B,D_m); 由有效 token 的逐通道均值与最大值融合得到.
-"""
-
+    """
     def __init__(self, model_dim: int, dropout: float) -> None:
-        """建立 pocket-only 投影和融合层.
+        """
+        建立 pocket-only 投影和融合层.
 
         - model_dim: 正整数 D_m; 逐 token 投影和候选输出宽度.
         - dropout: 融合多层感知机的丢弃概率.
         - return: None; 建立 50→D_m TokenProjector 和 2D_m→D_m 融合层.
-"""
-
+        """
         super().__init__()
         self.projector = TokenProjector(50, model_dim, dropout)
         self.fusion = nn.Sequential(
@@ -101,13 +101,13 @@ class PocketMeanMaxEncoder(nn.Module):
         )
 
     def forward(self, tokens: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
-        """把浮点 (B,N_A,50) A-L0 token 归约为浮点 (B,D_m) 表示.
+        """
+        把浮点 (B,N_A,50) A-L0 token 归约为浮点 (B,D_m) 表示.
 
         - tokens: A token 原始 L0 特征, 不含概率、坐标或 L1/L2/L3.
         - mask: bool (B,N_A) 有效位置; 全空候选得到零 mean/max 输入.
         - return: 浮点 (B,D_m) pocket-only 候选表示.
-"""
-
+        """
         projected = self.projector(tokens, mask)
         if projected.shape[1] == 0:
             mean = torch.zeros(
@@ -128,21 +128,21 @@ class PocketMeanMaxEncoder(nn.Module):
 
 
 class CandidateEncoder(nn.Module):
-    """建立当前具名变体实际需要的候选模块.
+    """
+    建立当前具名变体实际需要的候选模块.
 
     strongest 与 trunk_only 使用 106 通道 U-Net、A/P/V/PP 和摘要拼接; density_blob_only
     使用单实验密度通道、V token、V 三项统计与四项采样统计; pocket_only 只实例化
     PocketMeanMaxEncoder. 被禁用的 token 投影、U-Net 或区域头不会进入参数树.
-"""
-
+    """
     def __init__(self, config: MatcherModelConfig) -> None:
-        """按具名变体建立互斥的候选编码路径.
+        """
+        按具名变体建立互斥的候选编码路径.
 
         - config: 已通过 MatcherModelConfig 校验的结构配置; variant 决定 U-Net 输入、token 投影、聚合器、区域辅助头和 pocket-only 编码器是否进入参数树.
         - self.foreground_head: 四个变体共用的二分类头; 把浮点 (B,D_m) 候选表示映射为 浮点 (B,1), 前向返回时去掉最后一个单例轴.
         - return: None; 所有实际使用的子模块写入当前实例, 禁用模块保持 None 或空 ModuleDict.
-"""
-
+        """
         super().__init__()
         self.config = config
         self.voxel_backbone: RaUnetBackbone | None = None
@@ -225,29 +225,29 @@ class CandidateEncoder(nn.Module):
         dtype: torch.dtype,
         device: torch.device,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """建立当前设备上的空投影 token 与掩码.
+        """
+        建立当前设备上的空投影 token 与掩码.
 
         - batch_size: 物理批次大小 B.
         - dtype: 候选表示浮点类型.
         - device: 候选表示所在设备.
         - return: 浮点 (B,0,D_m) 与 bool (B,0).
-"""
-
+        """
         return (
             torch.empty((batch_size, 0, self.config.model_dim), dtype=dtype, device=device),
             torch.empty((batch_size, 0), dtype=torch.bool, device=device),
         )
 
     def forward(self, batch: CandidateBatch) -> CandidateEncoderOutput:
-        """执行当前变体唯一允许的候选前向.
+        """
+        执行当前变体唯一允许的候选前向.
 
         - batch: 与 config.variant 同源的 CandidateBatch; 候选轴大小为 B. strongest 和 trunk_only 读取浮点 (B,106,48,48,48) 体素输入及 A/P/V/PP, density_blob_only 只读取浮点 (B,1,48,48,48) 实验密度和 V, pocket_only 只读取 A token 的前 50 个 L0 特征.
         - return.candidate_embedding: 浮点 (B,D_m); 后续身份打分和二分类共用的候选表示.
         - return.foreground_logit: 浮点 (B,); 五类真实配体相对背景的未归一化二分类分数.
         - return.ligand_area_logits / binding_area_logits: 有 U-Net 时为浮点 (B,48,48,48), pocket_only 时为 None.
         - return.voxel_features: 有 U-Net 时为浮点 (B,C_v,48,48,48), pocket_only 时为 None.
-"""
-
+        """
         if self.config.variant == "pocket_only":
             if self.pocket_encoder is None:
                 raise RuntimeError("pocket_only 编码器未建立。")

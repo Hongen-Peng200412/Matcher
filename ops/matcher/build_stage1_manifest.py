@@ -35,12 +35,12 @@ COVERAGE_THRESHOLD = 0.30
 
 
 def _read_jsonl(path: Path) -> list[dict[str, Any]]:
-    """读取一个 UTF-8 JSONL 文件.
+    """
+    读取一个 UTF-8 JSONL 文件.
 
     - path: 输入路径.
     - return: 按物理行顺序保存的 JSON 对象; 空白行忽略.
-"""
-
+    """
     records: list[dict[str, Any]] = []
     with path.open("r", encoding="utf-8") as handle:
         for line_number, line in enumerate(handle, start=1):
@@ -54,13 +54,13 @@ def _read_jsonl(path: Path) -> list[dict[str, Any]]:
 
 
 def _write_jsonl_atomic(path: Path, records: list[dict[str, Any]]) -> None:
-    """在目标目录内原子发布 JSONL.
+    """
+    在目标目录内原子发布 JSONL.
 
     - path: 最终路径.
     - records: 按冻结顺序写出的对象列表.
     - return: 成功替换目标文件后返回 None.
-"""
-
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile("w", dir=path.parent, encoding="utf-8", delete=False) as handle:
         temporary = Path(handle.name)
@@ -70,13 +70,13 @@ def _write_jsonl_atomic(path: Path, records: list[dict[str, Any]]) -> None:
 
 
 def _write_json_atomic(path: Path, value: dict[str, Any]) -> None:
-    """在目标目录内原子发布缩进 JSON.
+    """
+    在目标目录内原子发布缩进 JSON.
 
     - path: 最终路径.
     - value: 可由标准 JSON 编码器直接写出的对象.
     - return: 成功替换目标文件后返回 None.
-"""
-
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile("w", dir=path.parent, encoding="utf-8", delete=False) as handle:
         temporary = Path(handle.name)
@@ -89,14 +89,14 @@ def _read_occurrences(
     roots: SourceRoots,
     pdb_id: str,
 ) -> tuple[dict[int, str], dict[int, str | None]]:
-    """按 occurrence_id 对齐真实类别与顶层精确 SMILES.
+    """
+    按 occurrence_id 对齐真实类别与顶层精确 SMILES.
 
     - roots: AdaLigand 数据根、Find_1 根和 Matcher 输出根.
     - pdb_id: 当前小写 PDB 标识.
     - return[0]: occurrence_id 到 type_tag 的映射.
     - return[1]: occurrence_id 到顶层 PreparedLigand.smiles 的映射; 缺失时为 None.
-"""
-
+    """
     occurrence_path = roots.data_root / "parse" / pdb_id / "occurrences.jsonl"
     prepared_path = roots.prepared_root / pdb_id / "prepared_smiles.jsonl"
     occurrences = {
@@ -128,14 +128,14 @@ def _read_occurrence_masks(
     pdb_id: str,
     type_by_id: dict[int, str],
 ) -> list[OccurrenceMask]:
-    """读取一个 PDB 的真实 occurrence 稀疏体素掩码.
+    """
+    读取一个 PDB 的真实 occurrence 稀疏体素掩码.
 
     - data_root: AdaLigand Ori_Data 根目录.
     - pdb_id: 当前 PDB 标识.
     - type_by_id: occurrence_id 到 type_tag 的映射.
     - return: 按 occurrence_id 递增的 OccurrenceMask 列表.
-"""
-
+    """
     path = data_root / "density" / pdb_id / "ligand_area.npz"
     masks: list[OccurrenceMask] = []
     with np.load(path, allow_pickle=False) as archive:
@@ -159,15 +159,15 @@ def _read_language_embedding(
     occurrence_id: int,
     smiles: str,
 ) -> np.ndarray | None:
-    """读取并核对一个 occurrence 的固定 SMI-TED 向量.
+    """
+    读取并核对一个 occurrence 的固定 SMI-TED 向量.
 
     - path: candidate_{occurrence_id}.npz 路径.
     - pdb_id: 预期 PDB 标识.
     - occurrence_id: 预期 occurrence 编号.
     - smiles: 预期精确顶层 SMILES.
     - return: 有限 float32 (768,) 向量; 文件不存在时为 None.
-"""
-
+    """
     if not path.is_file():
         return None
     with np.load(path, allow_pickle=False) as archive:
@@ -192,7 +192,8 @@ def _build_identities(
     smiles_by_id: dict[int, str | None],
     graph_store: SmilesGraphStore,
 ) -> list[dict[str, Any]]:
-    """构造一个 PDB 内可预测的精确 SMILES 身份轴.
+    """
+    构造一个 PDB 内可预测的精确 SMILES 身份轴.
 
     - roots: 正式数据根集合.
     - pdb_id: 当前 PDB 标识.
@@ -200,8 +201,7 @@ def _build_identities(
     - smiles_by_id: occurrence 顶层 SMILES 映射.
     - graph_store: 已初始化的全局图包.
     - return: 按精确 SMILES 字典序排列的身份记录.
-"""
-
+    """
     occurrence_ids_by_smiles: dict[str, list[int]] = defaultdict(list)
     for occurrence_id in sorted(type_by_id):
         smiles = smiles_by_id[occurrence_id]
@@ -243,15 +243,15 @@ def _read_candidate_ranking(
     source_blob_index: np.ndarray,
     centered: np.lib.npyio.NpzFile,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """按 centered 候选轴返回冻结 Gaussian 分数和选择掩码.
+    """
+    按 centered 候选轴返回冻结 Gaussian 分数和选择掩码.
 
     - pdb_root: 当前 Stage1 PDB 目录.
     - source_blob_index: int32 (N_candidate,) centered 到 F2 blob 的连接轴.
     - centered: 已打开的 F2_centered.npz.
     - return[0]: float32 (N_candidate,) Gaussian 分数.
     - return[1]: bool (N_candidate,) candidate_selected 掩码.
-"""
-
+    """
     if "score" in centered.files and "selected" in centered.files:
         return (
             np.asarray(centered["score"], dtype=np.float32),
@@ -275,13 +275,13 @@ def _read_candidate_ranking(
 def _read_candidate_voxels(
     blob_path: Path,
 ) -> tuple[dict[int, np.ndarray], dict[int, float]]:
-    """读取完整 F2 blob 的全局稀疏体素和原生概率均值.
+    """
+    读取完整 F2 blob 的全局稀疏体素和原生概率均值.
 
     - blob_path: blobs/F2_blobs.npz 路径.
     - return[0]: source_blob_index 到 int64 (N_voxel, 3) 全局 Z/Y/X 索引的映射.
     - return[1]: source_blob_index 到 blob 内来源概率均值的映射.
-"""
-
+    """
     with np.load(blob_path, allow_pickle=False) as archive:
         blob_index = np.asarray(archive["blob_index"], dtype=np.int64)
         offsets = np.asarray(archive["voxel_offsets"], dtype=np.int64)
@@ -303,7 +303,8 @@ def _build_split(
     split: str,
     graph_store: SmilesGraphStore,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, int]]:
-    """扫描一个 Stage1 划分并构造全部候选与可预测身份记录.
+    """
+    扫描一个 Stage1 划分并构造全部候选与可预测身份记录.
 
     - roots: 正式数据根集合.
     - split: stage1_root 下的划分目录名.
@@ -339,8 +340,7 @@ def _build_split(
     - return[2].selected_train_validation_candidate_count: int. selected_only 训练/验证保留数.
     - return[2].identity_count: int. 按 PDB 计数的身份槽总数.
     - return[2].unique_smiles_count: int. 跨 PDB 去重的精确 SMILES 数.
-"""
-
+    """
     split_root = roots.stage1_root / split
     if not split_root.is_dir():
         raise FileNotFoundError(split_root)
@@ -450,7 +450,8 @@ def build_stage1_manifest(
     data_root: Path,
     graph_asset_path: Path,
 ) -> Path:
-    """扫描一个 Stage1 划分并更新同一版本化 manifest 入口.
+    """
+    扫描一个 Stage1 划分并更新同一版本化 manifest 入口.
 
     - stage1_root: Find_1 artifacts/Find_1 根目录; 其下包含 split 目录.
     - split: 本次扫描并发布的划分名称.
@@ -472,8 +473,7 @@ def build_stage1_manifest(
     每次调用只扫描一个 split. output_path 已存在时只允许来源根和固定契约完全相同. 两份
     JSONL 先写入新的唯一生成文件, 最后只原子替换 manifest 入口. 中途失败最多留下未引用文件,
     不能改变旧入口指向的快照. 其它已发布 split 保持不变.
-"""
-
+    """
     if not split or Path(split).name != split or split in {".", ".."}:
         raise ValueError("split 必须是非空的单级目录名称。")
     output_path = Path(output_path)
@@ -520,12 +520,12 @@ def build_stage1_manifest(
 
 
 def main(argv: list[str] | None = None) -> int:
-    """解析一个 Stage1 来源、划分和输出 manifest 路径.
+    """
+    解析一个 Stage1 来源、划分和输出 manifest 路径.
 
     - argv: 可选命令行参数; None 表示读取当前进程命令行.
     - return: manifest 成功发布后返回 0.
-"""
-
+    """
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--stage1-root", type=Path, required=True)
     parser.add_argument("--split", required=True)

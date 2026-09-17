@@ -17,14 +17,14 @@ from .schema import FOREGROUND_CLASS_NAMES
 
 @dataclass(frozen=True)
 class OccurrenceMask:
-    """保存一个真实配体 occurrence 的类型和全局稀疏体素集合.
+    """
+    保存一个真实配体 occurrence 的类型和全局稀疏体素集合.
 
     字段:
     - occurrence_id: int, PDB 内 occurrence 编号; 对应 occurrences.jsonl 的 candidate_id 源字段.
     - type_tag: str, occurrence 类型; other 映射为 background, 其余值必须属于正式前景类别.
     - voxel_index_zyx: int64 数组, (N_occurrence_voxel, 3); 当前 occurrence 的全局密度体素下标, 最后一轴依次为 Z/Y/X.
-"""
-
+    """
     occurrence_id: int
     type_tag: str
     voxel_index_zyx: np.ndarray
@@ -32,7 +32,8 @@ class OccurrenceMask:
 
 @dataclass(frozen=True)
 class CandidateTarget:
-    """保存一个 Stage1 候选的二分类目标、最佳 occurrence 和覆盖率.
+    """
+    保存一个 Stage1 候选的二分类目标、最佳 occurrence 和覆盖率.
 
     字段:
     - foreground_target: bool, 最佳 occurrence 属于五类前景时为 True.
@@ -41,8 +42,7 @@ class CandidateTarget:
     - candidate_coverage: float, 交集唯一体素数除以候选唯一体素数, 无量纲且属于 [0, 1].
     - occurrence_coverage: float, 交集唯一体素数除以 occurrence 唯一体素数, 无量纲且属于 [0, 1].
     - overlap_score: float, 两个覆盖率乘积的平方根, 无量纲且属于 [0, 1].
-"""
-
+    """
     foreground_target: bool
     target_category: str | None
     matched_occurrence_id: int | None
@@ -52,12 +52,12 @@ class CandidateTarget:
 
 
 def _unique_voxel_rows(voxel_index_zyx: np.ndarray) -> np.ndarray:
-    """把非负 Z/Y/X 索引去重并转换为一维集合记录.
+    """
+    把非负 Z/Y/X 索引去重并转换为一维集合记录.
 
     - voxel_index_zyx: 整数数组, (N, 3); N 可为零, 三列依次为非负 Z/Y/X 体素下标.
     - return: np.ndarray (N_unique,); 非空时是每项编码三个 int64 的 np.void 唯一记录, 空输入时是空 int64 数组, 两者只作为 np.intersect1d 的不透明集合键.
-"""
-
+    """
     indices = np.asarray(voxel_index_zyx, dtype=np.int64)
     if indices.ndim != 2 or indices.shape[1] != 3:
         raise ValueError(f"稀疏体素索引必须为 (N,3)，实际为 {indices.shape}。")
@@ -78,14 +78,14 @@ def assign_candidate_target(
     occurrences: Iterable[OccurrenceMask],
     coverage_threshold: float,
 ) -> CandidateTarget:
-    """选择同时通过两个覆盖率阈值且几何平均覆盖率最高的 occurrence.
+    """
+    选择同时通过两个覆盖率阈值且几何平均覆盖率最高的 occurrence.
 
     - candidate_voxel_zyx: 整数数组, (N_candidate_voxel, 3); 当前 Stage1 候选的全局 Z/Y/X 体素下标.
     - occurrences: 同一 PDB 的真实 occurrence; 空掩码会被忽略.
     - coverage_threshold: 闭区间 [0, 1] 内的共同阈值.
     - return: CandidateTarget; 分数并列时选择 occurrence_id 较小者.
-"""
-
+    """
     if not 0.0 <= coverage_threshold <= 1.0:
         raise ValueError(f"coverage_threshold 必须位于 [0,1]，实际为 {coverage_threshold}。")
     candidate_rows = _unique_voxel_rows(candidate_voxel_zyx)

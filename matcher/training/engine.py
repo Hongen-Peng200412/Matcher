@@ -34,7 +34,8 @@ from .losses import compute_matcher_loss
 
 
 def _write_manifest_snapshot(source_path: Path, snapshot_path: Path) -> dict[str, Any]:
-    """写出可由 Dataset 直接读取的不可变 manifest 入口快照.
+    """
+    写出可由 Dataset 直接读取的不可变 manifest 入口快照.
 
     - source_path: 构建训练进程时解析的正式 manifest.json 路径.
     - snapshot_path: 当前运行目录内的新 JSON 路径.
@@ -42,8 +43,7 @@ def _write_manifest_snapshot(source_path: Path, snapshot_path: Path) -> dict[str
 
     快照把每个 split 的候选和身份文件名解析为绝对路径. 构建器为这些 JSONL 使用唯一生成
     文件名, 因此原始 manifest 后续发布新代际不会改变本次 Dataset 实际读取的记录.
-"""
-
+    """
     source_path = Path(source_path).resolve()
     snapshot = load_manifest(source_path)
     frozen_splits: dict[str, dict[str, str]] = {}
@@ -66,12 +66,12 @@ def _write_manifest_snapshot(source_path: Path, snapshot_path: Path) -> dict[str
 
 
 def _set_seed(seed: int) -> None:
-    """固定当前训练进程的随机源与矩阵精度策略.
+    """
+    固定当前训练进程的随机源与矩阵精度策略.
 
     - seed: 同时传给 Python、NumPy、PyTorch CPU 和全部可见 CUDA 设备的整数种子.
     - return: None; 同时把 float32 矩阵乘法精度设为 high.
-"""
-
+    """
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -80,13 +80,13 @@ def _set_seed(seed: int) -> None:
 
 
 def _move_batch(batch: CandidateBatch, device: torch.device) -> CandidateBatch:
-    """把批次张量迁移到训练设备.
+    """
+    把批次张量迁移到训练设备.
 
     - batch: DataLoader 产生的 CandidateBatch.
     - device: 当前单卡训练设备.
     - return: 键集合不变的新映射; 张量使用 non_blocking=True 迁移, 字符串列表和 metadata 保留在 CPU.
-"""
-
+    """
     return cast(
         CandidateBatch,
         {
@@ -97,13 +97,13 @@ def _move_batch(batch: CandidateBatch, device: torch.device) -> CandidateBatch:
 
 
 def _start_tracking(config: SmilesExperimentConfig, provenance: dict[str, Any]) -> Any:
-    """按正式配置建立一次 W&B 运行.
+    """
+    按正式配置建立一次 W&B 运行.
 
     - config: 当前完整实验配置.
     - provenance: 已写入 run.json 的来源和工作进程证据.
     - return: wandb.Run; tracking.mode 为 disabled 时返回 None.
-"""
-
+    """
     if config.tracking.mode == "disabled":
         return None
     import wandb
@@ -122,14 +122,14 @@ def _start_tracking(config: SmilesExperimentConfig, provenance: dict[str, Any]) 
 
 
 def _track(tracker: Any, values: dict[str, Any], step: int) -> None:
-    """记录同一参数更新步的一组 W&B 值.
+    """
+    记录同一参数更新步的一组 W&B 值.
 
     - tracker: wandb.Run 或 None.
     - values: 字符串键到标量或图像的映射.
     - step: 参数更新后的全局步数.
     - return: None; tracker 为 None 时不产生副作用.
-"""
-
+    """
     if tracker is not None:
         tracker.log(values, step=step)
 
@@ -137,14 +137,14 @@ def _track(tracker: Any, values: dict[str, Any], step: int) -> None:
 def _validation_images(
     outputs: dict[str, Any], batch: CandidateBatch, tracker: Any
 ) -> dict[str, Any]:
-    """生成首个验证候选的区域最大投影图.
+    """
+    生成首个验证候选的区域最大投影图.
 
     - outputs: 模型输出; 两个区域 logit 有效时为浮点 (B,48,48,48).
     - batch: 已迁移到模型设备的 CandidateBatch, 含同形 bool 区域目标.
     - tracker: wandb.Run 或 None.
     - return: 四张 W&B 图像映射; 没有 tracker 或没有区域头时返回空映射.
-"""
-
+    """
     ligand_logits = outputs["ligand_area_logits"]
     binding_logits = outputs["binding_area_logits"]
     if tracker is None or ligand_logits is None or binding_logits is None:
@@ -176,7 +176,8 @@ def _validate(
     global_step: int,
     tracker: Any,
 ) -> tuple[dict[str, Any], ValidationAccumulator]:
-    """遍历完整 validation.
+    """
+    遍历完整 validation.
 
     - model: 当前 ClosedSetMatcher; 函数入口切到 eval, 返回前恢复 train.
     - loader: 不打乱、不丢尾的完整 validation DataLoader.
@@ -186,8 +187,7 @@ def _validate(
     - tracker: wandb.Run 或 None.
     - return[0]: 按真实候选/身份分母汇总的损失与科学指标.
     - return[1]: 保存全部候选预测的 ValidationAccumulator, 供最终 BEST 拟合阈值.
-"""
-
+    """
     model.eval()
     loss_numerators = {name: 0.0 for name in ("foreground", "ligand_area", "binding_area", "identity")}
     candidate_count = 0
@@ -260,7 +260,8 @@ def _train_epoch(
     global_step: int,
     tracker: Any,
 ) -> tuple[dict[str, float], int]:
-    """执行一个完整训练 epoch, 并按名义 global batch 的真实分母累计梯度.
+    """
+    执行一个完整训练 epoch, 并按名义 global batch 的真实分母累计梯度.
 
     - model: 当前 ClosedSetMatcher. 函数入口切换到 train 模式.
     - loader: 产生 CandidateBatch 的训练 DataLoader. 批次数必须形成完整累积窗口.
@@ -275,8 +276,7 @@ def _train_epoch(
     每个物理批次候选数相同, 因此前景和区域均除以 accumulation_steps. 身份候选数会在
     物理批次之间变化, 先读取一个完整累积窗口的真值计数, 再让各批身份均值按其合格候选
     数占窗口总数的比例回传. 这样 32x1、16x2 与 8x4 使用相同的身份损失定义.
-"""
-
+    """
     model.train()
     optimizer.zero_grad(set_to_none=True)
     totals = {name: 0.0 for name in ("total", "foreground", "ligand_area", "binding_area", "identity")}
@@ -368,7 +368,8 @@ def _train_epoch(
 
 
 def run_smiles_training(config: SmilesExperimentConfig, config_path: Path) -> Path:
-    """执行一次正式单卡从零训练.
+    """
+    执行一次正式单卡从零训练.
 
     - config: 已严格加载的四变体之一完整配置.
     - config_path: 与 config 对应的 YAML 路径; 路径写入来源证据.
@@ -376,8 +377,7 @@ def run_smiles_training(config: SmilesExperimentConfig, config_path: Path) -> Pa
 
     每个 epoch 后运行完整 validation, 并仅以 selection 严格改善更新 BEST. 自然早停后重新
     载入 BEST, 在同一 validation 预测上拟合一次前景 F1 阈值并写回 BEST; test 不参与该过程.
-"""
-
+    """
     _set_seed(config.seed)
     if not torch.cuda.is_available():
         raise RuntimeError("正式 Matcher 训练要求 CUDA GPU。")

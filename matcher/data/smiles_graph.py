@@ -18,7 +18,8 @@ import numpy as np
 
 @dataclass(frozen=True)
 class SmilesGraph:
-    """保存一个精确 SMILES 对应的重原子化学图.
+    """
+    保存一个精确 SMILES 对应的重原子化学图.
 
     字段:
     - element: int64 数组, (N_atom,); 按 RDKit 重原子顺序保存原子序数.
@@ -26,8 +27,7 @@ class SmilesGraph:
     - atom_in_ring: float32 数组, (N_atom, 4); 与 element 逐原子对齐, 四列依次标记 3、4、5、6 元环.
     - edge_index: int64 数组, (2, 2*N_bond); 第一轴为源端点和目标端点, 每条无向键按图包方向、反向各保存一次.
     - edge_features: float32 数组, (2*N_bond, 9); 与 edge_index 第二轴逐边对齐, 前五列为键型独热编码, 后四列依次标记 3、4、5、6 元环.
-"""
-
+    """
     element: np.ndarray
     charge: np.ndarray
     atom_in_ring: np.ndarray
@@ -36,7 +36,8 @@ class SmilesGraph:
 
 
 class SmilesGraphStore:
-    """在当前进程内完整载入一个版本化 SMILES 图包.
+    """
+    在当前进程内完整载入一个版本化 SMILES 图包.
 
     构造参数:
     - path: smiles_graphs_v1.npz 的绝对或相对路径.
@@ -47,23 +48,23 @@ class SmilesGraphStore:
 
     同一 Dataset 副本只持有一个 Store. DataLoader 使用持久工作进程时, worker_init_fn
     在每个工作进程启动阶段调用 initialize, 样本读取阶段不再打开图包.
-"""
-
+    """
     def __init__(self, path: Path) -> None:
-        """记录图包路径; 此时不执行文件 I/O.
+        """
+        记录图包路径; 此时不执行文件 I/O.
 
         - path: 图包路径; initialize 会检查文件和字段.
         - self.path: 规范化为 Path 的图包位置.
         - self._arrays: 初始化前为 None; 初始化后保存内存数组映射.
         - self._index_by_smiles: 初始化前为空; 初始化后把精确字符串映射到数组位置.
-"""
-
+        """
         self.path = Path(path)
         self._arrays: dict[str, np.ndarray] | None = None
         self._index_by_smiles: dict[str, int] = {}
 
     def initialize(self) -> None:
-        """完整读取并验证图包, 重复调用时直接复用已有内存.
+        """
+        完整读取并验证图包, 重复调用时直接复用已有内存.
 
         图包字段:
         - schema_version: int64 标量, 固定为 1.
@@ -81,8 +82,7 @@ class SmilesGraphStore:
         - self._arrays: dict[str, np.ndarray], 全部字段的独立内存副本; np.load 上下文在赋值前关闭.
         - self._index_by_smiles: dict[str, int], 精确 SMILES 到 smiles 第一轴位置的映射.
         - return: None; 已初始化时不重复打开文件.
-"""
-
+        """
         if self._arrays is not None:
             return
         required = {
@@ -142,22 +142,22 @@ class SmilesGraphStore:
         self._index_by_smiles = {smiles: index for index, smiles in enumerate(smiles_values)}
 
     def __contains__(self, smiles: str) -> bool:
-        """返回精确 SMILES 是否存在.
+        """
+        返回精确 SMILES 是否存在.
 
         - smiles: str, PreparedLigand 顶层 smiles 原始字符串, 不做 canonicalize 或空白修剪.
         - return: bool, 字符串是否精确存在于图包 smiles 第一轴; 首次查询会触发一次完整加载.
-"""
-
+        """
         self.initialize()
         return smiles in self._index_by_smiles
 
     def get(self, smiles: str) -> SmilesGraph:
-        """按精确字符串返回一张图; 不存在时抛出 KeyError.
+        """
+        按精确字符串返回一张图; 不存在时抛出 KeyError.
 
         - smiles: PreparedLigand 顶层 smiles 的原始字符串, 不做 canonicalize 或空白修剪.
         - return: SmilesGraph; 数组顺序沿用离线 RDKit 解析后的重原子顺序.
-"""
-
+        """
         self.initialize()
         assert self._arrays is not None
         try:
@@ -187,10 +187,10 @@ class SmilesGraphStore:
 
     @property
     def smiles_count(self) -> int:
-        """返回图包内精确 SMILES 数量.
+        """
+        返回图包内精确 SMILES 数量.
 
         - return: int, 图包 smiles 第一轴长度; 首次读取会完成初始化.
-"""
-
+        """
         self.initialize()
         return len(self._index_by_smiles)

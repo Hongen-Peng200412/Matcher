@@ -17,25 +17,25 @@ from torch.nn import functional as F
 
 @dataclass(frozen=True)
 class LossWeights:
-    """保存四项非负损失系数.
+    """
+    保存四项非负损失系数.
 
     - foreground: 候选前景二分类 BCE 系数.
     - ligand_area: 配体区域辅助损失系数.
     - binding_area: 受体结合区域辅助损失系数.
     - identity: 真实前景且身份受支持候选的直接 SMILES 交叉熵系数.
-"""
-
+    """
     foreground: float
     ligand_area: float
     binding_area: float
     identity: float
 
     def __post_init__(self) -> None:
-        """核对四项损失系数.
+        """
+        核对四项损失系数.
 
         - return: 四项均为有限非负数时返回 None; 布尔值、非数值、NaN、Inf 或负值失败.
-"""
-
+        """
         if any(
             isinstance(value, bool)
             or not isinstance(value, (int, float))
@@ -47,7 +47,8 @@ class LossWeights:
 
 
 class LossOutput(TypedDict):
-    """保存一次物理批次的可反向损失和真实聚合分母.
+    """
+    保存一次物理批次的可反向损失和真实聚合分母.
 
     - total: 四项损失加权和.
     - foreground: 当前物理批次的前景二分类 BCE.
@@ -56,8 +57,7 @@ class LossOutput(TypedDict):
     - identity: 受支持真前景上的直接 SMILES 交叉熵; 无合格候选时为连图零.
     - foreground_denominator: 当前物理批次候选数 B.
     - identity_eligible_count: 实际进入身份交叉熵的候选数.
-"""
-
+    """
     total: torch.Tensor
     foreground: torch.Tensor
     ligand_area: torch.Tensor
@@ -68,15 +68,15 @@ class LossOutput(TypedDict):
 
 
 def balanced_voxel_loss(logits: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
-    """计算区域辅助损失.
+    """
+    计算区域辅助损失.
 
     - logits: 浮点 (B,Z,Y,X); 每个体素的未归一化二分类分数.
     - target: bool 或 0/1 数值 (B,Z,Y,X); 与 logits 逐体素对齐.
     - return: 标量张量; 每个候选的正负平衡 BCE 与软 Dice 之和, 再沿 B 取均值.
 
     没有正体素的候选只使用负类 BCE; Dice 的分子和分母加一, 保持空目标结果有限.
-"""
-
+    """
     if logits.shape != target.shape or logits.ndim != 4:
         raise ValueError("区域 logits 与 target 必须共享 (B,Z,Y,X) 形状。")
     # 浮点 (B,Z,Y,X), 与 logits dtype 一致的 0/1 区域目标.
@@ -110,7 +110,8 @@ def smiles_identity_cross_entropy(
     identity_target: torch.Tensor,
     foreground_target: torch.Tensor,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """在真实前景且身份受支持的候选上计算直接身份交叉熵.
+    """
+    在真实前景且身份受支持的候选上计算直接身份交叉熵.
 
     - identity_logits: 浮点张量, (B,I). 每个候选在所属 PDB 闭集身份轴上的未归一化分数.
     - identity_mask: bool 张量, (B,I). True 表示真实身份槽, False 表示批内补零槽.
@@ -121,8 +122,7 @@ def smiles_identity_cross_entropy(
 
     eligible = foreground_target & (identity_target >= 0). 损失不乘前景预测概率, 也不提供
     其它身份损失变体或历史兼容分支.
-"""
-
+    """
     if identity_mask.dtype != torch.bool or identity_mask.shape != identity_logits.shape:
         raise ValueError("identity_mask 必须是与 identity_logits 同形的 bool 张量。")
     if identity_target.dtype != torch.long or identity_target.shape != foreground_target.shape:
@@ -147,7 +147,8 @@ def compute_matcher_loss(
     batch: dict[str, torch.Tensor],
     weights: LossWeights,
 ) -> LossOutput:
-    """计算一个物理批次的四项正式训练损失.
+    """
+    计算一个物理批次的四项正式训练损失.
 
     - outputs.foreground_logit: 浮点 (B,); 前景二分类 logit.
     - outputs.identity_logits: 浮点 (B,I); PDB 内闭集 SMILES 分数.
@@ -156,8 +157,7 @@ def compute_matcher_loss(
     - batch.identity_target: int64 (B,); 受支持真前景指向目标身份, 其余为 -1.
     - weights: 四项损失系数; 区域头不存在时相应权重必须为零.
     - return: 可用于真实分母聚合的 LossOutput.
-"""
-
+    """
     foreground_logit = outputs["foreground_logit"]
     identity_logits = outputs["identity_logits"]
     if not isinstance(foreground_logit, torch.Tensor) or not isinstance(identity_logits, torch.Tensor):

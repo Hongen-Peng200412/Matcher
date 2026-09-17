@@ -11,7 +11,8 @@ from ..data.smiles_graph import SmilesGraph
 
 
 class CandidateMetadata(TypedDict):
-    """保存一个 Stage1 候选的稳定来源、排序分数和真值说明.
+    """
+    保存一个 Stage1 候选的稳定来源、排序分数和真值说明.
 
     - split: 清单划分名称.
     - pdb_id: 小写 PDB 标识.
@@ -25,8 +26,7 @@ class CandidateMetadata(TypedDict):
     - matched_occurrence_id: 最大覆盖 occurrence 编号; 背景为 None.
     - target_smiles: 目标 occurrence 的精确 PreparedLigand.smiles; 背景或缺失时为 None.
     - identity_supported: 目标 SMILES 是否同时具有合法图和 SMI-TED 语言向量.
-"""
-
+    """
     split: str
     pdb_id: str
     centered_box_index: int
@@ -42,7 +42,8 @@ class CandidateMetadata(TypedDict):
 
 
 class CandidateItem(TypedDict):
-    """保存一个候选的未补齐输入、监督和 PDB 内闭集 SMILES 身份轴.
+    """
+    保存一个候选的未补齐输入、监督和 PDB 内闭集 SMILES 身份轴.
 
     - metadata: CandidateMetadata. 保存当前候选来源、两种排序分数、几何真值和身份支持状态.
     - voxel_input: float16 数组, (C,48,48,48). strongest/trunk_only 的 C=106, density_blob_only 的 C=1, pocket_only 的 C=0.
@@ -67,8 +68,7 @@ class CandidateItem(TypedDict):
     - smiles_graphs[].edge_index: int64 数组, (2,E_i). 两行依次为有向边源原子和目标原子的图内下标.
     - smiles_graphs[].edge_features: float32 数组, (E_i,9). 与 edge_index 第二轴对齐, 前五列为键型独热编码, 后四列为 3、4、5、6 元环标志.
     - identity_target: int. 受支持真前景在 identity_smiles 中的槽下标. 背景或不受支持真前景为 -1.
-"""
-
+    """
     metadata: CandidateMetadata
     voxel_input: np.ndarray
     a_tokens: np.ndarray
@@ -90,7 +90,8 @@ class CandidateItem(TypedDict):
 
 
 class CandidateBatch(TypedDict):
-    """保存补齐后的物理批次和按需连接的 SMILES 图.
+    """
+    保存补齐后的物理批次和按需连接的 SMILES 图.
 
     - metadata: list[CandidateMetadata], 长度 B. 与全部批次张量第一轴逐候选对齐.
     - voxel_input: 浮点张量, (B,C,48,48,48). C 的四变体规则与 CandidateItem 相同.
@@ -126,8 +127,7 @@ class CandidateBatch(TypedDict):
     B 是物理批次大小. N_A、N_P、N_V、N_PP 是单样本真实 token 数. I 是单样本有效身份数.
     G、N、E 分别是连接后的图数、原子数和有向边数. trunk_only 的全部图张量为空, 但
     identity_mask 和语言身份轴仍保留. identity_target=-1 同时表示背景和不受支持真前景.
-"""
-
+    """
     metadata: list[CandidateMetadata]
     voxel_input: torch.Tensor
     foreground_target: torch.Tensor

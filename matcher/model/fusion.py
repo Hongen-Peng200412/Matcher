@@ -36,7 +36,8 @@ def gather_voxel_features(
     index_zyx: torch.Tensor,
     mask: torch.Tensor,
 ) -> torch.Tensor:
-    """按局部 Z/Y/X 下标从五维体素特征读取 V 或 PP 位置.
+    """
+    按局部 Z/Y/X 下标从五维体素特征读取 V 或 PP 位置.
 
     形状符号:
     - B: 当前物理批次的候选数.
@@ -55,8 +56,7 @@ def gather_voxel_features(
     - sampled: 浮点张量, (B,N,C_v); 与 index_zyx 的 B/N 轴逐项对齐, mask=False 的位置严格为零.
 
     只对 mask=True 的下标执行范围门禁. 补零位置即使保存越界值也先逐轴夹紧到可索引范围, 再由 mask 清零; 正式 CandidateBatch 的补零下标为零, 但本函数不依赖该具体值.
-"""
-
+    """
     if volume.ndim != 5 or index_zyx.ndim != 3 or index_zyx.shape[-1] != 3:
         raise ValueError("volume 必须为 (B,C_v,Z,Y,X)，index_zyx 必须为 (B,N,3)。")
     if index_zyx.dtype != torch.long or mask.dtype != torch.bool:
@@ -90,7 +90,8 @@ def gather_voxel_features(
 
 
 def _masked_mean_max(tokens: torch.Tensor, mask: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-    """沿一种模态的有效 token 轴计算每个候选的均值和最大值.
+    """
+    沿一种模态的有效 token 轴计算每个候选的均值和最大值.
 
     输入参数:
     - tokens: 浮点张量, (B,N,D_m); 一种模态的投影 token.
@@ -101,8 +102,7 @@ def _masked_mean_max(tokens: torch.Tensor, mask: torch.Tensor) -> tuple[torch.Te
     - maximum: 浮点张量, (B,D_m); 每个候选有效 token 的逐通道最大值, 没有有效 token 时为零.
 
     N=0 与 N>0 但某个候选全为 False 都有显式零结果, 不向聚合器传播 NaN 或 dtype 最小有限值.
-"""
-
+    """
     if tokens.ndim != 3 or tokens.shape[:2] != mask.shape:
         raise ValueError("tokens/mask 形状不一致。")
     if mask.dtype != torch.bool:
@@ -126,7 +126,8 @@ def _masked_mean_max(tokens: torch.Tensor, mask: torch.Tensor) -> tuple[torch.Te
 
 
 def normalize_candidate_manual_features(features: torch.Tensor) -> torch.Tensor:
-    """压缩四种模态的 token 数, 并保留两个 Stage1 概率统计.
+    """
+    压缩四种模态的 token 数, 并保留两个 Stage1 概率统计.
 
     输入参数:
     - features: 浮点张量, (B,12); 按 A/P/V/PP 顺序排列四组三元组, 每组依次为 token 数、Stage1 概率均值和 Stage1 概率最大值.
@@ -135,8 +136,7 @@ def normalize_candidate_manual_features(features: torch.Tensor) -> torch.Tensor:
     - normalized: 浮点张量, (B,12); 每组三元组的 token 数替换为 log1p(count), 两个概率统计逐值保持.
 
     本函数只检查全部输入有限且非负, 不检查概率两列是否不超过 1; 正式 CandidateDataset 保证其来源是 [0,1] 概率统计.
-"""
-
+    """
     if features.ndim != 2 or features.shape[1] != CANDIDATE_MANUAL_FEATURE_DIM:
         raise ValueError(
             "candidate_manual_features 必须为"
@@ -155,7 +155,8 @@ def normalize_candidate_manual_features(features: torch.Tensor) -> torch.Tensor:
 
 
 def normalize_candidate_sampling_features(features: torch.Tensor) -> torch.Tensor:
-    """把候选裁剪诊断转换成固定尺度的四维无量纲输入.
+    """
+    把候选裁剪诊断转换成固定尺度的四维无量纲输入.
 
     输入参数:
     - features: 浮点张量, (B,4); 四列依次为 crop_boundary_limited、center_offset_l2_voxel、center_offset_linf_voxel、v_retained_fraction.
@@ -168,8 +169,7 @@ def normalize_candidate_sampling_features(features: torch.Tensor) -> torch.Tenso
     - normalized: 浮点张量, (B,4); 第一列与第四列保持原值, L2 除以 24×sqrt(3), L∞ 除以 24.
 
     常数 24 是 LOCAL_CONTEXT_HALF_EXTENT_VOXELS, 即固定 48 立方体每轴的半边长; 本函数不从批次空间形状动态推导该值.
-"""
-
+    """
     if features.ndim != 2 or features.shape[1] != CANDIDATE_SAMPLING_FEATURE_DIM:
         raise ValueError(
             "candidate_sampling_features 必须为"
@@ -199,7 +199,8 @@ def normalize_candidate_sampling_features(features: torch.Tensor) -> torch.Tenso
 
 
 class TokenProjector(nn.Module):
-    """独立归一化并投影一种原始 token 模态.
+    """
+    独立归一化并投影一种原始 token 模态.
 
     构造参数:
     - input_dim: 整数 F; 该模态原始特征宽度, 本类不单独检查正值.
@@ -212,10 +213,10 @@ class TokenProjector(nn.Module):
 
     前向输出:
     - projected: 浮点张量, (B,N,D_m); dtype 由线性层和自动混合精度上下文决定, 补零位置严格为零.
-"""
-
+    """
     def __init__(self, input_dim: int, model_dim: int, dropout: float) -> None:
-        """建立 LayerNorm、线性投影、GELU、Dropout 与输出 LayerNorm.
+        """
+        建立 LayerNorm、线性投影、GELU、Dropout 与输出 LayerNorm.
 
         输入参数:
         - input_dim: 整数 F; 首个 LayerNorm 与线性层读取的原始宽度.
@@ -224,8 +225,7 @@ class TokenProjector(nn.Module):
 
         实例状态:
         - self.projection: Sequential; 逐 token 作用, 不改变 B/N 轴.
-"""
-
+        """
         super().__init__()
         self.projection = nn.Sequential(
             nn.LayerNorm(input_dim),
@@ -236,7 +236,8 @@ class TokenProjector(nn.Module):
         )
 
     def forward(self, tokens: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
-        """投影 token, 并在末端重新清零补零位置.
+        """
+        投影 token, 并在末端重新清零补零位置.
 
         输入参数:
         - tokens: 浮点张量, (B,N,F); 最后一维必须与构造时 input_dim 一致, 该关系由 LayerNorm 检查.
@@ -244,8 +245,7 @@ class TokenProjector(nn.Module):
 
         返回值:
         - projected: 浮点张量, (B,N,D_m); 与 mask 的 B/N 轴逐项对齐.
-"""
-
+        """
         if tokens.ndim != 3 or mask.shape != tokens.shape[:2]:
             raise ValueError("tokens 必须为 (B,N,F)，mask 必须为对应 (B,N)。")
         if mask.dtype != torch.bool:
@@ -256,7 +256,8 @@ class TokenProjector(nn.Module):
 
 
 class CandidateCrossAttention(nn.Module):
-    """以候选摘要查询一种模态.
+    """
+    以候选摘要查询一种模态.
 
     构造参数:
     - model_dim: 正整数 D_m; 候选查询、token 和输出的共同宽度.
@@ -273,8 +274,7 @@ class CandidateCrossAttention(nn.Module):
     - increment: 浮点张量, (B,D_m); 每个候选从该模态读取的增量, 没有有效 token 的候选严格为零.
 
     训练模式下 Dropout 作用于已归一化的注意力权重, 因此丢弃后不重新归一化. zero_output 只决定初始化状态, 不在后续前向中持续强制输出为零.
-"""
-
+    """
     def __init__(
         self,
         model_dim: int,
@@ -282,7 +282,8 @@ class CandidateCrossAttention(nn.Module):
         dropout: float,
         zero_output: bool,
     ) -> None:
-        """建立单查询多头注意力的查询、键、值和输出投影.
+        """
+        建立单查询多头注意力的查询、键、值和输出投影.
 
         输入参数:
         - model_dim: 正整数 D_m; 必须能被 head_count 整除.
@@ -299,8 +300,7 @@ class CandidateCrossAttention(nn.Module):
         - self.value: 无偏置 Linear; 逐 token 产生 K 个值.
         - self.output: Linear; 把 K 个头连接回 D_m, 可能按 zero_output 零初始化.
         - self.dropout: Dropout; 只作用于归一化权重.
-"""
-
+        """
         super().__init__()
         if head_count <= 0 or model_dim <= 0 or model_dim % head_count != 0:
             raise ValueError("model_dim 必须能被交叉注意力头数整除。")
@@ -322,7 +322,8 @@ class CandidateCrossAttention(nn.Module):
         tokens: torch.Tensor,
         mask: torch.Tensor,
     ) -> torch.Tensor:
-        """计算每个候选、每个头对一种模态 token 的注意力.
+        """
+        计算每个候选、每个头对一种模态 token 的注意力.
 
         输入参数:
         - candidate_query: 浮点张量, (B,D_m); 投影后改排为 (B,K,1,D_h), D_h=D_m/K.
@@ -333,8 +334,7 @@ class CandidateCrossAttention(nn.Module):
         - increment: 浮点张量, (B,D_m); 沿 N 对值求加权和、连接 K 个头并经过输出投影, 没有有效 token 的候选乘零.
 
         query 与 key 只沿 D_h 求点积, 保留 B/K/单查询/N 轴; softmax 只沿 N 归一化. N=0 时直接返回与 candidate_query 同形的零张量.
-"""
-
+        """
         if candidate_query.ndim != 2 or candidate_query.shape[1] != self.model_dim:
             raise ValueError("candidate_query 必须为 (B,model_dim)。")
         if tokens.ndim != 3 or tokens.shape[:2] != mask.shape:
@@ -381,7 +381,8 @@ class CandidateCrossAttention(nn.Module):
 
 
 class MeanMaxAggregator(nn.Module):
-    """对四模态取掩码均值/最大值, 并按配置拼接模态统计与采样统计.
+    """
+    对四模态取掩码均值/最大值, 并按配置拼接模态统计与采样统计.
 
     构造参数:
     - model_dim: 整数 D_m; 候选摘要、四种模态 token 与输出的共同宽度, 本类不单独检查正值.
@@ -403,8 +404,7 @@ class MeanMaxAggregator(nn.Module):
     - candidate_embedding: 浮点张量, (B,D_m); 候选摘要、可选采样统计和 A/P/V/PP 各自有效 token 均值/最大值及可选三项手工统计的融合表示.
 
     某种模态没有有效 token 时, 该模态的均值和最大值都是零; 对应手工统计若启用, 仍按输入值拼接.
-"""
-
+    """
     def __init__(
         self,
         model_dim: int,
@@ -412,7 +412,8 @@ class MeanMaxAggregator(nn.Module):
         include_manual: bool,
         include_sampling: bool,
     ) -> None:
-        """建立固定输入宽度的 mean/max 融合 MLP.
+        """
+        建立固定输入宽度的 mean/max 融合 MLP.
 
         输入参数:
         - model_dim: 整数 D_m; 基础输入含一个候选摘要和四种模态各两个 D_m 摘要, 共 9D_m.
@@ -424,8 +425,7 @@ class MeanMaxAggregator(nn.Module):
         - self.include_manual: 布尔语义值; 前向决定 manual_features 的存在性与三元组拼接.
         - self.include_sampling: 布尔语义值; 前向决定 sampling_features 的存在性与拼接.
         - self.fusion: Sequential; 把固定融合宽度投影为 D_m, 并在输出使用 LayerNorm.
-"""
-
+        """
         super().__init__()
         self.include_manual = include_manual
         self.include_sampling = include_sampling
@@ -451,7 +451,8 @@ class MeanMaxAggregator(nn.Module):
         manual_features: torch.Tensor | None,
         sampling_features: torch.Tensor | None,
     ) -> torch.Tensor:
-        """按固定字段顺序连接候选摘要、统计和四模态归约结果.
+        """
+        按固定字段顺序连接候选摘要、统计和四模态归约结果.
 
         输入参数:
         - candidate_summary: 浮点张量, (B,D_m); 拼接向量第一段.
@@ -463,8 +464,7 @@ class MeanMaxAggregator(nn.Module):
         - candidate_embedding: 浮点张量, (B,D_m); self.fusion 的输出.
 
         拼接顺序固定为 candidate_summary、可选 sampling、A mean、A max、可选 A 三项手工统计、P 对应三段、V 对应三段、PP 对应三段. 额外 modalities 键被忽略, 缺少任何固定键时由映射索引失败.
-"""
-
+        """
         # list[Tensor], 待沿最后一维拼接的 (B,F_part) 张量; 首项固定为候选体素摘要.
         summaries = [candidate_summary]
         if self.include_sampling:
@@ -500,7 +500,8 @@ class MeanMaxAggregator(nn.Module):
 
 
 class CandidateConditionedAggregator(nn.Module):
-    """用候选摘要分别查询四模态, 并按配置拼接模态统计与采样统计.
+    """
+    用候选摘要分别查询四模态, 并按配置拼接模态统计与采样统计.
 
     构造参数:
     - model_dim: 整数 D_m; 候选查询、四模态 token 和输出的共同宽度.
@@ -523,8 +524,7 @@ class CandidateConditionedAggregator(nn.Module):
     - candidate_embedding: 浮点张量, (B,D_m); 候选摘要、四个模态注意力增量和配置启用统计的融合表示.
 
     每种模态没有有效 token 时对应注意力增量为零. PP 分支输出投影固定零初始化, 所以初始 PP 增量为零; A/P/V 分支沿用常规初始化.
-"""
-
+    """
     def __init__(
         self,
         model_dim: int,
@@ -533,7 +533,8 @@ class CandidateConditionedAggregator(nn.Module):
         include_manual: bool,
         include_sampling: bool,
     ) -> None:
-        """建立四个候选查询分支和最终融合 MLP.
+        """
+        建立四个候选查询分支和最终融合 MLP.
 
         输入参数:
         - model_dim: 整数 D_m; 候选查询、模态 token、分支增量和最终输出宽度.
@@ -547,8 +548,7 @@ class CandidateConditionedAggregator(nn.Module):
         - self.include_sampling: 布尔语义值; 控制 sampling_features 存在性和拼接.
         - self.branches: ModuleDict; a、p、v 使用常规输出投影初始化, pp 的输出投影权重与偏置初始化为零.
         - self.fusion: Sequential; 把 5D_m 加可选统计的拼接向量映射到 D_m. 本聚合器只使用 token 内容产生注意力分数, 不读取额外的候选实体偏置.
-"""
-
+        """
         super().__init__()
         self.include_manual = include_manual
         self.include_sampling = include_sampling
@@ -585,7 +585,8 @@ class CandidateConditionedAggregator(nn.Module):
         manual_features: torch.Tensor | None,
         sampling_features: torch.Tensor | None,
     ) -> torch.Tensor:
-        """以候选摘要查询四种模态, 再按固定顺序连接增量与统计.
+        """
+        以候选摘要查询四种模态, 再按固定顺序连接增量与统计.
 
         输入参数:
         - candidate_summary: 浮点张量, (B,D_m); 四个 CandidateCrossAttention 共用的查询, 也是拼接向量第一段.
@@ -597,8 +598,7 @@ class CandidateConditionedAggregator(nn.Module):
         - candidate_embedding: 浮点张量, (B,D_m); self.fusion 的输出.
 
         拼接顺序固定为 candidate_summary、可选 sampling、A 注意力增量、可选 A 三项手工统计、P 对应两段、V 对应两段、PP 对应两段. modalities 的额外键被忽略, 缺少固定键时由映射索引失败.
-"""
-
+        """
         # None 或浮点 (B,4,3); 第二轴按 A/P/V/PP, 第三轴为计数、概率均值、概率最大值.
         grouped_manual = None
         if self.include_manual:
@@ -633,7 +633,8 @@ class CandidateConditionedAggregator(nn.Module):
 
 
 class MeanMaxCandidateConditionedResidualAggregator(nn.Module):
-    """把两种完整候选摘要拼接为零输出残差, 并保留 mean/max 主路径.
+    """
+    把两种完整候选摘要拼接为零输出残差, 并保留 mean/max 主路径.
 
     - model_dim: 候选摘要宽度 D_m.
     - head_count: 候选条件注意力的头数 K.
@@ -654,8 +655,7 @@ class MeanMaxCandidateConditionedResidualAggregator(nn.Module):
     - 返回值: 浮点 (B,D_m) 候选表示. 残差末层为零时逐值等于 mean/max 输出.
 
     mean/max 与条件注意力分支分别读取同一手动统计与采样统计. 两个 D_m 维输出只在残差入口拼接一次, 不会第三次追加原始统计.
-"""
-
+    """
     def __init__(
         self,
         model_dim: int,
@@ -664,7 +664,8 @@ class MeanMaxCandidateConditionedResidualAggregator(nn.Module):
         include_manual: bool,
         include_sampling: bool,
     ) -> None:
-        """建立两个完整摘要分支和零输出残差分支.
+        """
+        建立两个完整摘要分支和零输出残差分支.
 
         - model_dim: 正整数 D_m; 候选摘要、两个分支输出和最终残差的共同宽度.
         - head_count: 正整数 K; 条件注意力分支的注意力头数, 必须整除 D_m.
@@ -675,8 +676,7 @@ class MeanMaxCandidateConditionedResidualAggregator(nn.Module):
         - self.conditioned: CandidateConditionedAggregator; 产生浮点 (B,D_m) 条件注意力摘要.
         - self.residual: Sequential; 把固定顺序的浮点 (B,2D_m) 拼接摘要映射成浮点 (B,D_m) 残差, 末层权重和偏置均初始化为零.
         - 返回值: None; 子模块写入当前实例. 条件注意力与残差分支在域分离的 CPU 随机数上下文中初始化, 退出上下文后恢复外层 CPU 随机状态.
-"""
-
+        """
         super().__init__()
         self.mean_max = MeanMaxAggregator(
             model_dim,
@@ -717,7 +717,8 @@ class MeanMaxCandidateConditionedResidualAggregator(nn.Module):
         manual_features: torch.Tensor | None,
         sampling_features: torch.Tensor | None,
     ) -> torch.Tensor:
-        """计算两个完整摘要, 并把零初始化残差加到 mean/max 表示.
+        """
+        计算两个完整摘要, 并把零初始化残差加到 mean/max 表示.
 
         - candidate_summary: 浮点 (B,D_m) U-Net 候选查询.
         - modalities: 含 a、p、v、pp 四个键; 每个值是投影 token 与有效性掩码组成的二元组.
@@ -728,8 +729,7 @@ class MeanMaxCandidateConditionedResidualAggregator(nn.Module):
         - manual_features: 可选浮点 (B,12) 手动统计.
         - sampling_features: 可选浮点 (B,4) 采样统计.
         - 返回值: 浮点 (B,D_m) mean/max 主表示与学习残差之和.
-"""
-
+        """
         # 浮点 (B,D_m); 保留为最终输出主路径的 mean/max 候选摘要.
         mean_max_summary = self.mean_max(
             candidate_summary,

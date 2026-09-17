@@ -34,15 +34,15 @@ DENSITY_CHANNEL_NAMES = tuple(
 
 
 def build_experimental_density_channel(experimental: np.ndarray) -> np.ndarray:
-    """构造 density_blob_only 唯一允许读取的实验密度通道.
+    """
+    构造 density_blob_only 唯一允许读取的实验密度通道.
 
     - experimental: 数组, 形状为 (Z,Y,X); Stage1 supplied crop 内的实验密度.
     - return: float32 数组, 形状为 (1,Z,Y,X); 按现有 exp_clipnorm_nopost 的 0.1%/99.9% 分位截断与全网格 z-score 规则归一化.
 
     本函数不读取模拟密度或受体 hardmask, 因而不会为单密度变体触发被禁用输入的
     文件访问和派生计算.
-"""
-
+    """
     grid = _validated_grid(experimental, "experimental")
     return _clip_normalize(grid)[None].astype(np.float32, copy=False)
 
@@ -86,8 +86,7 @@ def build_density_channels(
 
     返回值:
     - density_channels: float32 数组, (56, Z, Y, X); 第一维名称和顺序由 DENSITY_CHANNEL_NAMES 固定.
-"""
-
+    """
     # float32, (Z, Y, X), 已验证为非空且全部有限的实验密度.
     exp = _validated_grid(experimental, "experimental")
     # float32, (Z, Y, X), 已验证为非空且全部有限的模拟密度.
@@ -131,8 +130,7 @@ def build_density_channels(
 
         返回值:
         - normalized_grid: 数组, (Z, Y, X); 与输入密度逐体素对齐.
-"""
-
+        """
         key = (operation, normalization)
         if key not in normalized:
             value = operations[operation]
@@ -150,8 +148,7 @@ def build_density_channels(
 
         返回值:
         - gaussian_grid: 数组, (Z, Y, X); 与输入密度逐体素对齐.
-"""
-
+        """
         key = (operation, normalization, sigma)
         if key not in gaussian:
             gaussian[key] = ndimage.gaussian_filter(
@@ -205,8 +202,7 @@ def _validated_grid(value: np.ndarray, field_name: str) -> np.ndarray:
 
     返回值:
     - grid: float32 数组, (Z, Y, X); 可能与输入共享内存, 也可能因 dtype 转换产生副本.
-"""
-
+    """
     # float32, (Z, Y, X), 待验证密度网格; 不要求固定为当前正式调用的 80³.
     grid = np.asarray(value, dtype=np.float32)
     if grid.ndim != 3 or min(grid.shape) <= 0:
@@ -239,8 +235,7 @@ def _fit_scale(
     - offset: float; 对应截距 exp_mean - scale * sim_mean.
 
     有效拟合体素少于 10、模拟密度方差过小或回归分母过小时返回 scale=1、offset=0.
-"""
-
+    """
     # float, 总体素数中受体优先集合需要达到的最小比例 0.3%.
     percentile = 0.003
     # int, 受体优先集合的最小体素数; 取总网格 0.3% 向下取整与 10 的较大值.
@@ -286,8 +281,7 @@ def _clip_normalize(value: np.ndarray) -> np.ndarray:
 
     返回值:
     - normalized: 数组, (Z, Y, X); 低于和高于分位阈值的元素先截断, 再减去全网格均值并除以全网格标准差加 1e-8.
-"""
-
+    """
     lower = float(np.percentile(value, 0.1))
     upper = float(np.percentile(value, 99.9))
     # (Z, Y, X), 逐元素限制到当前网格 0.1% 和 99.9% 分位之间的密度.
@@ -306,8 +300,7 @@ def _smooth_strength(mask: np.ndarray, sigma: float, radius: float) -> np.ndarra
 
     返回值:
     - strength: float32 数组, (Z, Y, X); mask 含受体时, 占据体素为 1、radius 内按距离衰减、radius 外为 0, 范围 [0, 1]; mask 全为 False 时保留 SciPy 对无内部零点距离变换的既有结果.
-"""
-
+    """
     # float64, (Z, Y, X), 对 ~mask 执行的欧氏距离变换; mask 含 True 时表示到最近受体占据体素的距离, 采样间隔为 1 voxel.
     distance = ndimage.distance_transform_edt(~mask)
     # float64, (Z, Y, X), 由距离计算的 Gaussian 强度, 截断前范围 (0, 1].

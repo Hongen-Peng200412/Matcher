@@ -72,7 +72,8 @@ LOCAL_CONTEXT_HALF_EXTENT_VOXELS = LOCAL_BOX_SIZE / 2.0
 
 @dataclass(frozen=True)
 class SourceRoots:
-    """保存新 Matcher 扫描清单时读取的两个显式根目录.
+    """
+    保存新 Matcher 扫描清单时读取的两个显式根目录.
 
     构造参数:
     - data_root: AdaLigand Ori_Data 根目录, 如 `/storage/penghongen/AdaLigand/Ori_Data`.
@@ -81,25 +82,24 @@ class SourceRoots:
     派生路径:
     - prepared_root: PreparedLigand 顶层 SMILES 清单的共同父目录.
     - language_root: SMI-TED 289M occurrence 向量的共同父目录.
-"""
-
+    """
     data_root: Path
     stage1_root: Path
 
     @property
     def prepared_root(self) -> Path:
-        """返回按 PDB 保存 PreparedLigand 顶层字段的目录.
+        """
+        返回按 PDB 保存 PreparedLigand 顶层字段的目录.
 
         - return: data_root 下固定的 ligand_language_models/prepared 路径.
-"""
-
+        """
         return self.data_root / "stage1_preparation_box_pool_2/ligand_language_models/prepared"
 
     @property
     def language_root(self) -> Path:
-        """返回按 PDB 和 occurrence 保存 SMI-TED 289M 向量的目录.
+        """
+        返回按 PDB 和 occurrence 保存 SMI-TED 289M 向量的目录.
 
         - return: data_root 下固定的 ligand_language_models/smi_ted_289m 路径.
-"""
-
+        """
         return self.data_root / "stage1_preparation_box_pool_2/ligand_language_models/smi_ted_289m"

@@ -43,8 +43,7 @@ def exclusive_file_lock(path: Path) -> Iterator[None]:
     - body_error: 正文异常优先于 _unlock 异常; 若异常对象支持 add_note, 则把解锁异常文本附加为说明.
     - unlock_error: 正文没有异常时, _unlock 异常向调用者传播.
     - close_error: handle.close 位于最外层 finally; 关闭失败可能遮蔽加锁、正文或解锁阶段正在传播的异常.
-"""
-
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     # TextIO, 以追加读写模式打开的锁文件句柄; 文件不会在上下文结束时删除.
     handle = path.open("a+", encoding="utf-8")
@@ -82,8 +81,7 @@ def _lock(handle: TextIO) -> None:
 
     异常:
     - platform_error: 导入平台模块、句柄定位、读写、flush 或系统锁失败时, 底层异常直接传播.
-"""
-
+    """
     if os.name == "nt":
         import msvcrt
 
@@ -116,8 +114,7 @@ def _unlock(handle: TextIO) -> None:
 
     异常:
     - platform_error: 导入平台模块、句柄定位或系统解锁失败时, 底层异常直接传播; 调用者决定其与正文异常的优先级.
-"""
-
+    """
     if os.name == "nt":
         import msvcrt
 

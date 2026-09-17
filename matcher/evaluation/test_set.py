@@ -25,14 +25,14 @@ EXPECTED_PDB_COUNT = 179
 def _candidate_hit_mask(
     intersections: np.ndarray, pred_sizes: np.ndarray, gt_sizes: np.ndarray
 ) -> np.ndarray:
-    """判断每个候选是否命中任一真实 occurrence.
+    """
+    判断每个候选是否命中任一真实 occurrence.
 
     - intersections: 整数 (N_candidate,N_occurrence); 候选与真实 occurrence 的交集体素数.
     - pred_sizes: 整数 (N_candidate,); 每个候选的体素数.
     - gt_sizes: 整数 (N_occurrence,); 每个真实 occurrence 的体素数.
     - return: bool (N_candidate,); 至少一个 occurrence 的候选覆盖率与 occurrence 覆盖率 同时不低于 0.30 时为 True.
-"""
-
+    """
     overlap = np.asarray(intersections, dtype=np.int64)
     predicted = np.asarray(pred_sizes, dtype=np.int64)
     truth = np.asarray(gt_sizes, dtype=np.int64)
@@ -51,15 +51,15 @@ def _ranked_hit_curve(
     selected: np.ndarray,
     candidate_hit: np.ndarray,
 ) -> list[bool]:
-    """按冻结的 Stage1 顺序返回一个 PDB 的 top-k 命中状态.
+    """
+    按冻结的 Stage1 顺序返回一个 PDB 的 top-k 命中状态.
 
     - score: 浮点 (N_candidate,); 当前排序采用的 Gaussian 分数或来源概率均值.
     - source_blob_index: 整数 (N_candidate,); 同分候选的升序并列键.
     - selected: bool (N_candidate,); 只有 True 候选进入排名, False 候选不删除后补位.
     - candidate_hit: bool (N_candidate,); 由双向 0.30 覆盖门槛得到的 Stage1 命中标志.
     - return: 长度 20 的布尔列表; 第 k-1 项表示前 k 个已选候选中是否至少一次命中.
-"""
-
+    """
     score = np.asarray(score, dtype=np.float64)
     blob = np.asarray(source_blob_index, dtype=np.int64)
     selected = np.asarray(selected, dtype=np.bool_)
@@ -73,12 +73,12 @@ def _ranked_hit_curve(
 
 
 def _find_probability_mean(pdb_root: Path) -> dict[int, float]:
-    """读取 Find_1 F2 blob 的原生来源概率均值.
+    """
+    读取 Find_1 F2 blob 的原生来源概率均值.
 
     - pdb_root: 一个 PDB 的 Find_1 产物目录.
     - return: source_blob_index 到 source_probability_mean 的一一映射; 重复编号或字段轴 不一致时立即失败.
-"""
-
+    """
     path = pdb_root / "blobs/F2_blobs.npz"
     with np.load(path, allow_pickle=False) as archive:
         blob = np.asarray(archive["blob_index"], dtype=np.int64)
@@ -93,14 +93,14 @@ def _curve_record(
     source: Path,
     pdb_hits: dict[str, list[bool]],
 ) -> dict[str, Any]:
-    """把逐 PDB 命中状态汇总为固定 179 分母的曲线记录.
+    """
+    把逐 PDB 命中状态汇总为固定 179 分母的曲线记录.
 
     - name: 图例使用的完整曲线名称.
     - source: 生成该曲线的只读目录或 checkpoint 路径.
     - pdb_hits: PDB 标识到长度 20 布尔命中序列的映射; 必须恰有 179 个键.
     - return: 同时保存命中数、命中比例、PDB 列表和逐 PDB 命中的可复用记录.
-"""
-
+    """
     pdb_ids = sorted(pdb_hits)
     if len(pdb_ids) != EXPECTED_PDB_COUNT:
         raise ValueError(f"{name} 必须覆盖 {EXPECTED_PDB_COUNT} 个 PDB，实际为 {len(pdb_ids)}。")
@@ -121,14 +121,14 @@ def _curve_record(
 
 
 def build_find_stage1_curves(stage1_test_root: Path, label: str) -> dict[str, dict[str, Any]]:
-    """从一套 Find_1 held_out_test_0 重算两条 Stage1-only 曲线.
+    """
+    从一套 Find_1 held_out_test_0 重算两条 Stage1-only 曲线.
 
     - stage1_test_root: 含 179 个 PDB 子目录的 held_out_test_0 根目录.
     - label: 区分真实受体或 CryoAtom2 受体的图例前缀.
     - return.gaussian: 按 candidate_score 降序得到的固定分母曲线.
     - return.source_probability_mean: 按 F2 blob 原生来源概率均值降序得到的同候选集合曲线.
-"""
-
+    """
     root = Path(stage1_test_root)
     gaussian_hits: dict[str, list[bool]] = {}
     probability_hits: dict[str, list[bool]] = {}
@@ -164,15 +164,15 @@ def build_find_stage1_curves(stage1_test_root: Path, label: str) -> dict[str, di
 
 
 def build_emap2lig_stage1_curve(evaluation_root: Path) -> dict[str, Any]:
-    """按 Emap2lig 原生 ligand probability 均值重算单条曲线.
+    """
+    按 Emap2lig 原生 ligand probability 均值重算单条曲线.
 
     - evaluation_root: 正式 Emap2lig evaluation 目录; 逐 PDB 文件位于 per_pdb.
     - return: 固定 179 分母的 Stage1-only 曲线; top-3/4/5 必须严格复现 87/89/90.
 
     Emap2lig 不读取受体模型, 因此本函数只返回一条 density-only、receptor-independent
     曲线, 不复制为真实受体与 CryoAtom2 两条曲线.
-"""
-
+    """
     root = Path(evaluation_root)
     pdb_hits: dict[str, list[bool]] = {}
     for path in sorted((root / "per_pdb").glob("*.npz")):
@@ -200,7 +200,8 @@ def build_stage1_only_preview_metadata(
     emap2lig_evaluation_root: Path,
     output_path: Path,
 ) -> Path:
-    """冻结三套来源的 Stage1-only 事实.
+    """
+    冻结三套来源的 Stage1-only 事实.
 
     - real_test_root: Find_1 真实受体 held_out_test_0 根目录.
     - cryoatom2_test_root: Find_1 CryoAtom2 受体 held_out_test_0 根目录.
@@ -226,8 +227,7 @@ def build_stage1_only_preview_metadata(
 
     产物状态固定为 stage1_only_preview, 不创建 Matcher 概率、预测 SMILES 或 Stage1+Matcher
     曲线. 两种排序共享同一条 Emap2lig 曲线对象.
-"""
-
+    """
     real = build_find_stage1_curves(real_test_root, "Find_1 real-receptor")
     cryo = build_find_stage1_curves(cryoatom2_test_root, "Find_1 CryoAtom2-receptor")
     emap = build_emap2lig_stage1_curve(emap2lig_evaluation_root)
@@ -282,7 +282,8 @@ def _run_matcher_condition(
     pp_top_k: int,
     cache_gib_per_worker: float,
 ) -> tuple[dict[str, Any], dict[str, list[dict[str, Any]]], list[str]]:
-    """对一个受体条件执行同一冻结 BEST, 并保留候选预测.
+    """
+    对一个受体条件执行同一冻结 BEST, 并保留候选预测.
 
     - checkpoint_path: 阶段 E 产生的真实 BEST checkpoint; 必须含模型配置和 validation 拟合的前景阈值.
     - manifest_path / split: 当前受体条件的冻结测试清单及划分键.
@@ -294,8 +295,7 @@ def _run_matcher_condition(
 
     manifest 中存在但没有 centered 候选的 PDB 保留在指标 PDB 计数中, 候选记录映射不为其
     虚构空记录.
-"""
-
+    """
     import torch
 
     from ..data.manifest import load_manifest
@@ -378,14 +378,14 @@ def _metrics_from_rows(
     threshold: float,
     pdb_ids: set[str] | None = None,
 ) -> dict[str, Any]:
-    """从一次 test_0 冻结推理重算全量或指定 PDB 子集指标.
+    """
+    从一次 test_0 冻结推理重算全量或指定 PDB 子集指标.
 
     - rows_by_pdb: 一次冻结前向生成的候选预测; 每个记录同时保存目标和预测.
     - threshold: BEST checkpoint 中保存的 validation 前景阈值; 本函数不重新拟合.
     - pdb_ids: 可选 PDB 集合; None 使用所有有候选的 PDB, 显式集合允许包含零候选 PDB.
     - return: 前景、SMILES、selection 及不受支持身份明细; pdb_count 使用显式集合分母.
-"""
-
+    """
     from .metrics import ValidationAccumulator
 
     selected_pdb_ids = set(rows_by_pdb) if pdb_ids is None else pdb_ids
@@ -418,12 +418,12 @@ def _metrics_from_rows(
 
 
 def _read_pdb_subset(path: Path) -> set[str]:
-    """读取官方 test_1 补充子集列表.
+    """
+    读取官方 test_1 补充子集列表.
 
     - path: UTF-8 文本路径, 每个非空行保存一个 PDB 标识.
     - return: 统一小写后的 149 个唯一 PDB 标识.
-"""
-
+    """
     pdb_ids = {
         line.strip().lower()
         for line in Path(path).read_text(encoding="utf-8").splitlines()
@@ -435,13 +435,13 @@ def _read_pdb_subset(path: Path) -> set[str]:
 
 
 def _preview_pdb_axis(curve: dict[str, Any], label: str) -> list[str]:
-    """读取并验证一条 Stage1-only 预览曲线的固定 PDB 轴.
+    """
+    读取并验证一条 Stage1-only 预览曲线的固定 PDB 轴.
 
     - curve: stage1_only_preview 中的一条曲线记录.
     - label: 错误消息使用的受体条件与排序名称.
     - return: 179 个小写唯一 PDB 标识, 顺序与曲线命中分母一致.
-"""
-
+    """
     if not isinstance(curve, dict):
         raise ValueError(f"{label} 曲线必须是对象映射。")
     values = curve.get("pdb_ids")
@@ -460,7 +460,8 @@ def _matcher_curve(
     sorting: str,
     checkpoint_path: Path,
 ) -> dict[str, Any]:
-    """按冻结 Stage1 顺序字段汇总 Stage1+Matcher top-k 曲线.
+    """
+    按冻结 Stage1 顺序字段汇总 Stage1+Matcher top-k 曲线.
 
     - name: 图例使用的完整曲线名称.
     - rows_by_pdb: 同一次 Matcher 冻结推理的候选预测.
@@ -471,8 +472,7 @@ def _matcher_curve(
 
     不受支持身份、背景候选或预测 SMILES 不等于确定目标 SMILES 的候选均不能成为命中; 它们
     保留原排名, 不删除后让后一名补位.
-"""
-
+    """
     expected_pdb_ids = set(pdb_ids)
     extra = sorted(set(rows_by_pdb) - expected_pdb_ids)
     if extra:
@@ -508,7 +508,8 @@ def build_final_test_artifact(
     pp_top_k: int,
     cache_gib_per_worker: float,
 ) -> Path:
-    """阶段 E 使用同一 BEST 生成正式测试产物.
+    """
+    阶段 E 使用同一 BEST 生成正式测试产物.
 
     - checkpoint_path: 四项训练完成后选定的真实 BEST checkpoint.
     - real_manifest_path / cryoatom2_manifest_path: 两种受体条件的冻结 test_0 manifest.
@@ -546,8 +547,7 @@ def build_final_test_artifact(
 
     本函数分别对真实受体和 CryoAtom2 运行一次 Matcher; 每次产生的候选预测同时支持
     Gaussian 与来源概率均值排序, 不为第二种排序重复前向.
-"""
-
+    """
     preview = json.loads(Path(stage1_preview_path).read_text(encoding="utf-8"))
     if preview.get("status") != "stage1_only_preview":
         raise ValueError("最终评估必须连接已验收的 Stage1-only 预览元数据。")
@@ -652,12 +652,12 @@ def build_final_test_artifact(
 
 
 def main(argv: list[str] | None = None) -> int:
-    """解析 Stage1-only 元数据构建命令.
+    """
+    解析 Stage1-only 元数据构建命令.
 
     - argv: 可选命令行参数; None 表示读取当前进程命令行.
     - return: 元数据成功写入时返回 0, 契约不一致时抛出异常并以非零状态退出.
-"""
-
+    """
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--real-test-root", type=Path, required=True)
     parser.add_argument("--cryoatom2-test-root", type=Path, required=True)

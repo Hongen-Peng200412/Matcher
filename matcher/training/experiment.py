@@ -10,14 +10,14 @@ from .engine import run_smiles_training
 
 
 def main(argv: list[str] | None = None) -> int:
-    """解析必需的 --config, 执行训练并打印正常收口后的运行目录.
+    """
+    解析必需的 --config, 执行训练并打印正常收口后的运行目录.
 
     - argv: 可选命令行参数列表; None 表示读取当前进程命令行.
     - return: 训练达到配置停止条件并写出 summary.json 后返回零.
 
     非正常中断时不会伪造 summary.json; 已经原子发布的 checkpoint 与历史记录保留.
-"""
-
+    """
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path, required=True)
     arguments = parser.parse_args(argv)

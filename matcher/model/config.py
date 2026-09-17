@@ -28,7 +28,8 @@ MODEL_VARIANTS = (
 
 @dataclass(frozen=True)
 class MatcherModelConfig:
-    """保存具名模型变体和四项实验共同使用的结构超参数.
+    """
+    保存具名模型变体和四项实验共同使用的结构超参数.
 
     配置字段:
     - variant: 四个正式变体之一; 该字段同时决定候选输入和身份增量模块.
@@ -45,8 +46,7 @@ class MatcherModelConfig:
     图分支和身份清单分支的门初值固定为 0, 不作为 YAML 可变字段. strongest 与 trunk_only
     使用 mean/max 和候选条件注意力摘要拼接; density_blob_only 使用单密度 U-Net、V token、
     V 三项统计和四项采样统计; pocket_only 只使用 A token 的原始 50 维 L0.
-"""
-
+    """
     variant: ModelVariant
     model_dim: int
     attention_heads: int
@@ -59,11 +59,11 @@ class MatcherModelConfig:
     graph_layers: int
 
     def __post_init__(self) -> None:
-        """在模型构造前核对有限的结构约束.
+        """
+        在模型构造前核对有限的结构约束.
 
         - return: 全部字段合法时返回 None; 否则抛出 TypeError 或 ValueError.
-"""
-
+        """
         if self.variant not in MODEL_VARIANTS:
             raise ValueError(f"不支持 model.variant={self.variant!r}。")
         integer_fields = (
@@ -93,47 +93,47 @@ class MatcherModelConfig:
 
     @property
     def use_manual_features(self) -> bool:
-        """判断是否消费 12 项候选手动统计.
+        """
+        判断是否消费 12 项候选手动统计.
 
         - return: pocket_only 为 False, 其余三个变体为 True.
-"""
-
+        """
         return self.variant != "pocket_only"
 
     @property
     def use_sampling_features(self) -> bool:
-        """判断是否消费四项候选裁剪统计.
+        """
+        判断是否消费四项候选裁剪统计.
 
         - return: pocket_only 为 False, 其余三个变体为 True.
-"""
-
+        """
         return self.variant != "pocket_only"
 
     @property
     def uses_identity_increments(self) -> bool:
-        """判断是否实例化两个身份增量分支.
+        """
+        判断是否实例化两个身份增量分支.
 
         - return: trunk_only 为 False, 其余三个变体为 True.
-"""
-
+        """
         return self.variant != "trunk_only"
 
     def to_dict(self) -> dict[str, Any]:
-        """序列化当前结构配置.
+        """
+        序列化当前结构配置.
 
         - return: 只含正式 dataclass 字段的普通字典, 供 checkpoint 保存.
-"""
-
+        """
         return asdict(self)
 
     @classmethod
     def from_dict(cls, values: dict[str, Any]) -> "MatcherModelConfig":
-        """从当前版本字典恢复模型配置.
+        """
+        从当前版本字典恢复模型配置.
 
         - values: checkpoint 或 YAML 提供的完整正式字段; raunet_planes 可以是列表或元组.
         - return: 经 dataclass 边界检查的 MatcherModelConfig, 不迁移历史开关.
-"""
-
+        """
         normalized = dict(values)
         planes = normalized.get("raunet_planes")
         if isinstance(planes, list):

@@ -46,8 +46,7 @@ def write_json(path: Path, value: Mapping[str, object]) -> None:
     - concurrency: 本函数没有内部锁, 同一进程对同一 path 的并发调用会争用同一临时路径, 对同一 path 的不同调用也可能互相替换目标或清理对方临时文件.
     - cleanup: finally 尝试删除仍存在的临时文件; 删除本身失败时可能遮蔽此前异常并留下临时文件.
     - serialization: json.dumps 在临时文件建立前运行; 序列化失败时父目录可能已创建, 但不会由本调用新建临时文件.
-"""
-
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     # str, 已经完成递归数值转换和严格标准编码的完整 JSON 文本, 末尾固定一个 LF.
     text = json.dumps(
@@ -90,8 +89,7 @@ def append_jsonl(path: Path, value: Mapping[str, object]) -> None:
     - concurrency: 本函数没有内部锁, 不承诺多个进程或线程追加时整条记录不可交错; 合作调用者需要在外层共用锁.
     - partial_write: 写入或同步失败时没有回滚, 文件尾可能保留不完整记录.
     - existing_content: 本函数不读取、不验证也不重写已有行; 已有畸形内容不会在本次追加前被发现.
-"""
-
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     # str, 单个无缩进 JSON 对象和一个 LF; 字符串内部换行由标准编码器转义.
     text = json.dumps(
@@ -123,8 +121,7 @@ def _json_safe(value: Any) -> Any:
     - json_compatibility: 返回值不保证已经可 JSON 编码; Path、NumPy 对象、Torch 张量、dataclass、集合和其它未处理对象仍由 json.dumps 决定是否报错.
     - recursion: 本函数不检测循环引用; 循环 Mapping、list 或 tuple 会递归直至 Python 报错.
     - numeric_types: 只有满足 isinstance(value, float) 的对象进入有限性转换; 其它数值类型不会由本函数主动规范化.
-"""
-
+    """
     if isinstance(value, float):
         return value if math.isfinite(value) else None
     if isinstance(value, Mapping):

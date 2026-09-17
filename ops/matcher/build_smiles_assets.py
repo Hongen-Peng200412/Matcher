@@ -34,7 +34,8 @@ RING_SIZES = (3, 4, 5, 6)
 
 
 def read_exact_smiles(prepared_root: Path) -> tuple[list[str], dict[str, list[dict[str, Any]]]]:
-    """收集所有非空顶层 smiles, 并保留来源位置用于排除报告.
+    """
+    收集所有非空顶层 smiles, 并保留来源位置用于排除报告.
 
     - prepared_root: ligand_language_models/prepared 目录.
     - return[0]: 按精确字符串递增的唯一 SMILES 列表.
@@ -43,8 +44,7 @@ def read_exact_smiles(prepared_root: Path) -> tuple[list[str], dict[str, list[di
     - return[1][smiles][*].occurrence_id: int, prepared_smiles.jsonl 的 candidate_id, 在新管线中解释为 occurrence 编号.
     - return[1][smiles][*].path: str, 当前来源 prepared_smiles.jsonl 的完整路径.
     - return[1][smiles][*].line_number: int, 当前来源记录在 JSONL 中从 1 开始的物理行号.
-"""
-
+    """
     sources: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for path in sorted(prepared_root.glob("*/prepared_smiles.jsonl")):
         with path.open("r", encoding="utf-8") as handle:
@@ -65,7 +65,8 @@ def read_exact_smiles(prepared_root: Path) -> tuple[list[str], dict[str, list[di
 
 
 def build_arrays(smiles_values: list[str]) -> tuple[dict[str, np.ndarray], dict[str, np.ndarray], list[dict[str, Any]]]:
-    """解析精确 SMILES, 返回图、自同构连接数组和统一排除记录.
+    """
+    解析精确 SMILES, 返回图、自同构连接数组和统一排除记录.
 
     - smiles_values: 唯一且已排序的精确顶层字符串.
     - return[0].schema_version: int64 标量, 固定为 1.
@@ -91,8 +92,7 @@ def build_arrays(smiles_values: list[str]) -> tuple[dict[str, np.ndarray], dict[
     自同构沿用 PocketXMol 的 useChirality=True、maxMatches=10000 规则. 每个排列只保存
     至少一种自同构会改变的原子列; matches_shape[:, 1] 给出该可变列数. 解析后出现 BOND_TYPES
     未定义的键型时中止整次构建, 不把该错误降级为 return[2] 排除记录.
-"""
-
+    """
     # list[str], 长度 K; 只有完整通过解析、去氢和 sanitize 的精确字符串才进入两份同序资产.
     accepted: list[str] = []
     # list[dict[str, str]], 每项保存被排除的精确字符串和失败消息.
@@ -194,14 +194,14 @@ def build_arrays(smiles_values: list[str]) -> tuple[dict[str, np.ndarray], dict[
 
 
 def save_npz_atomic(path: Path, arrays: dict[str, np.ndarray], compressed: bool) -> None:
-    """在目标目录写临时文件并用 os.replace 原子发布一个 NPZ.
+    """
+    在目标目录写临时文件并用 os.replace 原子发布一个 NPZ.
 
     - path: 最终文件路径.
     - arrays: dict[str, np.ndarray], 要写入 NPZ 的正式字段映射; 字段语义由 build_arrays 的 return[0] 或 return[1] 契约定义.
     - compressed: True 使用压缩 NPZ; False 保存未压缩 NPZ, 供 I/O 对照使用.
     - return: None; 创建父目录, 在同目录写临时 NPZ, 经 os.replace 发布到 path, 并在成功或失败后清理残留临时文件.
-"""
-
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile(dir=path.parent, suffix=".npz", delete=False) as handle:
         temporary = Path(handle.name)
@@ -214,13 +214,13 @@ def save_npz_atomic(path: Path, arrays: dict[str, np.ndarray], compressed: bool)
 
 
 def save_json_atomic(path: Path, value: dict[str, Any]) -> None:
-    """在目标目录写临时 UTF-8 JSON, 并用 os.replace 原子发布.
+    """
+    在目标目录写临时 UTF-8 JSON, 并用 os.replace 原子发布.
 
     - path: 最终 JSON 文件路径.
     - value: dict[str, Any], 可由标准 JSON 编码器直接序列化的报告字段映射.
     - return: None; 创建父目录, 在同目录写临时 UTF-8 JSON, 经 os.replace 发布到 path, 并在成功或失败后清理残留临时文件.
-"""
-
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile("w", dir=path.parent, encoding="utf-8", delete=False) as handle:
         temporary = Path(handle.name)
@@ -236,7 +236,8 @@ def save_json_atomic(path: Path, value: dict[str, Any]) -> None:
 
 
 def build_smiles_assets(data_root: Path, uncompressed: bool) -> int:
-    """构建两个正式图包和一份 JSON 排除报告.
+    """
+    构建两个正式图包和一份 JSON 排除报告.
 
     - data_root: Path, AdaLigand Ori_Data 根目录; prepared_smiles.jsonl 从该目录读取, 三项资产写入该目录.
     - uncompressed: bool, True 使用未压缩 NPZ 供 I/O 对照, False 使用压缩 NPZ 作为正式资产.
@@ -259,8 +260,7 @@ def build_smiles_assets(data_root: Path, uncompressed: bool) -> int:
     - excluded[*].sources[*].occurrence_id: int, prepared_smiles.jsonl 的 candidate_id, 在新管线中解释为 occurrence 编号.
     - excluded[*].sources[*].path: str, 当前来源 prepared_smiles.jsonl 的完整路径.
     - excluded[*].sources[*].line_number: int, 当前来源记录在 JSONL 中从 1 开始的物理行号.
-"""
-
+    """
     prepared_root = data_root / "stage1_preparation_box_pool_2/ligand_language_models/prepared"
     output_root = data_root / "smiles_assets"
     smiles_values, sources = read_exact_smiles(prepared_root)
@@ -284,12 +284,12 @@ def build_smiles_assets(data_root: Path, uncompressed: bool) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """解析命令行并把两个参数交给正式资产构建入口.
+    """
+    解析命令行并把两个参数交给正式资产构建入口.
 
     - argv: 可选命令行参数列表; None 表示读取当前进程命令行.
     - return: int, build_smiles_assets 返回的进程退出码.
-"""
-
+    """
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--data-root", type=Path, required=True)
     parser.add_argument("--uncompressed", action="store_true")

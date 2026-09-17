@@ -19,7 +19,8 @@ from .losses import LossWeights
 
 @dataclass(frozen=True)
 class DataConfig:
-    """保存唯一 manifest、候选过滤和 DataLoader 字段.
+    """
+    保存唯一 manifest、候选过滤和 DataLoader 字段.
 
     - manifest_path: 冻结 manifest.json 路径.
     - train_split / validation_split: manifest.splits 中的训练和验证键.
@@ -29,8 +30,7 @@ class DataConfig:
     - num_workers / prefetch_factor: DataLoader 持久工作进程数和每进程预取批次数.
     - pp_top_k: strongest 与 trunk_only 每候选保留的 PP token 上限.
     - cache_gib_per_worker: 每个 Dataset 副本的 PDB 载荷最近使用缓存预算.
-"""
-
+    """
     manifest_path: Path
     train_split: str
     validation_split: str
@@ -45,14 +45,14 @@ class DataConfig:
 
 @dataclass(frozen=True)
 class OptimizationConfig:
-    """保存 AdamW、梯度裁剪和停止条件.
+    """
+    保存 AdamW、梯度裁剪和停止条件.
 
     - learning_rate / weight_decay: AdamW 初始学习率和权重衰减.
     - gradient_clip_norm: 每次参数更新前的全局梯度范数上限.
     - max_epochs: 最多完成的训练与完整 validation 轮数.
     - patience_bad_epochs: 连续多少次完整 validation 未严格改善 selection 后早停.
-"""
-
+    """
     learning_rate: float
     weight_decay: float
     gradient_clip_norm: float
@@ -62,14 +62,14 @@ class OptimizationConfig:
 
 @dataclass(frozen=True)
 class TrackingConfig:
-    """保存 W&B 定位和记录间隔.
+    """
+    保存 W&B 定位和记录间隔.
 
     - mode: online、offline 或 disabled.
     - entity: W&B 实体名称; None 使用登录账户默认实体.
     - project / group: 四项正式实验共同使用的 W&B 项目和分组.
     - log_every_updates: 每多少次参数更新记录训练标量.
-"""
-
+    """
     mode: str
     entity: str | None
     project: str
@@ -79,14 +79,14 @@ class TrackingConfig:
 
 @dataclass(frozen=True)
 class SmilesExperimentConfig:
-    """保存一次可独立从零运行的正式实验.
+    """
+    保存一次可独立从零运行的正式实验.
 
     - name: 输出子目录和 W&B 运行名前缀.
     - output_root: 服务器训练产物根目录.
     - seed: Python、NumPy、PyTorch、采样器和 DataLoader 共用随机种子.
     - data / model / loss_weights / optimization / tracking: 经过各自 dataclass 固定的 数据、结构、损失、优化和追踪字段.
-"""
-
+    """
     name: str
     output_root: Path
     seed: int
@@ -98,27 +98,27 @@ class SmilesExperimentConfig:
 
 
 def _mapping(value: Any, name: str) -> dict[str, Any]:
-    """核对一个 YAML 映射.
+    """
+    核对一个 YAML 映射.
 
     - value: yaml.safe_load 产生的任意值.
     - name: 错误信息使用的字段或配置块名称.
     - return: 字符串键映射的浅拷贝; 非映射或非字符串键立即失败.
-"""
-
+    """
     if not isinstance(value, dict) or any(not isinstance(key, str) for key in value):
         raise ValueError(f"{name} 必须是字符串键映射。")
     return dict(value)
 
 
 def _construct(cls: type[Any], value: Any, path_fields: tuple[str, ...] = ()) -> Any:
-    """从精确字段映射构造一个配置 dataclass.
+    """
+    从精确字段映射构造一个配置 dataclass.
 
     - cls: 目标 dataclass 类型.
     - value: YAML 中对应配置块.
     - path_fields: 构造前需要从字符串转换成 Path 的字段名.
     - return: cls 实例; 缺字段、额外字段或键类型错误时失败关闭.
-"""
-
+    """
     mapping = _mapping(value, cls.__name__)
     expected = set(cls.__dataclass_fields__)
     if set(mapping) != expected:
@@ -129,14 +129,14 @@ def _construct(cls: type[Any], value: Any, path_fields: tuple[str, ...] = ()) ->
 
 
 def load_smiles_experiment(path: Path) -> SmilesExperimentConfig:
-    """读取并核对当前版本训练 YAML.
+    """
+    读取并核对当前版本训练 YAML.
 
     - path: 四份正式 YAML 之一.
     - return: 字段集合、类型、有限性和跨字段边界均已核对的 SmilesExperimentConfig.
 
     加载器不迁移历史模型、损失或初始化开关; 活动 YAML 出现未知字段时立即失败.
-"""
-
+    """
     raw = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
     expected = {"name", "output_root", "seed", "data", "model", "loss", "optimization", "tracking"}
     if not isinstance(raw, dict) or set(raw) != expected:

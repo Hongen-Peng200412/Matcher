@@ -24,7 +24,8 @@ DEFAULT_PLANES = (64, 256, 256, 256, 256, 256, 128, 64, 64)
 
 
 def _largest_divisor_not_above(value: int, maximum: int) -> int:
-    """选择不超过上限且能整除通道数的最大正整数.
+    """
+    选择不超过上限且能整除通道数的最大正整数.
 
     输入参数:
     - value: 正整数; 待分头的通道数, 正式调用来自已验证的 RAUNet 通道.
@@ -34,8 +35,7 @@ def _largest_divisor_not_above(value: int, maximum: int) -> int:
     - divisor: 正整数; 范围 [1,min(value,maximum)], 并满足 value % divisor == 0.
 
     本函数不显式检查两个输入为正; 直接传入非正值会遍历空区间并触发末尾 AssertionError.
-"""
-
+    """
     for candidate in range(min(value, maximum), 0, -1):
         if value % candidate == 0:
             return candidate
@@ -49,7 +49,8 @@ def _grid_positions(
     device: torch.device,
     dtype: torch.dtype,
 ) -> torch.Tensor:
-    """建立三维旋转位置编码使用的规则网格位置.
+    """
+    建立三维旋转位置编码使用的规则网格位置.
 
     输入参数:
     - depth: 正整数 Z; 网格深度位置数.
@@ -62,8 +63,7 @@ def _grid_positions(
     - positions: 浮点张量, (L,3), L=Z×Y×X; 最后一轴依次为 Z/Y/X, 展平顺序使 X 最先变化, 原点为 (0,0,0), 每轴相邻位置差为 1.5.
 
     这里的 1.5 是模型内部无物理单位位置间隔, 不是 Å, 也不读取 CandidateBatch 的真实体素大小. 本函数依赖调用者提供正空间尺寸, 不单独检查.
-"""
-
+    """
     # 长度分别为 Z、Y、X 的三个一维坐标张量; 元素从 0 递增到对应大小减一.
     axes = [torch.arange(size, device=device, dtype=dtype) for size in (depth, height, width)]
     # meshgrid 先产生 (Z,Y,X,3), reshape 按 NumPy C-order 等价顺序展平空间轴, 再乘模型内部间隔 1.5.
@@ -71,7 +71,8 @@ def _grid_positions(
 
 
 def _apply_three_axis_rope(values: torch.Tensor, positions: torch.Tensor) -> torch.Tensor:
-    """把每个注意力头的通道均分给 Z/Y/X, 并对相邻通道对执行旋转.
+    """
+    把每个注意力头的通道均分给 Z/Y/X, 并对相邻通道对执行旋转.
 
     输入参数:
     - values: 浮点张量, (B,K,L,C_h); 查询或键, C_h 必须能被 6 整除, 使三轴各有偶数通道.
@@ -81,8 +82,7 @@ def _apply_three_axis_rope(values: torch.Tensor, positions: torch.Tensor) -> tor
     - rotated_values: 浮点张量, (B,K,L,C_h); 三段轴通道各自按对应位置相位旋转后重新连接.
 
     每轴通道数 C_axis=C_h/3, 相邻偶数/奇数通道组成二维向量. 第 j 个通道对的逆频率为 exp(-log(100)×j/max(C_axis/2,1)). 本函数只显式检查计算出的 C_axis 为偶数; 正式 RotarySelfAttention3d 构造器保证 C_h 可被 6 整除并提供匹配的 L.
-"""
-
+    """
     # int, 每个空间轴分到的头内通道数; 正式调用满足 C_h=3×axis_channels.
     axis_channels = values.shape[-1] // 3
     if axis_channels % 2 != 0:
@@ -120,7 +120,8 @@ def _apply_three_axis_rope(values: torch.Tensor, positions: torch.Tensor) -> tor
 
 
 def _upsample_add(coarse: torch.Tensor, skip: torch.Tensor) -> torch.Tensor:
-    """把低分辨率特征插值到跳跃特征空间大小后逐元素相加.
+    """
+    把低分辨率特征插值到跳跃特征空间大小后逐元素相加.
 
     输入参数:
     - coarse: 浮点张量, (B,C,Z_c,Y_c,X_c); 待上采样的粗尺度特征.
@@ -130,8 +131,7 @@ def _upsample_add(coarse: torch.Tensor, skip: torch.Tensor) -> torch.Tensor:
     - fused: 浮点张量, (B,C,Z_s,Y_s,X_s); align_corners=True 三线性插值结果与 skip 的逐元素和.
 
     本函数不投影通道, 也不显式检查批次或通道相等; 不相容形状由张量加法失败.
-"""
-
+    """
     return skip + F.interpolate(
         coarse,
         size=skip.shape[-3:],
@@ -141,7 +141,8 @@ def _upsample_add(coarse: torch.Tensor, skip: torch.Tensor) -> torch.Tensor:
 
 
 class ResidualBottleneck3d(nn.Module):
-    """用一乘一、三乘三、一乘一卷积主路和捷径执行残差下采样.
+    """
+    用一乘一、三乘三、一乘一卷积主路和捷径执行残差下采样.
 
     构造参数:
     - input_channels: 整数 C_in; 输入通道数.
@@ -153,12 +154,12 @@ class ResidualBottleneck3d(nn.Module):
 
     前向输出:
     - outputs: 浮点张量, (B,C_out,ceil(Z/s),ceil(Y/s),ceil(X/s)); 主路和捷径相加后经过 ReLU.
-"""
-
+    """
     expansion = 4
 
     def __init__(self, input_channels: int, output_channels: int, stride: int) -> None:
-        """建立瓶颈主路和按需投影的残差捷径.
+        """
+        建立瓶颈主路和按需投影的残差捷径.
 
         输入参数:
         - input_channels: 整数 C_in; 主路首层和捷径读取宽度.
@@ -169,8 +170,7 @@ class ResidualBottleneck3d(nn.Module):
         - self.main: Sequential; C_in 到 C_out/4 到 C_out 的三层卷积及 InstanceNorm/ReLU.
         - self.shortcut: Identity 或 Conv3d; 仅 s=1 且 C_in=C_out 时为恒等映射, 否则投影到 C_out 并使用步幅 s.
         - self.activation: ReLU; 作用于主路和捷径之和.
-"""
-
+        """
         super().__init__()
         if output_channels % self.expansion != 0:
             raise ValueError("ResidualBottleneck3d 的输出通道必须能被 4 整除。")
@@ -207,20 +207,21 @@ class ResidualBottleneck3d(nn.Module):
         self.activation = nn.ReLU()
 
     def forward(self, inputs: torch.Tensor) -> torch.Tensor:
-        """相加主路与捷径, 并返回激活后的五维体素特征.
+        """
+        相加主路与捷径, 并返回激活后的五维体素特征.
 
         输入参数:
         - inputs: 浮点张量, (B,C_in,Z,Y,X); 通道数必须与构造值一致.
 
         返回值:
         - outputs: 浮点张量, (B,C_out,ceil(Z/s),ceil(Y/s),ceil(X/s)).
-"""
-
+        """
         return self.activation(self.main(inputs) + self.shortcut(inputs))
 
 
 class Res2NetBlock3d(nn.Module):
-    """把扩展通道分组后按层级依赖卷积, 再投影回输入宽度.
+    """
+    把扩展通道分组后按层级依赖卷积, 再投影回输入宽度.
 
     构造参数:
     - channels: 正整数 C; 输入、每个层级分组和输出的通道数.
@@ -231,10 +232,10 @@ class Res2NetBlock3d(nn.Module):
 
     前向输出:
     - outputs: 浮点张量, (B,C,Z,Y,X); 层级卷积混合结果与 inputs 的残差和经过 ReLU.
-"""
-
+    """
     def __init__(self, channels: int, scale: int) -> None:
-        """建立通道扩展、S-1 个层级卷积和通道混合投影.
+        """
+        建立通道扩展、S-1 个层级卷积和通道混合投影.
 
         输入参数:
         - channels: 正整数 C; 本方法显式拒绝非正值.
@@ -248,8 +249,7 @@ class Res2NetBlock3d(nn.Module):
         - self.pre_mix_norm: InstanceNorm3d; 作用于重新连接的 C×S 通道.
         - self.mix: Sequential; 一乘一乘一卷积把 C×S 压回 C, 并做 InstanceNorm.
         - self.activation: ReLU; 用于扩展、混合与最终残差激活.
-"""
-
+        """
         super().__init__()
         if channels <= 0 or scale < 2:
             raise ValueError("Res2NetBlock3d 要求 channels>0 且 scale>=2。")
@@ -271,7 +271,8 @@ class Res2NetBlock3d(nn.Module):
         self.activation = nn.ReLU()
 
     def forward(self, inputs: torch.Tensor) -> torch.Tensor:
-        """按固定层级依赖处理 S 个通道组.
+        """
+        按固定层级依赖处理 S 个通道组.
 
         输入参数:
         - inputs: 浮点张量, (B,C,Z,Y,X); C 与构造时 channels 一致.
@@ -280,8 +281,7 @@ class Res2NetBlock3d(nn.Module):
         - outputs: 浮点张量, (B,C,Z,Y,X); 层级分组混合与输入残差相加后的结果.
 
         第 0 组直接保留扩展激活; 第 1 组直接卷积; 从第 2 组开始, 当前原始分组先与上一层级卷积输出相加再卷积.
-"""
-
+        """
         # 长度 S 的 tuple, 每项浮点 (B,C,Z,Y,X); 来自 ReLU 后 C×S 扩展通道的等宽切分.
         chunks = self.activation(self.expand(inputs)).chunk(self.scale, dim=1)
         # list[Tensor], 层级输出; 首项是不经过 hierarchical 卷积的第 0 组.
@@ -298,7 +298,8 @@ class Res2NetBlock3d(nn.Module):
 
 
 def _res2_stack(channels: int, scale: int) -> nn.Sequential:
-    """构造四个串联且保持形状的 Res2NetBlock3d.
+    """
+    构造四个串联且保持形状的 Res2NetBlock3d.
 
     输入参数:
     - channels: 整数 C; 四个块共同的输入与输出通道数.
@@ -308,13 +309,13 @@ def _res2_stack(channels: int, scale: int) -> nn.Sequential:
     - stack: Sequential; 固定含四个 Res2NetBlock3d, 输入与输出均为浮点 (B,C,Z,Y,X).
 
     本函数自身不验证参数; 每个 Res2NetBlock3d 构造时执行其已有门禁.
-"""
-
+    """
     return nn.Sequential(*(Res2NetBlock3d(channels, scale) for _ in range(4)))
 
 
 class ConvResidual3d(nn.Module):
-    """用两层三乘三乘三卷积和按需通道投影融合同分辨率特征.
+    """
+    用两层三乘三乘三卷积和按需通道投影融合同分辨率特征.
 
     构造参数:
     - input_channels: 整数 C_in; 输入宽度.
@@ -325,10 +326,10 @@ class ConvResidual3d(nn.Module):
 
     前向输出:
     - outputs: 浮点张量, (B,C_out,Z,Y,X); 卷积主路与恒等或投影捷径之和经过 ReLU.
-"""
-
+    """
     def __init__(self, input_channels: int, output_channels: int) -> None:
-        """建立保持空间大小的卷积主路与残差捷径.
+        """
+        建立保持空间大小的卷积主路与残差捷径.
 
         输入参数:
         - input_channels: 整数 C_in; 首层卷积和可选捷径投影的输入宽度.
@@ -340,8 +341,7 @@ class ConvResidual3d(nn.Module):
         - self.activation: ReLU; 作用于主路与捷径之和.
 
         本构造器不显式检查正通道数, 依赖 Conv3d 拒绝不能构造的宽度.
-"""
-
+        """
         super().__init__()
         self.main = nn.Sequential(
             nn.Conv3d(input_channels, output_channels, kernel_size=3, padding=1, bias=False),
@@ -358,20 +358,21 @@ class ConvResidual3d(nn.Module):
         self.activation = nn.ReLU()
 
     def forward(self, inputs: torch.Tensor) -> torch.Tensor:
-        """返回卷积主路和捷径的激活残差和.
+        """
+        返回卷积主路和捷径的激活残差和.
 
         输入参数:
         - inputs: 浮点张量, (B,C_in,Z,Y,X); 通道数与构造值一致.
 
         返回值:
         - outputs: 浮点张量, (B,C_out,Z,Y,X).
-"""
-
+        """
         return self.activation(self.main(inputs) + self.shortcut(inputs))
 
 
 class AttentionGate3d(nn.Module):
-    """用上采样粗特征为细尺度跳跃特征生成逐头空间门.
+    """
+    用上采样粗特征为细尺度跳跃特征生成逐头空间门.
 
     构造参数:
     - skip_channels: 整数 C_s; 细尺度跳跃特征通道数.
@@ -386,15 +387,15 @@ class AttentionGate3d(nn.Module):
     - fused: 浮点张量, (B,C_out,Z,Y,X); 门控 skip value 与上采样 coarse 相加后经 ConvResidual3d 融合.
 
     门值由 64 通道 query/key 和经过 ReLU、Sigmoid 的一乘一乘一卷积产生, 有限精度输出位于 [0,1]. 这里每个 head 对应 C_c/K 个 value 通道, 同一头内通道共享该头的空间门; 不执行 query-key 点积或 softmax.
-"""
-
+    """
     def __init__(
         self,
         skip_channels: int,
         coarse_channels: int,
         output_channels: int,
     ) -> None:
-        """建立粗尺度 query、细尺度 key/value、逐头 Sigmoid 门和融合块.
+        """
+        建立粗尺度 query、细尺度 key/value、逐头 Sigmoid 门和融合块.
 
         输入参数:
         - skip_channels: 整数 C_s; self.key 与 self.value 的输入宽度.
@@ -411,8 +412,7 @@ class AttentionGate3d(nn.Module):
         - self.fuse: ConvResidual3d; 把 C_c 通道门控和投影到 C_out.
 
         本构造器不独立检查三种通道为正; 正式 RaUnetBackbone 从已验证 planes 构造.
-"""
-
+        """
         super().__init__()
         # int, query 与 key 共享的固定中间通道宽度.
         attention_channels = 64
@@ -440,7 +440,8 @@ class AttentionGate3d(nn.Module):
         self.fuse = ConvResidual3d(coarse_channels, output_channels)
 
     def forward(self, coarse: torch.Tensor, skip: torch.Tensor) -> torch.Tensor:
-        """上采样粗特征, 门控细尺度 value, 并返回融合结果.
+        """
+        上采样粗特征, 门控细尺度 value, 并返回融合结果.
 
         输入参数:
         - coarse: 浮点张量, (B,C_c,Z_c,Y_c,X_c); 通道数为构造时 coarse_channels.
@@ -450,8 +451,7 @@ class AttentionGate3d(nn.Module):
         - fused: 浮点张量, (B,C_out,Z,Y,X); 门控 value 与上采样 coarse 相加、ReLU 后由 self.fuse 变换.
 
         本方法不显式核对批次、通道或空间为正; 卷积、reshape 和张量相加负责暴露不相容输入.
-"""
-
+        """
         # 浮点, (B,C_c,Z,Y,X), coarse 以 align_corners=True 三线性插值到 skip 空间大小.
         upsampled = F.interpolate(
             coarse,
@@ -480,7 +480,8 @@ class AttentionGate3d(nn.Module):
 
 
 class GatedTransition(nn.Module):
-    """对展平瓶颈位置执行逐 token 的门控通道前馈与残差归一化.
+    """
+    对展平瓶颈位置执行逐 token 的门控通道前馈与残差归一化.
 
     构造参数:
     - channels: 整数 C; 输入、输出和 LayerNorm 宽度, 两个门分支扩展到 3C.
@@ -490,10 +491,10 @@ class GatedTransition(nn.Module):
 
     前向输出:
     - outputs: 浮点张量, (B,L,C); SiLU 左分支与线性右分支逐元素相乘、投影回 C 后加入输入并做 LayerNorm.
-"""
-
+    """
     def __init__(self, channels: int) -> None:
-        """建立两个无偏置 3C 门分支、输出投影和 LayerNorm.
+        """
+        建立两个无偏置 3C 门分支、输出投影和 LayerNorm.
 
         输入参数:
         - channels: 整数 C; 本构造器不显式检查正值, 依赖 Linear 与 LayerNorm.
@@ -503,8 +504,7 @@ class GatedTransition(nn.Module):
         - self.right: 无偏置 Linear; C 到 3C, 输出作为逐元素门值因子.
         - self.output: 无偏置 Linear; 3C 到 C.
         - self.norm: LayerNorm; 归一化输入与更新之和的最后一维.
-"""
-
+        """
         super().__init__()
         # int, 两个门分支相对输入通道的固定扩展倍数.
         expansion = 3
@@ -514,22 +514,23 @@ class GatedTransition(nn.Module):
         self.norm = nn.LayerNorm(channels)
 
     def forward(self, inputs: torch.Tensor) -> torch.Tensor:
-        """计算逐 token 门控更新并加入输入残差.
+        """
+        计算逐 token 门控更新并加入输入残差.
 
         输入参数:
         - inputs: 浮点张量, (B,L,C); 最后一维与构造 channels 一致.
 
         返回值:
         - outputs: 浮点张量, (B,L,C); self.norm(inputs+update).
-"""
-
+        """
         # 浮点, (B,L,C), 两个 (B,L,3C) 分支逐元素门控后投影回 C 的更新.
         update = self.output(F.silu(self.left(inputs)) * self.right(inputs))
         return self.norm(inputs + update)
 
 
 class RotarySelfAttention3d(nn.Module):
-    """在最深三维网格的全部空间位置之间执行带三轴旋转位置编码的自注意力.
+    """
+    在最深三维网格的全部空间位置之间执行带三轴旋转位置编码的自注意力.
 
     构造参数:
     - channels: 正整数 C; 输入、输出和残差通道数, 必须能被 head_count 整除.
@@ -542,10 +543,10 @@ class RotarySelfAttention3d(nn.Module):
     - outputs: 浮点张量, (B,C,Z,Y,X); 全位置自注意力残差和 GatedTransition 后恢复的网格.
 
     每头查询、键和值宽度 C_h=6C/K, 是输入每头基础宽度 C/K 的六倍; C_h 再均分给 Z/Y/X, 每轴相邻通道成对旋转. 注意力对 key 位置轴 L=Z×Y×X 求和, 同时保留每个 query 位置.
-"""
-
+    """
     def __init__(self, channels: int, head_count: int) -> None:
-        """建立扩宽六倍的多头投影、输出残差归一化与门控前馈.
+        """
+        建立扩宽六倍的多头投影、输出残差归一化与门控前馈.
 
         输入参数:
         - channels: 正整数 C; 必须能被 head_count 整除.
@@ -561,8 +562,7 @@ class RotarySelfAttention3d(nn.Module):
         - self.output: 无偏置 Linear; K×C_h 回到 C.
         - self.attention_norm: LayerNorm; 归一化输入 token 与注意力输出之和.
         - self.transition: GatedTransition; 对注意力残差后的每个位置独立更新通道.
-"""
-
+        """
         super().__init__()
         if head_count <= 0 or channels <= 0 or channels % head_count != 0:
             raise ValueError("瓶颈通道数必须能被注意力头数整除。")
@@ -583,7 +583,8 @@ class RotarySelfAttention3d(nn.Module):
         self.transition = GatedTransition(channels)
 
     def forward(self, inputs: torch.Tensor) -> torch.Tensor:
-        """展平网格、执行全位置自注意力, 再恢复原五维形状.
+        """
+        展平网格、执行全位置自注意力, 再恢复原五维形状.
 
         输入参数:
         - inputs: 浮点张量, (B,C,Z,Y,X); 通道数必须与构造 channels 一致, 本方法不另做显式门禁.
@@ -592,8 +593,7 @@ class RotarySelfAttention3d(nn.Module):
         - outputs: 浮点张量, (B,C,Z,Y,X); 空间大小与输入一致, dtype 由线性层、注意力算子和自动混合精度上下文决定.
 
         scaled_dot_product_attention 沿 key 位置轴 L 聚合 value. 这里没有 padding mask, 因为规则瓶颈网格的全部 Z×Y×X 位置都有效.
-"""
-
+        """
         # 五个 int, 当前瓶颈网格的 B/C/Z/Y/X; L=Z×Y×X.
         batch_size, channels, depth, height, width = inputs.shape
         # 浮点, [B,C,Z,Y,X] -> [B,C,L] -> [B,L,C], X 位置最先变化的空间 token 序列.
@@ -619,7 +619,8 @@ class RotarySelfAttention3d(nn.Module):
         return tokens.transpose(1, 2).reshape(batch_size, channels, depth, height, width)
 
     def _split_heads(self, values: torch.Tensor) -> torch.Tensor:
-        """把投影通道拆成头轴, 并把头轴移到位置轴之前.
+        """
+        把投影通道拆成头轴, 并把头轴移到位置轴之前.
 
         输入参数:
         - values: 浮点张量, (B,L,K×C_h); query、key 或 value 的线性投影结果.
@@ -628,8 +629,7 @@ class RotarySelfAttention3d(nn.Module):
         - headed: 浮点张量, [B,L,K×C_h] -> [B,L,K,C_h] -> [B,K,L,C_h].
 
         本方法不单独核验最后一维; reshape 在元素数量与构造宽度不相容时失败.
-"""
-
+        """
         # 两个 int 与一个未使用通道占位, 分别为批次 B、位置数 L 和投影宽度 K×C_h.
         batch_size, token_count, _ = values.shape
         return values.reshape(
@@ -644,7 +644,8 @@ class RotarySelfAttention3d(nn.Module):
 
 
 class RaUnetBackbone(nn.Module):
-    """复现 Find_0 的多尺度三维 RAUNet, 并把最高分辨率解码状态用于回收.
+    """
+    复现 Find_0 的多尺度三维 RAUNet, 并把最高分辨率解码状态用于回收.
 
     构造参数:
     - input_channels: 整数 C_in; strongest/trunk_only 传 106, density_blob_only 传 1.
@@ -661,8 +662,7 @@ class RaUnetBackbone(nn.Module):
     - voxel_features: 浮点张量, (B,C_v,48,48,48); 三种卷积核多尺度分支连接后投影的最高分辨率特征.
 
     固定 48 立方体调用的编码空间大小依次为 48、24、12、6、3; 解码空间大小依次恢复为 6、12、24、48. planes 必须满足 enc3=bottleneck=dec3, 使最深上采样可与 level3 相加; 还必须满足 dec0=enc0, 使 decoded0 可直接送入下一轮 recycle_norm.
-"""
-
+    """
     def __init__(
         self,
         input_channels: int,
@@ -672,7 +672,8 @@ class RaUnetBackbone(nn.Module):
         gradient_checkpointing: bool,
         bottleneck_attention_layers: int,
     ) -> None:
-        """建立四级编码器、瓶颈注意力、门控解码器和多尺度输出分支.
+        """
+        建立四级编码器、瓶颈注意力、门控解码器和多尺度输出分支.
 
         输入参数:
         - input_channels: 整数 C_in; input_projection 的输入宽度, 本构造器不单独检查正值.
@@ -709,8 +710,7 @@ class RaUnetBackbone(nn.Module):
         - self.multiscale5: 五乘五乘五 Conv3d; decoded0 到 branch_channels, 保持空间大小.
         - self.multiscale7: 七乘七乘七 Conv3d; decoded0 到 branch_channels, 保持空间大小.
         - self.feature_projection: 三乘三乘三 Conv3d; 连接的 3×branch_channels 映射到 C_v.
-"""
-
+        """
         super().__init__()
         # 九项 int 元组; 直接构造允许可由 int 转换的序列元素, MatcherModelConfig 路径则已保证精确正整数.
         plane_values = tuple(int(value) for value in planes)
@@ -764,7 +764,8 @@ class RaUnetBackbone(nn.Module):
         self.feature_projection = nn.Conv3d(branch_channels * 3, feature_channels, kernel_size=3, padding=1)
 
     def forward(self, voxel_input: torch.Tensor) -> torch.Tensor:
-        """执行 R 轮回收, 并只返回最后一轮最高分辨率特征.
+        """
+        执行 R 轮回收, 并只返回最后一轮最高分辨率特征.
 
         输入参数:
         - voxel_input: 浮点张量, (B,C_in,48,48,48); 通道数必须等于 self.input_channels, 空间轴依次为 Z/Y/X.
@@ -773,8 +774,7 @@ class RaUnetBackbone(nn.Module):
         - voxel_features: 浮点张量, (B,C_v,48,48,48); 最后一轮 _forward_once 的 feature_projection 输出, dtype 由参数、设备与自动混合精度上下文共同决定.
 
         第 0 到 R-2 轮在 torch.no_grad 中运行, 只保存已停止梯度的 decoded0; 每轮后调用 torch.clear_autocast_cache 清除当前自动混合精度权重转换缓存. 第 R-1 轮使用上一轮状态且不受本函数内部 no_grad 包裹; 是否建立计算图服从外层梯度模式及参与运算张量的 requires_grad, 外层 no_grad 或 inference_mode 下不建图. 缓存清理是进程内 PyTorch 自动混合精度状态副作用, 不写文件或修改输入张量.
-"""
-
+        """
         if voxel_input.ndim != 5 or voxel_input.shape[1] != self.input_channels:
             raise ValueError(
                 f"voxel_input 必须为 (B,{self.input_channels},Z,Y,X)，"
@@ -811,7 +811,8 @@ class RaUnetBackbone(nn.Module):
         voxel_input: torch.Tensor,
         recycle: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """执行一次完整编码、瓶颈注意力、门控解码和多尺度输出.
+        """
+        执行一次完整编码、瓶颈注意力、门控解码和多尺度输出.
 
         输入参数:
         - voxel_input: 浮点张量, (B,C_in,48,48,48); 每轮都重新经过同一 input_projection.
@@ -822,8 +823,7 @@ class RaUnetBackbone(nn.Module):
         - decoded0: 浮点张量, (B,dec0,48,48,48); 最高分辨率解码状态, dec0=enc0, 可直接作为下一轮 recycle.
 
         固定 48 立方体时, level0 至 level4 的空间边长依次为 48、24、12、6、3, decoded3 至 decoded0 依次为 6、12、24、48.
-"""
-
+        """
         # 浮点, (B,enc0,48,48,48), 当前输入投影与回收状态分别归一化后相加并经 ELU.
         fused = self.input_activation(
             self.input_norm(self.input_projection(voxel_input)) + self.recycle_norm(recycle)
@@ -862,7 +862,8 @@ class RaUnetBackbone(nn.Module):
         return self.feature_projection(multiscale), decoded0
 
     def _heavy(self, module: nn.Module, *inputs: torch.Tensor) -> torch.Tensor:
-        """按运行状态直接调用模块或使用非重入激活重计算.
+        """
+        按运行状态直接调用模块或使用非重入激活重计算.
 
         输入参数:
         - module: nn.Module; down、瓶颈注意力、decode 或 attention gate 子模块.
@@ -872,8 +873,7 @@ class RaUnetBackbone(nn.Module):
         - outputs: 浮点张量; 与 module 直接前向的返回形状相同.
 
         只有 self.gradient_checkpointing、self.training 和 torch.is_grad_enabled() 同时为真才调用 checkpoint. 当前使用 use_reentrant=False 且 preserve_rng_state=False; 现有 RAUNet 高开销模块不含 Dropout, 若以后加入随机算子, 该选项不会为重计算恢复随机状态.
-"""
-
+        """
         if not (self.gradient_checkpointing and self.training and torch.is_grad_enabled()):
             return module(*inputs)
         return checkpoint(module, *inputs, use_reentrant=False, preserve_rng_state=False)

@@ -39,8 +39,7 @@ class ByteBudgetLru(Generic[Key, Value]):
     - mutation: 缓存不复制 value, 也不把内部数组设为只读; 写入后的原地变化不会更新已记录字节数.
     - concurrency: 所有状态都属于当前 Python 实例; 本类没有线程互斥或跨进程共享.
     - zero_size: maximum_bytes 大于零时, array_nbytes 为零的对象可进入缓存, 因此字节预算不限制这类对象的数量.
-"""
-
+    """
     def __init__(self, maximum_bytes: int) -> None:
         """
         建立一个空缓存并保存非负字节预算.
@@ -57,8 +56,7 @@ class ByteBudgetLru(Generic[Key, Value]):
         - ValueError: maximum_bytes 与零比较后小于零.
 
         不支持与零比较或不能转换为 int 的直接调用值由 Python 原样报错.
-"""
-
+        """
         if maximum_bytes < 0:
             raise ValueError("maximum_bytes 不能为负数。")
         self.maximum_bytes = int(maximum_bytes)
@@ -78,8 +76,7 @@ class ByteBudgetLru(Generic[Key, Value]):
         状态变化:
         - self._values: 命中项移动到有序映射末端; 未命中时顺序不变.
         - self.current_bytes: 查询不改变已记录字节数.
-"""
-
+        """
         # tuple[Value, int] 或 None; 第二项是该对象 put 时由 array_nbytes 得到的字节数.
         entry = self._values.get(key)
         if entry is None:
@@ -104,8 +101,7 @@ class ByteBudgetLru(Generic[Key, Value]):
         - admission: maximum_bytes 为零或 value 的记录字节数大于预算时不保存新值; 等于预算时允许保存.
         - eviction: 接纳后从最久未使用端反复删除, 直到 current_bytes 不大于 maximum_bytes.
         - ordering: 新接纳项位于最近使用端; 淘汰不会读取或修改 value 内部内容.
-"""
-
+        """
         # tuple[Value, int] 或 None; 替换时先撤销旧项及其插入时字节数.
         old = self._values.pop(key, None)
         if old is not None:
@@ -130,8 +126,7 @@ class ByteBudgetLru(Generic[Key, Value]):
 
         状态变化:
         - cache_state: 本查询不改变最近使用顺序或字节计数.
-"""
-
+        """
         return len(self._values)
 
     def keys(self) -> Iterator[Key]:
@@ -143,8 +138,7 @@ class ByteBudgetLru(Generic[Key, Value]):
 
         迭代边界:
         - mutation: 取得迭代器后修改缓存可能使迭代器反映变化或由 OrderedDict 报出迭代期间变更错误; 调用者需要自行避免并发修改.
-"""
-
+        """
         return iter(self._values.keys())
 
 
@@ -167,8 +161,7 @@ def array_nbytes(value: object) -> int:
     - repeated_reference: 不记录对象身份, 同一数组经多个位置引用会重复累计.
     - cycles: 不检测容器或 dataclass 引用环; 循环结构会继续递归并最终由 Python 报错.
     - excluded_objects: NumPy 标量、字符串、Torch 张量、Path、集合、普通对象和容器自身开销均贡献 0.
-"""
-
+    """
     if isinstance(value, np.ndarray):
         return int(value.nbytes)
     if isinstance(value, Mapping):

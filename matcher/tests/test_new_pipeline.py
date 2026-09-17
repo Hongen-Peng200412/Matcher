@@ -213,8 +213,9 @@ def test_trunk_only_parameter_tree_has_no_identity_increment_modules() -> None:
 
 
 def test_four_variants_share_identical_initial_values_for_common_parameters() -> None:
-    """同一实验种子下, 四变体的同名同形参数必须逐值相同."""
-
+    """
+    同一实验种子下, 四变体的同名同形参数必须逐值相同.
+    """
     models: dict[str, dict[str, torch.Tensor]] = {}
     for variant in ("strongest", "density_blob_only", "pocket_only", "trunk_only"):
         torch.manual_seed(3409)
@@ -346,8 +347,9 @@ def test_disabled_inputs_do_not_change_model_output(
     variant: str,
     disabled_fields: tuple[str, ...],
 ) -> None:
-    """扰动监督字段和当前变体禁用的模态，不得改变任何模型输出。"""
-
+    """
+    扰动监督字段和当前变体禁用的模态，不得改变任何模型输出。
+    """
     batch = collate_candidates([_item(variant)])
     changed = {
         key: value.clone() if isinstance(value, torch.Tensor) else value
@@ -391,8 +393,9 @@ def test_disabled_inputs_do_not_change_model_output(
 
 
 def test_smiles_graph_store_opens_package_only_once(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """同一个工作进程内重复初始化和取图只允许打开一次图包。"""
-
+    """
+    同一个工作进程内重复初始化和取图只允许打开一次图包。
+    """
     path = tmp_path / "smiles_graphs_v1.npz"
     np.savez_compressed(
         path,
@@ -425,8 +428,9 @@ def test_smiles_graph_store_opens_package_only_once(tmp_path: Path, monkeypatch:
 
 
 def test_manifest_dataset_skips_only_unsupported_foreground_outside_test(tmp_path: Path) -> None:
-    """训练和 validation 跳过不受支持真前景，test 保留且背景始终保留。"""
-
+    """
+    训练和 validation 跳过不受支持真前景，test 保留且背景始终保留。
+    """
     candidates = [
         {
             "split": "validation",
@@ -502,8 +506,9 @@ def test_manifest_dataset_skips_only_unsupported_foreground_outside_test(tmp_pat
 
 
 def test_identity_accumulation_weight_matches_one_global_batch() -> None:
-    """物理批次身份数不等时，按合格数加权必须等于一次 global-batch CE。"""
-
+    """
+    物理批次身份数不等时，按合格数加权必须等于一次 global-batch CE。
+    """
     first_logits = torch.asarray([[2.0, 0.0]])
     second_logits = torch.asarray([[0.0, 1.0], [1.0, 0.0]])
     first_loss, first_count = smiles_identity_cross_entropy(
