@@ -25,8 +25,8 @@
 | 阶段 A | 单一 schema、SMILES 图、目标、manifest、Dataset 和 batch | 已完成机械门禁 |
 | 阶段 B | 四变体、二分类、直接身份交叉熵、训练、BEST/LAST 与阈值 | 已完成训练前实现与 CPU 门禁 |
 | 阶段 C 本轮范围 | 测试连接、Stage1-only 元数据、Emap2lig 门禁与两张预览图 | 已完成 checkpoint-independent 范围 |
-| 独立审查 | 三个独立方向各一轮全面审查，修复后只做一轮窄复核 | 未开始 |
-| 阶段 D | 删除平行和过时活动主线，刷新 README、mapping 与 handoff | 代码删除已完成；文档与双线 Git 待审查后收口 |
+| 独立审查 | 三个独立方向各一轮全面审查，修复后只复核报告问题 | 科学逻辑、函数布局/Git、注释与 YAML 均已独立 PASS |
+| 阶段 D | 删除平行和过时活动主线，刷新 README、mapping 与 handoff | 活动代码与 README 已完成；双线 Git 与 handoff 收口中 |
 | 双线 Git | 实现历史、学习历史、端点等价与唯一最新累计分支 | 未开始 |
 
 ## 正式运行命令
@@ -53,7 +53,7 @@ D:\Anaconda\python.exe -m compileall -q matcher ops
 git diff --check
 ```
 
-本地结果为 `20 passed`，30 个非测试 Matcher 模块全部可导入，语法编译与差异空白检查通过。`pytest.ini` 把正式测试范围固定为 `matcher/tests`，不再误收集 ignored `tmp/` 中保留的历史审计脚本。
+审查修复后的本地结果为 `23 passed`，30 个非测试 Matcher 模块全部可导入，语法编译、注释标点机械门禁与差异空白检查通过。`pytest.ini` 把正式测试范围固定为 `matcher/tests`，不再误收集 ignored `tmp/` 中保留的历史审计脚本。
 
 服务器真实 validation batch 门禁在 gnode10 使用 PocketXMol 可运行的 PyTorch 2.6.0 环境执行，只读取 CPU 与共享存储，不使用或干扰 Job 378693 的 GPU 进程。四个变体的 Dataset 长度均为 5,544：
 
@@ -85,3 +85,13 @@ git diff --check
 - 两张预览图分别为 `topk_gaussian_stage1_only_preview.png` 和 `topk_source_probability_mean_stage1_only_preview.png`；SHA-256 分别为 `dbc1a8a19295752bd83a09dc6965515b810575074c99f40e89bf884d40fa4b30` 与 `2955736592e5cbcf8d184eadfa87b0df6b2222694929c9dd53f056f752c39775`。两图没有 Matcher 数值，也未被称为最终图。
 - 删除六分类、类别概率到 PairScorer 的连接、旧身份损失变体、seen/unseen、calibration、历史活动 YAML 和平行 `matcher/smiles_identity/` 包。旧实现仍可由 Git 恢复。
 - Job 378693 当前由 PocketXMol 真实训练占用，GPU0 显存约 73 GiB 且持续计算；本轮没有触碰其锁或进程。Matcher GPU 前后向和完整 validation 门禁将在独立审查与正式 release 后另行提交短门禁任务，不借用该 GPU。
+
+### 2026-09-17：一轮独立全面审查与定向修复
+
+- Git/函数布局审查、代码注释审查和科学逻辑审查各完成且仅完成一轮全面核查，三者均先返回 `FAIL`。后续只允许对本节问题进行窄口径复核，不再扩大范围。
+- 科学审查发现四个变体在同一 seed 下会因可选模块推进全局随机状态而改变共享参数初值。修复后，每个叶模块按完整模块路径使用独立初始化子流，构造过程恢复调用方随机状态；机械测试逐值比较四变体中同名、同结构模块的共同参数。
+- 两条审查线共同发现旧 manifest 更新会先覆盖固定名 JSONL，再核对旧入口。修复后先核对既有固定契约，两份 JSONL 使用不可变的唯一生成文件名，最后只原子替换 `manifest.json` 作为发布点；来源不一致测试证明旧入口引用文件不变。
+- 科学审查发现阶段 E 评估器没有失败关闭真实受体、CryoAtom2、Stage1-only 预览和 Emap2lig 的 179-PDB 集合。修复后两份 manifest 各自要求 179 个唯一 PDB，并与两种排序的三套预览来源逐集合相等；`test_1` 必须是 test_0 的 149-PDB 严格子集，五个空候选 PDB 仍作为未命中保留。
+- 测试结果不再写 validation 专用 `selection`。正式训练与测试代码也不再计算或持久化 SHA-256；运行目录改为保存 `resolved_config.json` 和 `manifest.snapshot.json`，checkpoint 保存解析配置与 manifest 快照路径。一次性 SHA 证据仍只保留在本执行记录。
+- Dataset/Batch、坐标变换、损失、梯度累积、指标和冻结 JSON 的注释已按真实字段、形状、掩码、索引和分母补全；正式代码注释与 Docstring 已统一使用技能要求的英文标点，结构化字段保持一项一行。
+- 修复后只对三份原报告中的明确问题做窄口径复核，再对窄复核指出的具体行做最后一次小范围确认。科学逻辑、函数布局与 Git 边界、代码注释与 YAML 三条审查线均返回最终 `PASS`，没有继续扩大审查范围。

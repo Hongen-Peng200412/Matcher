@@ -7,6 +7,8 @@ import numpy as np
 import pytest
 import torch
 
+import ops.matcher.build_stage1_manifest as manifest_builder
+
 from matcher.data.density import (
     DENSITY_CHANNEL_NAMES,
     build_density_channels,
@@ -30,11 +32,58 @@ from matcher.evaluation.test_set import (
 from matcher.model.config import MatcherModelConfig
 from matcher.model.ligand_matcher import ClosedSetMatcher
 from matcher.training.config import load_smiles_experiment
+from matcher.training.engine import _write_manifest_snapshot
 from matcher.training.losses import (
     LossWeights,
     compute_matcher_loss,
     smiles_identity_cross_entropy,
 )
+
+
+def test_manifest_source_mismatch_does_not_touch_published_jsonl(tmp_path: Path) -> None:
+    output_path = tmp_path / "manifest.json"
+    candidate_path = tmp_path / "old_candidates.jsonl"
+    identity_path = tmp_path / "old_identities.jsonl"
+    candidate_path.write_text("candidate sentinel\n", encoding="utf-8")
+    identity_path.write_text("identity sentinel\n", encoding="utf-8")
+    output_path.write_text(
+        json.dumps(
+            {
+                "schema": "matcher_stage1_manifest_v1",
+                "class_names": [
+                    "background",
+                    "ion",
+                    "nucleotide_like",
+                    "peptide_like",
+                    "small_molecule",
+                    "sugar",
+                ],
+                "identity_key": "PreparedLigand.smiles",
+                "language_model": "SMI-TED Light 289M",
+                "data_root": str(tmp_path / "old_data"),
+                "stage1_root": str(tmp_path / "stage1"),
+                "graph_asset_path": str(tmp_path / "graph.npz"),
+                "splits": {
+                    "validation": {
+                        "candidates": candidate_path.name,
+                        "identities": identity_path.name,
+                    }
+                },
+                "summary": {"validation": {}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="固定来源"):
+        manifest_builder.build_stage1_manifest(
+            tmp_path / "stage1",
+            "validation",
+            output_path,
+            data_root=tmp_path / "different_data",
+            graph_asset_path=tmp_path / "graph.npz",
+        )
+    assert candidate_path.read_text(encoding="utf-8") == "candidate sentinel\n"
+    assert identity_path.read_text(encoding="utf-8") == "identity sentinel\n"
 
 
 def _graph() -> SmilesGraph:
@@ -161,6 +210,109 @@ def test_trunk_only_parameter_tree_has_no_identity_increment_modules() -> None:
     assert not any("inventory_attention" in name for name in names)
     assert not any("graph_gate" in name for name in names)
     assert not any("inventory_gate" in name for name in names)
+
+
+def test_four_variants_share_identical_initial_values_for_common_parameters() -> None:
+    """同一实验种子下, 四变体的同名同形参数必须逐值相同."""
+
+    models: dict[str, dict[str, torch.Tensor]] = {}
+    for variant in ("strongest", "density_blob_only", "pocket_only", "trunk_only"):
+        torch.manual_seed(3409)
+        rng_state = torch.random.get_rng_state()
+        model = ClosedSetMatcher(_config(variant))
+        assert torch.equal(torch.random.get_rng_state(), rng_state)
+        models[variant] = {
+            name: parameter.detach().clone()
+            for name, parameter in model.named_parameters()
+        }
+    reference = models["strongest"]
+    for variant, parameters in models.items():
+        reference_modules = {
+            name.rsplit(".", 1)[0]: {
+                parameter_name.rsplit(".", 1)[1]: tuple(parameter.shape)
+                for parameter_name, parameter in reference.items()
+                if parameter_name.rsplit(".", 1)[0] == name.rsplit(".", 1)[0]
+            }
+            for name in reference
+        }
+        variant_modules = {
+            name.rsplit(".", 1)[0]: {
+                parameter_name.rsplit(".", 1)[1]: tuple(parameter.shape)
+                for parameter_name, parameter in parameters.items()
+                if parameter_name.rsplit(".", 1)[0] == name.rsplit(".", 1)[0]
+            }
+            for name in parameters
+        }
+        common = {
+            name
+            for name, value in reference.items()
+            if name in parameters
+            and parameters[name].shape == value.shape
+            and reference_modules[name.rsplit(".", 1)[0]]
+            == variant_modules[name.rsplit(".", 1)[0]]
+        }
+        assert common
+        for name in common:
+            torch.testing.assert_close(reference[name], parameters[name], rtol=0, atol=0)
+    strongest = models["strongest"]
+    for name in (
+        "candidate_encoder.aggregator.conditioned.branches.pp.output.weight",
+        "candidate_encoder.aggregator.conditioned.branches.pp.output.bias",
+        "candidate_encoder.aggregator.residual.4.weight",
+        "candidate_encoder.aggregator.residual.4.bias",
+    ):
+        assert torch.count_nonzero(strongest[name]) == 0
+
+
+def test_training_manifest_snapshot_keeps_original_generation_after_entry_moves(
+    tmp_path: Path,
+) -> None:
+    old_candidates = tmp_path / "generation_old_candidates.jsonl"
+    old_identities = tmp_path / "generation_old_identities.jsonl"
+    new_candidates = tmp_path / "generation_new_candidates.jsonl"
+    new_identities = tmp_path / "generation_new_identities.jsonl"
+    for path, text in (
+        (old_candidates, "old candidates\n"),
+        (old_identities, "old identities\n"),
+        (new_candidates, "new candidates\n"),
+        (new_identities, "new identities\n"),
+    ):
+        path.write_text(text, encoding="utf-8")
+    manifest = {
+        "schema": "matcher_stage1_manifest_v1",
+        "class_names": [
+            "background",
+            "ion",
+            "nucleotide_like",
+            "peptide_like",
+            "small_molecule",
+            "sugar",
+        ],
+        "identity_key": "PreparedLigand.smiles",
+        "language_model": "SMI-TED Light 289M",
+        "data_root": str(tmp_path),
+        "stage1_root": str(tmp_path),
+        "graph_asset_path": str(tmp_path / "graph.npz"),
+        "splits": {
+            "train": {
+                "candidates": old_candidates.name,
+                "identities": old_identities.name,
+            }
+        },
+        "summary": {"train": {}},
+    }
+    manifest_path = tmp_path / "manifest.json"
+    snapshot_path = tmp_path / "run" / "manifest.snapshot.json"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    _write_manifest_snapshot(manifest_path, snapshot_path)
+    manifest["splits"]["train"] = {
+        "candidates": new_candidates.name,
+        "identities": new_identities.name,
+    }
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
+    assert Path(snapshot["splits"]["train"]["candidates"]).read_text(encoding="utf-8") == "old candidates\n"
+    assert Path(snapshot["splits"]["train"]["identities"]).read_text(encoding="utf-8") == "old identities\n"
 
 
 @pytest.mark.parametrize(
@@ -454,6 +606,7 @@ def test_final_metrics_and_topk_keep_empty_pdb_in_fixed_denominator(tmp_path: Pa
     }
     metrics = _metrics_from_rows(rows, 0.5, {"nonempty", "empty"})
     assert metrics["pdb_count"] == 2
+    assert "selection" not in metrics
     pdb_ids = [f"pdb{index:03d}" for index in range(179)]
     curve = _matcher_curve("test", {}, pdb_ids, "gaussian_score", tmp_path / "best.pt")
     assert curve["pdb_count"] == 179

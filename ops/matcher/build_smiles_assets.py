@@ -1,7 +1,7 @@
 """从 PreparedLigand 顶层 smiles 构建版本化全局图包和自同构包.
 
 正式命令示例:
-    python -m ops.matcher.build_smiles_assets --data-root /storage/penghongen/AdaLigand/Ori_Data
+python -m ops.matcher.build_smiles_assets --data-root /storage/penghongen/AdaLigand/Ori_Data
 
 构建器只扫描 prepared_smiles.jsonl, 不读取 LigandObject. 无法通过 RDKit 严格解析与
 sanitize 的精确字符串统一排除, 并在 data_root/smiles_assets/smiles_assets_v1_report.json
@@ -39,11 +39,11 @@ def read_exact_smiles(prepared_root: Path) -> tuple[list[str], dict[str, list[di
     - prepared_root: ligand_language_models/prepared 目录.
     - return[0]: 按精确字符串递增的唯一 SMILES 列表.
     - return[1]: dict[str, list[dict[str, Any]]], 精确 SMILES 到全部来源记录的映射.
-        - return[1][smiles][*].pdb_id: str, prepared_smiles.jsonl 中保存该字符串的小写 PDB 标识.
-        - return[1][smiles][*].occurrence_id: int, prepared_smiles.jsonl 的 candidate_id, 在新管线中解释为 occurrence 编号.
-        - return[1][smiles][*].path: str, 当前来源 prepared_smiles.jsonl 的完整路径.
-        - return[1][smiles][*].line_number: int, 当前来源记录在 JSONL 中从 1 开始的物理行号.
-    """
+    - return[1][smiles][*].pdb_id: str, prepared_smiles.jsonl 中保存该字符串的小写 PDB 标识.
+    - return[1][smiles][*].occurrence_id: int, prepared_smiles.jsonl 的 candidate_id, 在新管线中解释为 occurrence 编号.
+    - return[1][smiles][*].path: str, 当前来源 prepared_smiles.jsonl 的完整路径.
+    - return[1][smiles][*].line_number: int, 当前来源记录在 JSONL 中从 1 开始的物理行号.
+"""
 
     sources: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for path in sorted(prepared_root.glob("*/prepared_smiles.jsonl")):
@@ -85,13 +85,13 @@ def build_arrays(smiles_values: list[str]) -> tuple[dict[str, np.ndarray], dict[
     - return[1].matches_offsets: int64 数组, (K + 1,); matches_offsets[i]:matches_offsets[i + 1] 切分第 i 个精确 SMILES 展平后的紧凑自同构矩阵.
     - return[1].matches_iso: int32 数组, (N_match_value_total,); K 个紧凑自同构矩阵按行展平后连接的原子下标.
     - return[2]: list[dict[str, str]], 严格解析失败记录.
-        - return[2][*].smiles: str, 未进入两份资产的精确顶层 PreparedLigand.smiles.
-        - return[2][*].error: str, RDKit 解析、去氢或 sanitize 异常的类型与消息.
+    - return[2][*].smiles: str, 未进入两份资产的精确顶层 PreparedLigand.smiles.
+    - return[2][*].error: str, RDKit 解析、去氢或 sanitize 异常的类型与消息.
 
     自同构沿用 PocketXMol 的 useChirality=True、maxMatches=10000 规则. 每个排列只保存
     至少一种自同构会改变的原子列; matches_shape[:, 1] 给出该可变列数. 解析后出现 BOND_TYPES
     未定义的键型时中止整次构建, 不把该错误降级为 return[2] 排除记录.
-    """
+"""
 
     # list[str], 长度 K; 只有完整通过解析、去氢和 sanitize 的精确字符串才进入两份同序资产.
     accepted: list[str] = []
@@ -200,7 +200,7 @@ def save_npz_atomic(path: Path, arrays: dict[str, np.ndarray], compressed: bool)
     - arrays: dict[str, np.ndarray], 要写入 NPZ 的正式字段映射; 字段语义由 build_arrays 的 return[0] 或 return[1] 契约定义.
     - compressed: True 使用压缩 NPZ; False 保存未压缩 NPZ, 供 I/O 对照使用.
     - return: None; 创建父目录, 在同目录写临时 NPZ, 经 os.replace 发布到 path, 并在成功或失败后清理残留临时文件.
-    """
+"""
 
     path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile(dir=path.parent, suffix=".npz", delete=False) as handle:
@@ -219,7 +219,7 @@ def save_json_atomic(path: Path, value: dict[str, Any]) -> None:
     - path: 最终 JSON 文件路径.
     - value: dict[str, Any], 可由标准 JSON 编码器直接序列化的报告字段映射.
     - return: None; 创建父目录, 在同目录写临时 UTF-8 JSON, 经 os.replace 发布到 path, 并在成功或失败后清理残留临时文件.
-    """
+"""
 
     path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile("w", dir=path.parent, encoding="utf-8", delete=False) as handle:
@@ -243,23 +243,23 @@ def build_smiles_assets(data_root: Path, uncompressed: bool) -> int:
     - return: int, 成功发布全部三项产物时返回 0.
 
     文件产物:
-        - data_root/smiles_assets/smiles_graphs_v1.npz: NPZ, build_arrays 的 return[0] 图字段.
-        - data_root/smiles_assets/smiles_symmetries_v1.npz: NPZ, build_arrays 的 return[1] 自同构字段.
-        - data_root/smiles_assets/smiles_assets_v1_report.json: JSON object, 保存下列构建来源与排除统计.
-            - schema_version: int, 固定为 1.
-            - rdkit_version: str, 本次构建使用的 RDKit 版本.
-            - exact_smiles_count: int, 扫描得到的唯一非空精确字符串数.
-            - accepted_smiles_count: int, 同时进入图包与自同构包的字符串数.
-            - excluded_smiles_count: int, 未通过严格化学构建的字符串数.
-            - excluded: list[dict[str, Any]], build_arrays 返回的排除记录; 每项由 build_smiles_assets 追加全部 sources 来源记录.
-            - excluded[*].smiles: str, 未进入两份资产的精确顶层 PreparedLigand.smiles.
-            - excluded[*].error: str, RDKit 解析、去氢或 sanitize 异常的类型与消息.
-            - excluded[*].sources: list[dict[str, Any]], 该精确 SMILES 在 prepared_smiles.jsonl 中的全部来源记录.
-            - excluded[*].sources[*].pdb_id: str, 保存该字符串的小写 PDB 标识.
-            - excluded[*].sources[*].occurrence_id: int, prepared_smiles.jsonl 的 candidate_id, 在新管线中解释为 occurrence 编号.
-            - excluded[*].sources[*].path: str, 当前来源 prepared_smiles.jsonl 的完整路径.
-            - excluded[*].sources[*].line_number: int, 当前来源记录在 JSONL 中从 1 开始的物理行号.
-    """
+    - data_root/smiles_assets/smiles_graphs_v1.npz: NPZ, build_arrays 的 return[0] 图字段.
+    - data_root/smiles_assets/smiles_symmetries_v1.npz: NPZ, build_arrays 的 return[1] 自同构字段.
+    - data_root/smiles_assets/smiles_assets_v1_report.json: JSON object, 保存下列构建来源与排除统计.
+    - schema_version: int, 固定为 1.
+    - rdkit_version: str, 本次构建使用的 RDKit 版本.
+    - exact_smiles_count: int, 扫描得到的唯一非空精确字符串数.
+    - accepted_smiles_count: int, 同时进入图包与自同构包的字符串数.
+    - excluded_smiles_count: int, 未通过严格化学构建的字符串数.
+    - excluded: list[dict[str, Any]], build_arrays 返回的排除记录; 每项由 build_smiles_assets 追加全部 sources 来源记录.
+    - excluded[*].smiles: str, 未进入两份资产的精确顶层 PreparedLigand.smiles.
+    - excluded[*].error: str, RDKit 解析、去氢或 sanitize 异常的类型与消息.
+    - excluded[*].sources: list[dict[str, Any]], 该精确 SMILES 在 prepared_smiles.jsonl 中的全部来源记录.
+    - excluded[*].sources[*].pdb_id: str, 保存该字符串的小写 PDB 标识.
+    - excluded[*].sources[*].occurrence_id: int, prepared_smiles.jsonl 的 candidate_id, 在新管线中解释为 occurrence 编号.
+    - excluded[*].sources[*].path: str, 当前来源 prepared_smiles.jsonl 的完整路径.
+    - excluded[*].sources[*].line_number: int, 当前来源记录在 JSONL 中从 1 开始的物理行号.
+"""
 
     prepared_root = data_root / "stage1_preparation_box_pool_2/ligand_language_models/prepared"
     output_root = data_root / "smiles_assets"
@@ -288,7 +288,7 @@ def main(argv: list[str] | None = None) -> int:
 
     - argv: 可选命令行参数列表; None 表示读取当前进程命令行.
     - return: int, build_smiles_assets 返回的进程退出码.
-    """
+"""
 
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--data-root", type=Path, required=True)

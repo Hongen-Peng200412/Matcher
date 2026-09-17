@@ -1,4 +1,4 @@
-"""从冻结 Stage1-only 元数据生成两张明确标记为预览的 top-k 图。"""
+"""从冻结 Stage1-only 元数据生成两张明确标记为预览的 top-k 图. """
 
 from __future__ import annotations
 
@@ -9,11 +9,11 @@ from matcher.evaluation.plotting import plot_stage1_only_preview
 
 
 def main(argv: list[str] | None = None) -> int:
-    """解析绘图命令并生成两张 Stage1-only 预览图。
+    """解析绘图命令并生成两张 Stage1-only 预览图.
 
-    - argv: 可选命令行参数；None 表示读取当前进程命令行。
-    - return: Gaussian 与来源概率均值两张 PNG 均写入成功时返回 0。
-    """
+    - argv: 可选命令行参数; None 表示读取当前进程命令行.
+    - return: Gaussian 与来源概率均值两张 PNG 均写入成功时返回 0.
+"""
 
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--metadata-path", type=Path, required=True)

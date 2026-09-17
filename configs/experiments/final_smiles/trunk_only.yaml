@@ -1,68 +1,44 @@
-# name: 字符串；训练输出子目录名和 W&B 运行名前缀。
-name: trunk_only
-# output_root: POSIX 绝对路径；四项正式实验共同的训练输出根目录。
-output_root: /storage/penghongen/Matcher/runs
-# seed: 整数；固定 Python、NumPy、PyTorch、采样器和 DataLoader 随机源。
-seed: 3409
-data:
-  # manifest_path: POSIX 绝对路径；阶段 E 冻结后由四项实验共同读取。
-  manifest_path: /storage/penghongen/Matcher/manifests/final_train_validation/manifest.json
-  # train_split / validation_split: manifest.splits 中的训练和验证键。
-  train_split: train
-  validation_split: validation
-  # selected_only: true 只训练 Stage1 已选候选；validation 也固定为 true。
-  selected_only: true
-  # batch_size × accumulation_steps: 名义 global batch；A800 首选 32 × 1。
-  batch_size: 32
-  accumulation_steps: 1
-  # num_workers / prefetch_factor: 持久工作进程数和每个进程预取批次数。
-  num_workers: 8
-  prefetch_factor: 2
-  # pp_top_k: 每个候选按 Stage1 概率保留的 PP token 上限。
-  pp_top_k: 2048
-  # cache_gib_per_worker: 每个 Dataset 副本的 PDB 数组最近使用缓存预算。
-  cache_gib_per_worker: 8.0
-model:
-  # variant: 候选侧与 strongest 相同；身份侧只保留语言投影和 native PairScorer。
-  variant: trunk_only
-  model_dim: 256
-  # attention_heads: 候选条件注意力的头数；身份增量注意力不实例化。
-  attention_heads: 8
-  # dropout: 模型内部丢弃概率。
-  dropout: 0.10
-  # voxel_feature_channels: U-Net 最高分辨率输出通道数。
-  voxel_feature_channels: 64
-  # raunet_planes: 九项 U-Net 编解码通道宽度，顺序由 RaUnetBackbone 固定读取。
-  raunet_planes: [64, 256, 256, 256, 256, 256, 128, 64, 64]
-  # recycle_iterations / bottleneck_attention_layers: U-Net 回收次数和瓶颈注意力层数。
-  recycle_iterations: 3
-  # gradient_checkpointing: true 在训练时用激活重计算降低显存。
-  gradient_checkpointing: true
-  bottleneck_attention_layers: 4
-  # graph_layers: 公共结构字段；trunk_only 不实例化图编码器。
-  graph_layers: 4
-loss:
-  # 四个浮点系数依次缩放前景 BCE、两个区域辅助项和直接 SMILES 交叉熵。
-  foreground: 1.0
-  ligand_area: 0.10
-  binding_area: 0.10
-  identity: 1.0
-optimization:
-  # learning_rate / weight_decay: AdamW 初始学习率和权重衰减。
-  learning_rate: 1.0e-4
-  weight_decay: 1.0e-4
-  # gradient_clip_norm: 全局梯度范数阈值；200 是固定宽松裁剪。
-  gradient_clip_norm: 200.0
-  # max_epochs / patience_bad_epochs: 最多轮数与连续未改善 validation 数。
-  max_epochs: 100
-  patience_bad_epochs: 2
-tracking:
-  # mode: online 直接写入 W&B。
-  mode: online
-  # entity: null 使用当前 W&B 登录账户的默认实体。
-  entity: null
-  # project / group: W&B 项目和四变体共同分组名称。
-  project: Matcher
-  group: final_smiles_four_variants
-  # log_every_updates: 每 20 次参数更新记录训练标量。
-  log_every_updates: 20
+# trunk_only 正式从零训练配置. matcher.training.config.load_smiles_experiment() 精确读取全部字段.
+
+name: trunk_only  # str, 输出子目录名和 W&B 运行名前缀; 必须是非空单级目录名
+output_root: /storage/penghongen/Matcher/runs  # str, 服务器训练运行根目录; 每次运行在此建立 name/run_stamp
+seed: 3409  # int, Python、NumPy、PyTorch、采样器和 DataLoader 共用随机种子
+data:  # mapping, manifest、划分、批量和 DataLoader 读取参数
+  manifest_path: /storage/penghongen/Matcher/manifests/final_train_validation/manifest.json  # str, 冻结训练和 validation 清单入口; 训练中不得原地追加
+  train_split: train  # str, manifest.splits 中的训练划分键
+  validation_split: validation  # str, manifest.splits 中的完整 validation 划分键
+  selected_only: true  # bool, true 表示训练只保留 candidate_selected=true; validation 始终由 engine 固定为已选候选
+  batch_size: 32  # int>0, 单个物理批次的候选数
+  accumulation_steps: 1  # int>0, 每次参数更新累计的物理批次数; 与 batch_size 相乘得到名义 global batch
+  num_workers: 8  # int>=0, 每个 DataLoader 的持久工作进程数; 0 表示主进程读取
+  prefetch_factor: 2  # int>0, num_workers>0 时每个工作进程预取的物理批次数
+  pp_top_k: 2048  # int>0, 每个候选按 Stage1 概率稳定保留的 PP token 上限
+  cache_gib_per_worker: 8.0  # float>=0, 每个 Dataset worker 的 PDB 载荷最近使用缓存预算; 0 表示不缓存
+model:  # mapping, trunk_only 的模型结构参数
+  variant: trunk_only  # str, 候选侧与 strongest 相同; 身份侧只保留 SMI-TED native 打分器
+  model_dim: 256  # int>0, 候选与身份表示共同宽度; 必须能被 attention_heads 整除
+  attention_heads: 8  # int>0, 候选条件注意力头数; 图和身份清单注意力不实例化
+  dropout: 0.10  # float, 模型内部丢弃概率; 取值范围 [0,1)
+  voxel_feature_channels: 64  # int>0, U-Net 最高分辨率输出通道数
+  raunet_planes: [64, 256, 256, 256, 256, 256, 128, 64, 64]  # list[int], 九项 U-Net 编解码通道宽度; 顺序由 RaUnetBackbone 固定读取
+  recycle_iterations: 3  # int>0, U-Net 回收次数
+  gradient_checkpointing: true  # bool, true 表示训练时用激活重计算降低显存
+  bottleneck_attention_layers: 4  # int>0, U-Net 瓶颈注意力层数
+  graph_layers: 4  # int>0, 公共结构字段; trunk_only 不实例化图编码器
+loss:  # mapping, 四项训练损失的标量系数
+  foreground: 1.0  # float, 前景二分类 BCE 系数
+  ligand_area: 0.10  # float, 配体区域辅助损失系数
+  binding_area: 0.10  # float, 受体结合区域辅助损失系数
+  identity: 1.0  # float, 受支持真前景上的直接 SMILES 身份交叉熵系数
+optimization:  # mapping, AdamW、梯度裁剪和停止条件
+  learning_rate: 1.0e-4  # float>0, AdamW 初始学习率
+  weight_decay: 1.0e-4  # float>=0, AdamW 权重衰减
+  gradient_clip_norm: 200.0  # float>0, 每次参数更新前的全局梯度范数上限; 200 是宽松裁剪
+  max_epochs: 100  # int>0, 最多完成的训练和完整 validation 轮数
+  patience_bad_epochs: 2  # int>0, 连续多少次完整 validation 未严格改善 selection 后早停
+tracking:  # mapping, W&B 模式、命名和记录间隔
+  mode: online  # str, W&B 模式; 可取 online、offline 或 disabled
+  entity: null  # str|null, W&B 实体名称; null 使用当前登录账户默认实体
+  project: Matcher  # str, W&B 项目名称; 必须非空
+  group: final_smiles_four_variants  # str, 四项正式变体共用的 W&B 分组名称
+  log_every_updates: 20  # int>0, 每多少次参数更新记录一次训练标量

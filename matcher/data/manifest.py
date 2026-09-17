@@ -1,11 +1,11 @@
-"""读取版本化 Stage1 manifest，并核对运行时依赖的最小契约。
+"""读取版本化 Stage1 manifest, 并核对运行时依赖的最小契约.
 
-主要入口：
-    - load_manifest: 读取 manifest.json 顶层元数据。
-    - read_split_records: 读取一个划分的候选与 PDB 内 SMILES 身份记录。
+主要入口:
+- load_manifest: 读取 manifest.json 顶层元数据.
+- read_split_records: 读取一个划分的候选与 PDB 内 SMILES 身份记录.
 
-目录扫描、几何目标计算和原子发布属于 ops/matcher/build_stage1_manifest.py。本模块不扫描
-Stage1 目录，也不在训练时补建缺失记录。
+目录扫描、几何目标计算和原子发布属于 ops/matcher/build_stage1_manifest.py. 本模块不扫描
+Stage1 目录, 也不在训练时补建缺失记录.
 """
 
 from __future__ import annotations
@@ -54,11 +54,11 @@ IDENTITY_FIELDS = {
 }
 
 def _read_jsonl(path: Path) -> list[dict[str, Any]]:
-    """按文件顺序读取 UTF-8 JSONL。
+    """按文件顺序读取 UTF-8 JSONL.
 
-    - path: JSONL 文件路径。
-    - return: 对象列表；空白行忽略，非对象记录会立即报错。
-    """
+    - path: JSONL 文件路径.
+    - return: 对象列表; 空白行忽略, 非对象记录会立即报错.
+"""
 
     records: list[dict[str, Any]] = []
     with path.open("r", encoding="utf-8") as handle:
@@ -73,11 +73,11 @@ def _read_jsonl(path: Path) -> list[dict[str, Any]]:
 
 
 def load_manifest(path: Path) -> dict[str, Any]:
-    """读取 manifest.json 并核对稳定顶层字段。
+    """读取 manifest.json 并核对稳定顶层字段.
 
-    - path: manifest.json 路径。
-    - return: 顶层映射；划分文件名仍是相对 manifest 所在目录的路径。
-    """
+    - path: manifest.json 路径.
+    - return: 顶层映射; 划分文件名仍是相对 manifest 所在目录的路径.
+"""
 
     manifest = json.loads(Path(path).read_text(encoding="utf-8"))
     if not isinstance(manifest, dict) or set(manifest) != MANIFEST_FIELDS:
@@ -101,13 +101,13 @@ def load_manifest(path: Path) -> dict[str, Any]:
 
 
 def _check_candidate(record: dict[str, Any], split: str, index: int) -> None:
-    """核对一个候选记录的字段集合和关键身份状态。
+    """核对一个候选记录的字段集合和关键身份状态.
 
-    - record: 候选 JSON 对象。
-    - split: 当前划分名称。
-    - index: 候选 JSONL 中的零基位置，只用于错误定位。
-    - return: 字段与前景状态一致时返回 None。
-    """
+    - record: 候选 JSON 对象.
+    - split: 当前划分名称.
+    - index: 候选 JSONL 中的零基位置, 只用于错误定位.
+    - return: 字段与前景状态一致时返回 None.
+"""
 
     prefix = f"{split}.candidates[{index}]"
     if set(record) != CANDIDATE_FIELDS:
@@ -165,13 +165,13 @@ def _check_candidate(record: dict[str, Any], split: str, index: int) -> None:
 
 
 def _check_identity(record: dict[str, Any], split: str, index: int) -> None:
-    """核对一个 PDB 内精确 SMILES 身份记录。
+    """核对一个 PDB 内精确 SMILES 身份记录.
 
-    - record: 身份 JSON 对象。
-    - split: 当前划分名称，只用于错误定位。
-    - index: 身份 JSONL 中的零基位置。
-    - return: 三个字段均为非空字符串时返回 None。
-    """
+    - record: 身份 JSON 对象.
+    - split: 当前划分名称, 只用于错误定位.
+    - index: 身份 JSONL 中的零基位置.
+    - return: 三个字段均为非空字符串时返回 None.
+"""
 
     prefix = f"{split}.identities[{index}]"
     if set(record) != IDENTITY_FIELDS:
@@ -185,13 +185,13 @@ def read_split_records(
     path: Path,
     split: str,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """读取一个划分的全部候选和 PDB 内 SMILES 身份记录。
+    """读取一个划分的全部候选和 PDB 内 SMILES 身份记录.
 
-    - path: manifest.json 路径。
-    - split: manifest.splits 中的划分名称。
-    - return[0]: 候选记录，顺序就是 Dataset 的冻结候选顺序。
-    - return[1]: 身份记录；同一 PDB 内由构建器按精确 SMILES 字典序发布。
-    """
+    - path: manifest.json 路径.
+    - split: manifest.splits 中的划分名称.
+    - return[0]: 候选记录, 顺序就是 Dataset 的冻结候选顺序.
+    - return[1]: 身份记录; 同一 PDB 内由构建器按精确 SMILES 字典序发布.
+"""
 
     manifest = load_manifest(path)
     if split not in manifest["splits"]:

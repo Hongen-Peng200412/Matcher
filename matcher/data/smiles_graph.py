@@ -1,8 +1,8 @@
 """读取由精确 PreparedLigand.smiles 唯一决定的全局重原子图包.
 
 主要入口:
-    - SmilesGraph: 保存一个 SMILES 的原子和有向化学键数组.
-    - SmilesGraphStore: 每个 DataLoader 工作进程完整加载一次图包, 并按精确字符串取图.
+- SmilesGraph: 保存一个 SMILES 的原子和有向化学键数组.
+- SmilesGraphStore: 每个 DataLoader 工作进程完整加载一次图包, 并按精确字符串取图.
 
 图包不保存坐标、模板键或另造的图标识. 运行时字典的整数值只是数组切片位置,
 不会写回清单, 也不构成新的科学身份.
@@ -21,12 +21,12 @@ class SmilesGraph:
     """保存一个精确 SMILES 对应的重原子化学图.
 
     字段:
-        - element: int64 数组, (N_atom,); 按 RDKit 重原子顺序保存原子序数.
-        - charge: int64 数组, (N_atom,); 与 element 逐原子对齐的形式电荷.
-        - atom_in_ring: float32 数组, (N_atom, 4); 与 element 逐原子对齐, 四列依次标记 3、4、5、6 元环.
-        - edge_index: int64 数组, (2, 2*N_bond); 第一轴为源端点和目标端点, 每条无向键按图包方向、反向各保存一次.
-        - edge_features: float32 数组, (2*N_bond, 9); 与 edge_index 第二轴逐边对齐, 前五列为键型独热编码, 后四列依次标记 3、4、5、6 元环.
-    """
+    - element: int64 数组, (N_atom,); 按 RDKit 重原子顺序保存原子序数.
+    - charge: int64 数组, (N_atom,); 与 element 逐原子对齐的形式电荷.
+    - atom_in_ring: float32 数组, (N_atom, 4); 与 element 逐原子对齐, 四列依次标记 3、4、5、6 元环.
+    - edge_index: int64 数组, (2, 2*N_bond); 第一轴为源端点和目标端点, 每条无向键按图包方向、反向各保存一次.
+    - edge_features: float32 数组, (2*N_bond, 9); 与 edge_index 第二轴逐边对齐, 前五列为键型独热编码, 后四列依次标记 3、4、5、6 元环.
+"""
 
     element: np.ndarray
     charge: np.ndarray
@@ -39,15 +39,15 @@ class SmilesGraphStore:
     """在当前进程内完整载入一个版本化 SMILES 图包.
 
     构造参数:
-        - path: smiles_graphs_v1.npz 的绝对或相对路径.
+    - path: smiles_graphs_v1.npz 的绝对或相对路径.
 
     生命周期:
-        - initialize: 打开图包一次, 把全部数组复制到内存并关闭文件.
-        - get: 按精确顶层 SMILES 返回由内存切片和有向边派生数组构成的 SmilesGraph.
+    - initialize: 打开图包一次, 把全部数组复制到内存并关闭文件.
+    - get: 按精确顶层 SMILES 返回由内存切片和有向边派生数组构成的 SmilesGraph.
 
     同一 Dataset 副本只持有一个 Store. DataLoader 使用持久工作进程时, worker_init_fn
     在每个工作进程启动阶段调用 initialize, 样本读取阶段不再打开图包.
-    """
+"""
 
     def __init__(self, path: Path) -> None:
         """记录图包路径; 此时不执行文件 I/O.
@@ -56,7 +56,7 @@ class SmilesGraphStore:
         - self.path: 规范化为 Path 的图包位置.
         - self._arrays: 初始化前为 None; 初始化后保存内存数组映射.
         - self._index_by_smiles: 初始化前为空; 初始化后把精确字符串映射到数组位置.
-        """
+"""
 
         self.path = Path(path)
         self._arrays: dict[str, np.ndarray] | None = None
@@ -66,22 +66,22 @@ class SmilesGraphStore:
         """完整读取并验证图包, 重复调用时直接复用已有内存.
 
         图包字段:
-            - schema_version: int64 标量, 固定为 1.
-            - smiles: Unicode 数组, (K,); K 个精确 PreparedLigand.smiles 按字符串严格递增且不重复.
-            - atom_offsets: int64 数组, (K + 1,); atom_offsets[i]:atom_offsets[i + 1] 同步切分 element、charge 和 atom_in_ring, 首值为 0, 末值为总原子数 N_atom_total.
-            - element: int16 数组, (N_atom_total,); K 张图连接后的原子序数.
-            - charge: int8 数组, (N_atom_total,); 与 element 逐原子对齐的形式电荷.
-            - atom_in_ring: bool 数组, (N_atom_total, 4); 与 element 逐原子对齐的 3、4、5、6 元环标志.
-            - bond_offsets: int64 数组, (K + 1,); bond_offsets[i]:bond_offsets[i + 1] 同步切分 bond_index、bond_type 和 bond_in_ring, 首值为 0, 末值为无向键总数 N_bond_total.
-            - bond_index: int32 数组, (2, N_bond_total); 每张图内部的无向键局部端点, 两行依次为 RDKit 起始原子与终止原子下标.
-            - bond_type: uint8 数组, (N_bond_total,); 与 bond_index 第二轴逐键对齐, 0:5 依次为 single、double、triple、dative、aromatic.
-            - bond_in_ring: bool 数组, (N_bond_total, 4); 与 bond_index 第二轴逐键对齐的 3、4、5、6 元环标志.
+        - schema_version: int64 标量, 固定为 1.
+        - smiles: Unicode 数组, (K,); K 个精确 PreparedLigand.smiles 按字符串严格递增且不重复.
+        - atom_offsets: int64 数组, (K + 1,); atom_offsets[i]:atom_offsets[i + 1] 同步切分 element、charge 和 atom_in_ring, 首值为 0, 末值为总原子数 N_atom_total.
+        - element: int16 数组, (N_atom_total,); K 张图连接后的原子序数.
+        - charge: int8 数组, (N_atom_total,); 与 element 逐原子对齐的形式电荷.
+        - atom_in_ring: bool 数组, (N_atom_total, 4); 与 element 逐原子对齐的 3、4、5、6 元环标志.
+        - bond_offsets: int64 数组, (K + 1,); bond_offsets[i]:bond_offsets[i + 1] 同步切分 bond_index、bond_type 和 bond_in_ring, 首值为 0, 末值为无向键总数 N_bond_total.
+        - bond_index: int32 数组, (2, N_bond_total); 每张图内部的无向键局部端点, 两行依次为 RDKit 起始原子与终止原子下标.
+        - bond_type: uint8 数组, (N_bond_total,); 与 bond_index 第二轴逐键对齐, 0:5 依次为 single、double、triple、dative、aromatic.
+        - bond_in_ring: bool 数组, (N_bond_total, 4); 与 bond_index 第二轴逐键对齐的 3、4、5、6 元环标志.
 
         返回状态:
-            - self._arrays: dict[str, np.ndarray], 全部字段的独立内存副本; np.load 上下文在赋值前关闭.
-            - self._index_by_smiles: dict[str, int], 精确 SMILES 到 smiles 第一轴位置的映射.
-            - return: None; 已初始化时不重复打开文件.
-        """
+        - self._arrays: dict[str, np.ndarray], 全部字段的独立内存副本; np.load 上下文在赋值前关闭.
+        - self._index_by_smiles: dict[str, int], 精确 SMILES 到 smiles 第一轴位置的映射.
+        - return: None; 已初始化时不重复打开文件.
+"""
 
         if self._arrays is not None:
             return
@@ -146,7 +146,7 @@ class SmilesGraphStore:
 
         - smiles: str, PreparedLigand 顶层 smiles 原始字符串, 不做 canonicalize 或空白修剪.
         - return: bool, 字符串是否精确存在于图包 smiles 第一轴; 首次查询会触发一次完整加载.
-        """
+"""
 
         self.initialize()
         return smiles in self._index_by_smiles
@@ -156,7 +156,7 @@ class SmilesGraphStore:
 
         - smiles: PreparedLigand 顶层 smiles 的原始字符串, 不做 canonicalize 或空白修剪.
         - return: SmilesGraph; 数组顺序沿用离线 RDKit 解析后的重原子顺序.
-        """
+"""
 
         self.initialize()
         assert self._arrays is not None
@@ -190,7 +190,7 @@ class SmilesGraphStore:
         """返回图包内精确 SMILES 数量.
 
         - return: int, 图包 smiles 第一轴长度; 首次读取会完成初始化.
-        """
+"""
 
         self.initialize()
         return len(self._index_by_smiles)

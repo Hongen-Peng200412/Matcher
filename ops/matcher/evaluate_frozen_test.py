@@ -1,4 +1,4 @@
-"""用一个冻结 BEST checkpoint 评估真实受体与 CryoAtom2 test_0。"""
+"""用一个冻结 BEST checkpoint 评估真实受体与 CryoAtom2 test_0. """
 
 from __future__ import annotations
 
@@ -9,11 +9,11 @@ from matcher.evaluation.test_set import build_final_test_artifact
 
 
 def main(argv: list[str] | None = None) -> int:
-    """解析冻结 test 命令并调用唯一评估器。
+    """解析冻结 test 命令并调用唯一评估器.
 
-    - argv: 可选命令行参数；None 表示读取当前进程命令行。
-    - return: 两种受体条件和可选 test_1 成功写入同一输出 JSON 时返回 0。
-    """
+    - argv: 可选命令行参数; None 表示读取当前进程命令行.
+    - return: 两种受体条件和可选 test_1 成功写入同一输出 JSON 时返回 0.
+"""
 
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--checkpoint", type=Path, required=True)

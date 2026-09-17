@@ -26,7 +26,7 @@ def _pad_float(values: list[np.ndarray]) -> tuple[torch.Tensor, torch.Tensor]:
     - values: 非空二维数组列表; 第二维宽度必须相同, 第一维允许为零.
     - return[0]: float32 张量, (B, N_max, D), 无效位置补零.
     - return[1]: bool 张量, (B, N_max), 原数组覆盖位置为 True.
-    """
+"""
 
     # int, N_max; 批内数组第一轴的最大长度.
     maximum = max(len(value) for value in values)
@@ -50,7 +50,7 @@ def _pad_integer(values: list[np.ndarray]) -> tuple[torch.Tensor, torch.Tensor]:
     - values: 非空二维索引数组列表; 第二维宽度必须相同, 第一维允许为零.
     - return[0]: int64 张量, (B, N_max, D), 无效位置补零.
     - return[1]: bool 张量, (B, N_max), 原数组覆盖位置为 True.
-    """
+"""
 
     # int, N_max; 批内索引数组第一轴的最大长度.
     maximum = max(len(value) for value in values)
@@ -80,7 +80,7 @@ class ShuffledBatchSampler(Sampler[list[int]]):
     - drop_last: 是否丢弃不足一个物理批次的末批.
     - seed: 基准随机种子.
     - sample_count_multiple: 可选截短倍数; 用于保持梯度累积边界完整.
-    """
+"""
 
     def __init__(
         self,
@@ -99,7 +99,7 @@ class ShuffledBatchSampler(Sampler[list[int]]):
         - drop_last: True 时不生成不足 batch_size 的末批.
         - seed: 洗牌基准种子.
         - sample_count_multiple: 可选候选截短倍数; 正式训练用它保持梯度累积完整.
-        """
+"""
 
         if batch_size <= 0:
             raise ValueError("batch_size 必须为正整数。")
@@ -120,7 +120,7 @@ class ShuffledBatchSampler(Sampler[list[int]]):
 
         - epoch: int, 与基准 seed 相加后播种当前周期的独立洗牌, 通常从 0 递增.
         - return: None, 只更新 self.epoch.
-        """
+"""
 
         self.epoch = int(epoch)
 
@@ -131,7 +131,7 @@ class ShuffledBatchSampler(Sampler[list[int]]):
 
         洗牌只依赖固定 seed 和当前 epoch; 可选截短发生在洗牌后, 因此每个 epoch
         可能舍弃不同候选, 但总样本数和梯度累积边界保持不变.
-        """
+"""
 
         indices = list(range(len(self.dataset)))
         if self.shuffle:
@@ -148,7 +148,7 @@ class ShuffledBatchSampler(Sampler[list[int]]):
         """返回应用截短与末批规则后的物理批次数.
 
         - return: int, sample_count_multiple 截短后按 batch_size 切分的批次数; drop_last=False 时向上取整.
-        """
+"""
 
         sample_count = len(self.dataset)
         if self.sample_count_multiple is not None:
@@ -161,7 +161,7 @@ def initialize_candidate_worker(_: int) -> None:
 
     - _: int, PyTorch 提供的工作进程编号; 初始化逻辑不依赖具体编号.
     - return: None, 当前工作进程的 CandidateDataset.graph_store 完整载入一次图包.
-    """
+"""
 
     information = get_worker_info()
     if information is None or not isinstance(information.dataset, CandidateDataset):
@@ -177,7 +177,7 @@ def collate_candidates(items: list[CandidateItem]) -> CandidateBatch:
 
     token 补零仅发生在批内最大长度之后; 对应 mask 标记有效位置. 每个有效身份恰好
     连接一张图, graph_to_sample 和 graph_to_identity 把图表示写回身份槽.
-    """
+"""
 
     if not items:
         raise ValueError("collate_candidates 不接受空列表。")
@@ -302,7 +302,7 @@ def build_candidate_loader(
     - prefetch_factor: 工作进程预取批次数; 只在 num_workers>0 时传给 PyTorch.
     - worker_generator_seed: DataLoader 工作进程播种使用的独立种子.
     - return: DataLoader[CandidateBatch], sampler 决定批次顺序, collate_candidates 生成每个 CandidateBatch.
-    """
+"""
 
     if num_workers < 0:
         raise ValueError("num_workers 不能为负数。")

@@ -15,8 +15,8 @@ def main(argv: list[str] | None = None) -> int:
     - argv: 可选命令行参数列表; None 表示读取当前进程命令行.
     - return: 训练达到配置停止条件并写出 summary.json 后返回零.
 
-    非正常中断时不会伪造 summary.json；已经原子发布的 checkpoint 与历史记录保留。
-    """
+    非正常中断时不会伪造 summary.json; 已经原子发布的 checkpoint 与历史记录保留.
+"""
 
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path, required=True)

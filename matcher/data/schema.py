@@ -1,7 +1,7 @@
 """定义 Matcher 的固定类别、输入维度和正式数据根目录.
 
 主要入口:
-    - SourceRoots: 连接 AdaLigand 原始产物、Find_1 centered 产物和 Matcher 可写根目录.
+- SourceRoots: 连接 AdaLigand 原始产物与 Find_1 centered 产物的只读根目录.
 
 本模块不读写文件. 新正式管线只有一种身份、语言表示和裁剪契约, 因此不再暴露
 schema 数字、语言家族、身份范围或局部裁剪策略开关.
@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
-# str tuple, 长度 6; 只用于真值分层，模型前景头不预测这六类。
+# str tuple, 长度 6; 只用于真值分层, 模型前景头不预测这六类.
 CLASS_NAMES = (
     "background",
     "ion",
@@ -22,12 +22,8 @@ CLASS_NAMES = (
     "small_molecule",
     "sugar",
 )
-# dict[str, int], 类别名称到 CLASS_NAMES 下标的唯一映射.
-CLASS_TO_INDEX = {name: index for index, name in enumerate(CLASS_NAMES)}
-# str tuple, 长度 5; 真实前景候选报告使用的固定类别顺序。
+# str tuple, 长度 5; 真实前景候选报告使用的固定类别顺序.
 FOREGROUND_CLASS_NAMES = CLASS_NAMES[1:]
-# int tuple, 长度 5; 五类前景在 CLASS_NAMES 中的历史稳定下标，只用于结果分层。
-FOREGROUND_CLASS_INDICES = tuple(range(1, len(CLASS_NAMES)))
 # str, manifest.json 顶层 schema 的唯一允许值.
 MANIFEST_SCHEMA = "matcher_stage1_manifest_v1"
 
@@ -76,31 +72,26 @@ LOCAL_CONTEXT_HALF_EXTENT_VOXELS = LOCAL_BOX_SIZE / 2.0
 
 @dataclass(frozen=True)
 class SourceRoots:
-    """保存新 Matcher 读取和写入的三个显式根目录.
+    """保存新 Matcher 扫描清单时读取的两个显式根目录.
 
     构造参数:
-        - data_root: AdaLigand Ori_Data 根目录, 如 `/storage/penghongen/AdaLigand/Ori_Data`.
-        - stage1_root: Find_1 的 `artifacts/Find_1` 根目录, 其下按 validation 等划分保存 PDB.
-        - output_root: Matcher 清单、诊断和训练产物的可写根目录.
+    - data_root: AdaLigand Ori_Data 根目录, 如 `/storage/penghongen/AdaLigand/Ori_Data`.
+    - stage1_root: Find_1 的 `artifacts/Find_1` 根目录, 其下按 validation 等划分保存 PDB.
 
     派生路径:
-        - prepared_root: PreparedLigand 顶层 SMILES 清单的共同父目录.
-        - language_root: SMI-TED 289M occurrence 向量的共同父目录.
-        - graph_asset_path: 全局版本化 SMILES 图包.
-        - symmetry_asset_path: 供 PocketXMol 使用的全局自同构包.
-        - manifest_root: 新版 Stage1 候选与单一 SMILES 身份清单目录。
-    """
+    - prepared_root: PreparedLigand 顶层 SMILES 清单的共同父目录.
+    - language_root: SMI-TED 289M occurrence 向量的共同父目录.
+"""
 
     data_root: Path
     stage1_root: Path
-    output_root: Path
 
     @property
     def prepared_root(self) -> Path:
         """返回按 PDB 保存 PreparedLigand 顶层字段的目录.
 
         - return: data_root 下固定的 ligand_language_models/prepared 路径.
-        """
+"""
 
         return self.data_root / "stage1_preparation_box_pool_2/ligand_language_models/prepared"
 
@@ -109,33 +100,6 @@ class SourceRoots:
         """返回按 PDB 和 occurrence 保存 SMI-TED 289M 向量的目录.
 
         - return: data_root 下固定的 ligand_language_models/smi_ted_289m 路径.
-        """
+"""
 
         return self.data_root / "stage1_preparation_box_pool_2/ligand_language_models/smi_ted_289m"
-
-    @property
-    def graph_asset_path(self) -> Path:
-        """返回版本一全局精确 SMILES 化学图包路径.
-
-        - return: data_root/smiles_assets/smiles_graphs_v1.npz.
-        """
-
-        return self.data_root / "smiles_assets/smiles_graphs_v1.npz"
-
-    @property
-    def symmetry_asset_path(self) -> Path:
-        """返回版本一全局精确 SMILES 自同构包路径.
-
-        - return: data_root/smiles_assets/smiles_symmetries_v1.npz.
-        """
-
-        return self.data_root / "smiles_assets/smiles_symmetries_v1.npz"
-
-    @property
-    def manifest_root(self) -> Path:
-        """返回候选、身份 JSONL 和入口清单的共同输出目录.
-
-        - return: output_root/manifests/stage1_smiles_v1。
-        """
-
-        return self.output_root / "manifests/stage1_smiles_v1"

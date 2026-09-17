@@ -1,8 +1,12 @@
-"""执行四个正式 Matcher 变体共用的单卡训练、完整验证和 BEST/LAST 治理。"""
+"""执行四个正式 Matcher 变体共用的单卡训练、完整验证和 BEST/LAST 治理.
+
+主要入口是 run_smiles_training. 该入口建立 Dataset、DataLoader、模型和优化器, 每个 epoch
+运行完整 validation, 按唯一 selection 更新 BEST 并执行自然早停. 运行目录保存来源路径、
+manifest 快照、逐 epoch 历史、BEST/LAST checkpoint 和最终摘要, 可选向 W&B 写入在线曲线.
+"""
 
 from __future__ import annotations
 
-import hashlib
 import json
 import math
 import os
@@ -17,6 +21,7 @@ from typing import Any, cast
 import numpy as np
 import torch
 
+from ..data.manifest import load_manifest
 from ..datasets.batching import ShuffledBatchSampler, build_candidate_loader
 from ..datasets.candidate_data import load_manifest_dataset
 from ..datasets.contracts import CandidateBatch
@@ -28,26 +33,44 @@ from .config import SmilesExperimentConfig
 from .losses import compute_matcher_loss
 
 
-def _sha256(path: Path) -> str:
-    """计算来源文件的内容摘要。
+def _write_manifest_snapshot(source_path: Path, snapshot_path: Path) -> dict[str, Any]:
+    """写出可由 Dataset 直接读取的不可变 manifest 入口快照.
 
-    - path: YAML 或 manifest 文件路径。
-    - return: 小写十六进制 SHA-256；按 1 MiB 分块读取。
-    """
+    - source_path: 构建训练进程时解析的正式 manifest.json 路径.
+    - snapshot_path: 当前运行目录内的新 JSON 路径.
+    - return: 已写入 snapshot_path 的顶层 manifest 映射.
 
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for block in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
+    快照把每个 split 的候选和身份文件名解析为绝对路径. 构建器为这些 JSONL 使用唯一生成
+    文件名, 因此原始 manifest 后续发布新代际不会改变本次 Dataset 实际读取的记录.
+"""
+
+    source_path = Path(source_path).resolve()
+    snapshot = load_manifest(source_path)
+    frozen_splits: dict[str, dict[str, str]] = {}
+    for split, files in snapshot["splits"].items():
+        if not isinstance(files, dict) or set(files) != {"candidates", "identities"}:
+            raise ValueError(f"manifest.splits.{split} 必须只含 candidates 和 identities。")
+        frozen_files: dict[str, str] = {}
+        for field in ("candidates", "identities"):
+            value = files[field]
+            if not isinstance(value, str) or not value:
+                raise ValueError(f"manifest.splits.{split}.{field} 必须是非空路径字符串。")
+            resolved = (source_path.parent / value).resolve()
+            if not resolved.is_file():
+                raise FileNotFoundError(resolved)
+            frozen_files[field] = str(resolved)
+        frozen_splits[str(split)] = frozen_files
+    snapshot["splits"] = frozen_splits
+    write_json(Path(snapshot_path), snapshot)
+    return snapshot
 
 
 def _set_seed(seed: int) -> None:
-    """固定当前训练进程的随机源与矩阵精度策略。
+    """固定当前训练进程的随机源与矩阵精度策略.
 
-    - seed: 同时传给 Python、NumPy、PyTorch CPU 和全部可见 CUDA 设备的整数种子。
-    - return: None；同时把 float32 矩阵乘法精度设为 high。
-    """
+    - seed: 同时传给 Python、NumPy、PyTorch CPU 和全部可见 CUDA 设备的整数种子.
+    - return: None; 同时把 float32 矩阵乘法精度设为 high.
+"""
 
     random.seed(seed)
     np.random.seed(seed)
@@ -57,13 +80,12 @@ def _set_seed(seed: int) -> None:
 
 
 def _move_batch(batch: CandidateBatch, device: torch.device) -> CandidateBatch:
-    """把批次张量迁移到训练设备。
+    """把批次张量迁移到训练设备.
 
-    - batch: DataLoader 产生的 CandidateBatch。
-    - device: 当前单卡训练设备。
-    - return: 键集合不变的新映射；张量使用 non_blocking=True 迁移，字符串列表和 metadata
-      保留在 CPU。
-    """
+    - batch: DataLoader 产生的 CandidateBatch.
+    - device: 当前单卡训练设备.
+    - return: 键集合不变的新映射; 张量使用 non_blocking=True 迁移, 字符串列表和 metadata 保留在 CPU.
+"""
 
     return cast(
         CandidateBatch,
@@ -75,12 +97,12 @@ def _move_batch(batch: CandidateBatch, device: torch.device) -> CandidateBatch:
 
 
 def _start_tracking(config: SmilesExperimentConfig, provenance: dict[str, Any]) -> Any:
-    """按正式配置建立一次 W&B 运行。
+    """按正式配置建立一次 W&B 运行.
 
-    - config: 当前完整实验配置。
-    - provenance: 已写入 run.json 的来源和工作进程证据。
-    - return: wandb.Run；tracking.mode 为 disabled 时返回 None。
-    """
+    - config: 当前完整实验配置.
+    - provenance: 已写入 run.json 的来源和工作进程证据.
+    - return: wandb.Run; tracking.mode 为 disabled 时返回 None.
+"""
 
     if config.tracking.mode == "disabled":
         return None
@@ -100,13 +122,13 @@ def _start_tracking(config: SmilesExperimentConfig, provenance: dict[str, Any]) 
 
 
 def _track(tracker: Any, values: dict[str, Any], step: int) -> None:
-    """记录同一参数更新步的一组 W&B 值。
+    """记录同一参数更新步的一组 W&B 值.
 
-    - tracker: wandb.Run 或 None。
-    - values: 字符串键到标量或图像的映射。
-    - step: 参数更新后的全局步数。
-    - return: None；tracker 为 None 时不产生副作用。
-    """
+    - tracker: wandb.Run 或 None.
+    - values: 字符串键到标量或图像的映射.
+    - step: 参数更新后的全局步数.
+    - return: None; tracker 为 None 时不产生副作用.
+"""
 
     if tracker is not None:
         tracker.log(values, step=step)
@@ -115,13 +137,13 @@ def _track(tracker: Any, values: dict[str, Any], step: int) -> None:
 def _validation_images(
     outputs: dict[str, Any], batch: CandidateBatch, tracker: Any
 ) -> dict[str, Any]:
-    """生成首个验证候选的区域最大投影图。
+    """生成首个验证候选的区域最大投影图.
 
-    - outputs: 模型输出；两个区域 logit 有效时为浮点 (B,48,48,48)。
-    - batch: 已迁移到模型设备的 CandidateBatch，含同形 bool 区域目标。
-    - tracker: wandb.Run 或 None。
-    - return: 四张 W&B 图像映射；没有 tracker 或没有区域头时返回空映射。
-    """
+    - outputs: 模型输出; 两个区域 logit 有效时为浮点 (B,48,48,48).
+    - batch: 已迁移到模型设备的 CandidateBatch, 含同形 bool 区域目标.
+    - tracker: wandb.Run 或 None.
+    - return: 四张 W&B 图像映射; 没有 tracker 或没有区域头时返回空映射.
+"""
 
     ligand_logits = outputs["ligand_area_logits"]
     binding_logits = outputs["binding_area_logits"]
@@ -154,17 +176,17 @@ def _validate(
     global_step: int,
     tracker: Any,
 ) -> tuple[dict[str, Any], ValidationAccumulator]:
-    """遍历完整 validation。
+    """遍历完整 validation.
 
-    - model: 当前 ClosedSetMatcher；函数入口切到 eval，返回前恢复 train。
-    - loader: 不打乱、不丢尾的完整 validation DataLoader。
-    - config: 损失权重和追踪设置来源。
-    - device: 单卡设备。
-    - global_step: 当前参数更新步，只用于 W&B 横轴和返回记录。
-    - tracker: wandb.Run 或 None。
-    - return[0]: 按真实候选/身份分母汇总的损失与科学指标。
-    - return[1]: 保存全部候选预测的 ValidationAccumulator，供最终 BEST 拟合阈值。
-    """
+    - model: 当前 ClosedSetMatcher; 函数入口切到 eval, 返回前恢复 train.
+    - loader: 不打乱、不丢尾的完整 validation DataLoader.
+    - config: 损失权重和追踪设置来源.
+    - device: 单卡设备.
+    - global_step: 当前参数更新步, 只用于 W&B 横轴和返回记录.
+    - tracker: wandb.Run 或 None.
+    - return[0]: 按真实候选/身份分母汇总的损失与科学指标.
+    - return[1]: 保存全部候选预测的 ValidationAccumulator, 供最终 BEST 拟合阈值.
+"""
 
     model.eval()
     loss_numerators = {name: 0.0 for name in ("foreground", "ligand_area", "binding_area", "identity")}
@@ -238,12 +260,22 @@ def _train_epoch(
     global_step: int,
     tracker: Any,
 ) -> tuple[dict[str, float], int]:
-    """执行一个完整训练 epoch，并按名义 global batch 的真实分母累计梯度。
+    """执行一个完整训练 epoch, 并按名义 global batch 的真实分母累计梯度.
 
-    每个物理批次候选数相同，因此前景和区域均除以 accumulation_steps。身份候选数会在
-    物理批次之间变化，先读取一个完整累积窗口的真值计数，再让各批身份均值按其合格候选
-    数占窗口总数的比例回传。这样 32×1、16×2 与 8×4 使用相同的身份损失定义。
-    """
+    - model: 当前 ClosedSetMatcher. 函数入口切换到 train 模式.
+    - loader: 产生 CandidateBatch 的训练 DataLoader. 批次数必须形成完整累积窗口.
+    - optimizer: 当前 AdamW 优化器. 每个完整窗口执行一次 step.
+    - config: 完整实验配置. 提供损失权重、累积步数、裁剪阈值和追踪频率.
+    - device: 当前单卡 CUDA 设备.
+    - global_step: 进入本 epoch 前已经完成的参数更新数.
+    - tracker: wandb.Run 或 None. None 时不写在线指标.
+    - return[0]: dict[str, float]. 五项物理批次均值损失与整个 epoch 的身份 eligible 计数.
+    - return[1]: int. 完成本 epoch 后的累计参数更新数.
+
+    每个物理批次候选数相同, 因此前景和区域均除以 accumulation_steps. 身份候选数会在
+    物理批次之间变化, 先读取一个完整累积窗口的真值计数, 再让各批身份均值按其合格候选
+    数占窗口总数的比例回传. 这样 32x1、16x2 与 8x4 使用相同的身份损失定义.
+"""
 
     model.train()
     optimizer.zero_grad(set_to_none=True)
@@ -255,6 +287,7 @@ def _train_epoch(
         window.append(cpu_batch)
         if len(window) < config.data.accumulation_steps:
             continue
+        # int 标量, 当前完整累积窗口中真实前景且 identity_target>=0 的候选总数.
         window_identity_count = sum(
             int((batch["foreground_target"] & (batch["identity_target"] >= 0)).sum())
             for batch in window
@@ -273,12 +306,15 @@ def _train_epoch(
                     cast(dict[str, torch.Tensor], batch),
                     config.loss_weights,
                 )
+                # int 标量, 当前物理批次实际进入直接 SMILES 身份交叉熵的候选数.
                 batch_identity_count = int(losses["identity_eligible_count"])
+                # float 标量, 当前批身份均值在全局窗口身份均值中的真实分母权重.
                 identity_scale = (
                     batch_identity_count / window_identity_count
                     if window_identity_count
                     else 0.0
                 )
+                # 浮点标量张量, 前景/区域按物理批次数缩放, 身份按 eligible 数缩放后的反向目标.
                 scaled_loss = (
                     config.loss_weights.foreground
                     * losses["foreground"]
@@ -299,6 +335,7 @@ def _train_epoch(
             for name in totals:
                 totals[name] += float(losses[name])
             latest_losses = cast(dict[str, torch.Tensor], losses)
+        # 浮点标量张量, 当前全局批次在裁剪前的全部参数梯度 L2 范数.
         gradient_norm = torch.nn.utils.clip_grad_norm_(
             model.parameters(), config.optimization.gradient_clip_norm
         )
@@ -327,17 +364,19 @@ def _train_epoch(
     return summary, global_step
 
 
+# ================================================================================================
+
+
 def run_smiles_training(config: SmilesExperimentConfig, config_path: Path) -> Path:
-    """执行一次正式单卡从零训练。
+    """执行一次正式单卡从零训练.
 
-    - config: 已严格加载的四变体之一完整配置。
-    - config_path: 与 config 对应的 YAML 路径；路径和 SHA-256 写入来源证据。
-    - return: 新建的运行目录，内含 run.json、history.jsonl、BEST.pt、LAST.pt 和
-      summary.json。
+    - config: 已严格加载的四变体之一完整配置.
+    - config_path: 与 config 对应的 YAML 路径; 路径写入来源证据.
+    - return: 新建的运行目录, 内含 run.json、history.jsonl、BEST.pt、LAST.pt 和 summary.json.
 
-    每个 epoch 后运行完整 validation，并仅以 selection 严格改善更新 BEST。自然早停后重新
-    载入 BEST，在同一 validation 预测上拟合一次前景 F1 阈值并写回 BEST；test 不参与该过程。
-    """
+    每个 epoch 后运行完整 validation, 并仅以 selection 严格改善更新 BEST. 自然早停后重新
+    载入 BEST, 在同一 validation 预测上拟合一次前景 F1 阈值并写回 BEST; test 不参与该过程.
+"""
 
     _set_seed(config.seed)
     if not torch.cuda.is_available():
@@ -348,6 +387,11 @@ def run_smiles_training(config: SmilesExperimentConfig, config_path: Path) -> Pa
     run_directory.mkdir(parents=True, exist_ok=False)
     config_path = Path(config_path).resolve()
     manifest_path = config.data.manifest_path.resolve()
+    resolved_config = json.loads(json.dumps(asdict(config), default=str))
+    resolved_config_path = run_directory / "resolved_config.json"
+    manifest_snapshot_path = run_directory / "manifest.snapshot.json"
+    write_json(resolved_config_path, resolved_config)
+    _write_manifest_snapshot(manifest_path, manifest_snapshot_path)
     provenance = {
         "schema": "matcher_smiles_training_v1",
         "run_stamp": run_stamp,
@@ -357,9 +401,9 @@ def run_smiles_training(config: SmilesExperimentConfig, config_path: Path) -> Pa
         "slurm_job_id": os.environ.get("SLURM_JOB_ID"),
         "task_launch_dir": os.environ.get("TASK_LAUNCH_DIR"),
         "config_path": str(config_path),
-        "config_sha256": _sha256(config_path),
+        "resolved_config_path": str(resolved_config_path),
         "manifest_path": str(manifest_path),
-        "manifest_sha256": _sha256(manifest_path),
+        "manifest_snapshot_path": str(manifest_snapshot_path),
         "worker_provenance": {
             "python": platform.python_version(),
             "torch": torch.__version__,
@@ -372,7 +416,7 @@ def run_smiles_training(config: SmilesExperimentConfig, config_path: Path) -> Pa
     tracker = _start_tracking(config, provenance)
     try:
         train_dataset = load_manifest_dataset(
-            manifest_path,
+            manifest_snapshot_path,
             split=config.data.train_split,
             selected_only=config.data.selected_only,
             mode="train",
@@ -381,7 +425,7 @@ def run_smiles_training(config: SmilesExperimentConfig, config_path: Path) -> Pa
             cache_gib_per_worker=config.data.cache_gib_per_worker,
         )
         validation_dataset = load_manifest_dataset(
-            manifest_path,
+            manifest_snapshot_path,
             split=config.data.validation_split,
             selected_only=True,
             mode="validation",
@@ -439,9 +483,9 @@ def run_smiles_training(config: SmilesExperimentConfig, config_path: Path) -> Pa
                 "best_score": best_score,
                 "bad_validation_epochs": bad_epochs,
                 "model_config": config.model.to_dict(),
-                "experiment_config": json.loads(json.dumps(asdict(config), default=str)),
+                "experiment_config": resolved_config,
                 "manifest_path": str(manifest_path),
-                "manifest_sha256": provenance["manifest_sha256"],
+                "manifest_snapshot_path": str(manifest_snapshot_path),
                 "model_state": model.state_dict(),
                 "optimizer_state": optimizer.state_dict(),
                 "validation": validation,
