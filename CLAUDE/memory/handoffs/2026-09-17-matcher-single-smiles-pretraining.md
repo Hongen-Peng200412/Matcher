@@ -6,7 +6,7 @@ Date: 2026-09-17
 
 Matcher 已把精确顶层 `PreparedLigand.smiles` 固定为唯一身份，阶段 A、B、D 与阶段 C 中不依赖新版 BEST checkpoint 的范围已经完成。活动代码只保留一套 manifest、Dataset、模型、训练和冻结评估管线；旧 `object_key` 身份、六分类、类别概率耦合、身份损失变体、seen/unseen、calibration 和平行 `matcher/smiles_identity` 已从当前树删除，但仍可由 Git 历史恢复。
 
-实现分支是 `codex/matcher-single-pipeline-refactor`。用户修订的 `talk_new/反馈/re-9-16.md` 始终保留为未暂存工作区改动，不得纳入实现或学习提交。学习分支 `Learn/matcher-single-pipeline-refactor` 正在隔离工作树中按人类理解顺序重建；完成端点树等价、完整回归和唯一工作树检查后，才可把 `Learn/CUMULATIVE` 快进到学习端点。
+实现分支 `codex/matcher-single-pipeline-refactor` 保存真实实施历史，`Learn/CUMULATIVE` 保存按人类理解顺序重建的学习历史。两个端点的完整树已核验等价，学习端点完整回归为 23 passed；隔离工作树和临时学习分支已删除，当前只保留 `C:/Users/15919/Desktop/Matcher` 一个工作树。用户修订的 `talk_new/反馈/re-9-16.md` 始终保留为未暂存工作区改动，分支切换前后字节哈希不变，也没有进入任何提交。
 
 ## Completed
 
