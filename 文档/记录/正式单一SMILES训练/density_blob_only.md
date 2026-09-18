@@ -4,7 +4,7 @@
 
 | 字段 | 当前值 |
 | --- | --- |
-| 状态 | 正式训练已自然早停；冻结 BEST 测试运行中 |
+| 状态 | 正式训练与冻结 BEST 测试均已完成 |
 | Slurm Job | 显示名 `379403_1`；runner 实际 `SLURM_JOB_ID=379403` |
 | 硬件 | gnode10，A800 GPU 1，16 CPU |
 | 正式 YAML | `configs/experiments/final_smiles/density_blob_only.yaml` |
@@ -19,9 +19,9 @@
 | BEST 前景与身份指标 | PRAUC=`0.8015437651`；SMILES 匹配准确率=`0.8965195774` |
 | 冻结前景阈值 | `0.248046875`；validation F1=`0.7458120903` |
 | BEST SHA-256 | `932d1d52c35104c8af55235f080850652d6a7d5ab7924cb9d4a9fb9a8ab17748` |
-| 测试 release | `/home/penghongen/Feedback/Matcher/releases/Matcher_52db89c9dabe/Matcher` |
-| 测试 launch | `/storage/penghongen/Adaligand_infered_receptor_data/cryoatom2/calibration/运行日志与统计/slurm/launches/379403/evaluate_density_job379403_20260919T042516_a9` |
-| 正式测试 | 运行中；输出根为 `/storage/penghongen/Matcher/evaluation/final_smiles/density_blob_only` |
+| 测试 release | `/home/penghongen/Feedback/Matcher/releases/Matcher_c2b763cf90e2/Matcher` |
+| 测试 launch | `/storage/penghongen/Adaligand_infered_receptor_data/cryoatom2/calibration/运行日志与统计/slurm/launches/379403/evaluate_density_job379403_20260919T050117_a10` |
+| 正式测试 | 已完成；`frozen_test.json` SHA-256=`82c9864268570bd01b3d226e99e57e0eb3b7d7b072ac16a086c0fa7c0521ef37` |
 
 ## 正式运行命令
 
@@ -60,11 +60,14 @@ bash 训练与运行/sh/final_smiles/evaluate_density_blob_only.sh
 - 训练结束后只在 BEST validation 预测上拟合一次前景阈值，得到 `0.248046875` 和 F1 `0.7458120903131829`；阈值已写回最终 `BEST.pt`。
 - allocation 已恢复精确 `try_lock_379403`，`after_lock_379403` 继续保留；没有读取 calibration 科学产物。
 
-## 冻结测试状态
+## 冻结测试结果
 
-- 2026-09-19 04:25:16（Asia/Shanghai）使用测试 release `Matcher_52db89c9dabe` 启动正式 test_0 前向；动态命令 SHA-256 为 `5fc7588a3dde4844b42e26799b4be78635db17bfdf9a20dced99ec966052f13b`。
-- 模型配置、模型类和 checkpoint 规则由训练 run 指向的 `Matcher_6fe5cfa8f1f1` 加载；测试 release 只负责全候选 Dataset、selected 优先扩展 top-k、结果汇总和绘图。
-- 两种受体条件共用冻结 BEST 前景阈值 `0.248046875`，不读取 calibration、不在测试集拟合阈值、不改变 Stage1 候选排序。测试运行时精确 try_lock 已删除，after_lock 保留。
+- 2026-09-19 05:01:17（Asia/Shanghai）使用测试 release `Matcher_c2b763cf90e2` 重新启动冻结测试；动态命令 SHA-256 为 `5432d9736a85455a46bdd04fd07ca24f2a68c456d8a888120c114ba53d44e1c1`。第 10 次 allocation 执行成功，随后恢复精确 `try_lock_379403`；`after_lock_379403` 始终保留。
+- 模型配置、模型类和 checkpoint 规则由训练 run 指向的 `Matcher_6fe5cfa8f1f1` 加载；测试 release 只负责全候选 Dataset、selected 优先扩展 top-k、结果汇总和绘图。真实受体和 CryoAtom2 分别完成 2,251 和 2,407 个全部 centered 候选的前向，其中 selected 候选分别为 1,653 和 1,651 个。
+- 两种受体条件共用冻结 BEST 前景阈值 `0.248046875`，不读取 calibration、不在测试集拟合阈值、不改变 Stage1 候选排序。真实受体 test_0 的前景 PRAUC/F1 为 `0.9028440725/0.8599508600`，SMILES 匹配准确率为 `0.8626817447`（1,068/1,238）；CryoAtom2 的对应结果为 `0.8365511548/0.8254665203` 和 `0.8612068966`（999/1,160）。
+- test_1 只复用 test_0 前向筛选官方 149-PDB 集合。真实受体的前景 PRAUC/F1 为 `0.9266899798/0.8574126534`，SMILES 匹配准确率为 `0.8612021858`（788/915）；CryoAtom2 的对应结果为 `0.8622134403/0.8231155779` 和 `0.8518072289`（707/830）。两种受体条件各有两个不受支持身份目标，按契约保留 Stage1 排名、纳入前景评价并排除出身份准确率分母。
+- Gaussian 排序下，真实受体 Stage1-only/Stage1+Matcher 的 top-1、top-5、top-20 命中数分别为 `138/127`、`167/164`、`167/166`；CryoAtom2 为 `122/113`、`155/149`、`159/155`。来源概率均值排序下，真实受体为 `148/138`、`166/162`、`167/166`；CryoAtom2 为 `134/122`、`157/151`、`159/155`。每项分母均固定为 179 个 PDB。
+- `foreground_and_smiles_metrics.png`、`topk_gaussian_final.png` 和 `topk_source_probability_mean_final.png` 的 SHA-256 依次为 `ab78e594ad6ad9a7c5e9c9f95d2c6914d331a220c765df4b3a66d881763fa91f`、`167c74714952134d3bbac05d964f89ddb6d90af49000bdcbc03cb643339ddf64` 和 `d88e68a288d4f1b0f570ce397c1a91579927179b94a5e633ac8febc2e3629204`。人工检查确认图中没有预览标记残留，Emap2lig 在两张 top-k 图中均为同一条 receptor-independent 曲线。
 
 ## 首次 validation 历史快照
 
