@@ -119,6 +119,7 @@ bash 训练与运行/submit_task.sh --sh tmp/matcher_gpu_preflight.sh --resource
 
 - 活动包只保留 `matcher/data`、`datasets`、`model`、`training`、`evaluation` 和 `utils` 的单一管线；平行 `matcher/smiles_identity`、旧 calibration、六分类、历史活动 YAML 与旧 shell 均已从当前树删除，仍可由 Git 历史恢复。
 - 四份正式 YAML、四个从头训练 shell、数据构建入口、冻结测试入口和各目录 README 已连接到同一精确 SMILES 契约。阶段 C 的 Stage1-only 元数据与两张预览图已冻结，未生成任何虚构 Matcher 数值。
+- 阶段 E 的冻结测试从训练 run 的 `run.json` 解析并加载原训练 release 中的模型配置、模型类与 checkpoint 规则；当前评估 release 只提供冻结清单读取、扩展 top-k 汇总和绘图，因此后续覆盖同名变体定义不会改变历史 checkpoint 的解释。
 - 三条独立审查均已 PASS，本机完整回归为 23 passed。尚未执行的 GPU 门禁、四项正式训练、冻结 Matcher 测试、Stage1+Matcher 曲线、第一张七栏图和三张最终图全部属于阶段 E。
 - 阶段 E 启动还必须等待用户对本轮代码的修改意见以及独立任务完成第 6 片推理的通知；未完成分片没有写入任何正式训练 manifest。
 
