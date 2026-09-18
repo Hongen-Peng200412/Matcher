@@ -4,7 +4,7 @@
 
 | 字段 | 当前值 |
 | --- | --- |
-| 状态 | 正式训练已自然早停；冻结 BEST 测试待启动 |
+| 状态 | 正式训练已自然早停；冻结 BEST 测试运行中 |
 | Slurm Job | 显示名 `379403_1`；runner 实际 `SLURM_JOB_ID=379403` |
 | 硬件 | gnode10，A800 GPU 1，16 CPU |
 | 正式 YAML | `configs/experiments/final_smiles/density_blob_only.yaml` |
@@ -19,7 +19,9 @@
 | BEST 前景与身份指标 | PRAUC=`0.8015437651`；SMILES 匹配准确率=`0.8965195774` |
 | 冻结前景阈值 | `0.248046875`；validation F1=`0.7458120903` |
 | BEST SHA-256 | `932d1d52c35104c8af55235f080850652d6a7d5ab7924cb9d4a9fb9a8ab17748` |
-| 正式测试 | 待使用冻结 BEST 执行 test_0，并从同一次预测筛选 test_1 |
+| 测试 release | `/home/penghongen/Feedback/Matcher/releases/Matcher_52db89c9dabe/Matcher` |
+| 测试 launch | `/storage/penghongen/Adaligand_infered_receptor_data/cryoatom2/calibration/运行日志与统计/slurm/launches/379403/evaluate_density_job379403_20260919T042516_a9` |
+| 正式测试 | 运行中；输出根为 `/storage/penghongen/Matcher/evaluation/final_smiles/density_blob_only` |
 
 ## 正式运行命令
 
@@ -56,6 +58,12 @@ bash 训练与运行/sh/final_smiles/evaluate_density_blob_only.sh
 - 第 21 次 validation 构成第三次平台条件；此前已经实际降低两次学习率，因此不再执行第三次无意义降低并直接早停。`summary.json` 声明 `stopped_by_early_stopping=true`、`stopped_by_max_epochs=false`。
 - 训练结束后只在 BEST validation 预测上拟合一次前景阈值，得到 `0.248046875` 和 F1 `0.7458120903131829`；阈值已写回最终 `BEST.pt`。
 - allocation 已恢复精确 `try_lock_379403`，`after_lock_379403` 继续保留；没有读取 calibration 科学产物。
+
+## 冻结测试状态
+
+- 2026-09-19 04:25:16（Asia/Shanghai）使用测试 release `Matcher_52db89c9dabe` 启动正式 test_0 前向；动态命令 SHA-256 为 `5fc7588a3dde4844b42e26799b4be78635db17bfdf9a20dced99ec966052f13b`。
+- 模型配置、模型类和 checkpoint 规则由训练 run 指向的 `Matcher_6fe5cfa8f1f1` 加载；测试 release 只负责全候选 Dataset、selected 优先扩展 top-k、结果汇总和绘图。
+- 两种受体条件共用冻结 BEST 前景阈值 `0.248046875`，不读取 calibration、不在测试集拟合阈值、不改变 Stage1 候选排序。测试运行时精确 try_lock 已删除，after_lock 保留。
 
 ## 首次 validation 历史快照
 
