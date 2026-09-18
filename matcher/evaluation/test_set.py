@@ -319,7 +319,12 @@ def _run_matcher_condition(
     num_workers: int,
     pp_top_k: int,
     cache_gib_per_worker: float,
-) -> tuple[dict[str, Any], dict[str, list[dict[str, Any]]], list[str]]:
+) -> tuple[
+    dict[str, Any],
+    dict[str, list[dict[str, Any]]],
+    list[str],
+    dict[str, str],
+]:
     """
     对一个受体条件执行同一冻结 BEST, 并保留候选预测.
 
@@ -330,6 +335,7 @@ def _run_matcher_condition(
     - return[0]: 在原 selected 候选口径上使用 checkpoint 前景阈值计算的二分类和 SMILES 指标.
     - return[1]: PDB 到全部 centered 候选预测记录列表的映射; 两种扩展排序共同复用.
     - return[2]: manifest summary 冻结的 179 个唯一 PDB 标识, 保留原有顺序.
+    - return[3]: 从训练 run 解析出的模型代码 release 来源.
 
     manifest 中存在但没有 centered 候选的 PDB 保留在指标 PDB 计数中, 候选记录映射不为其
     虚构空记录.
@@ -339,20 +345,18 @@ def _run_matcher_condition(
     from ..data.manifest import load_manifest
     from ..datasets.batching import ShuffledBatchSampler, build_candidate_loader
     from ..datasets.candidate_data import load_manifest_dataset
-    from ..model.config import MatcherModelConfig
-    from ..model.ligand_matcher import ClosedSetMatcher
-    from ..training.checkpointing import load_checkpoint
+    from .checkpoint import load_matcher_from_training_release
+
     if not torch.cuda.is_available():
         raise RuntimeError("正式 Matcher test 要求 CUDA GPU。")
     device = torch.device("cuda")
-    checkpoint = dict(load_checkpoint(checkpoint_path, map_location=device))
+    model, checkpoint, config, model_code_source = load_matcher_from_training_release(
+        checkpoint_path,
+        device,
+    )
     threshold = checkpoint.get("foreground_threshold")
-    model_config = checkpoint.get("model_config")
     if not isinstance(threshold, (int, float)) or not np.isfinite(float(threshold)):
         raise ValueError("BEST checkpoint 缺少有限 foreground_threshold。")
-    if not isinstance(model_config, dict):
-        raise ValueError("BEST checkpoint 缺少 model_config。")
-    config = MatcherModelConfig.from_dict(model_config)
     dataset = load_manifest_dataset(
         manifest_path,
         split=split,
@@ -364,9 +368,6 @@ def _run_matcher_condition(
     )
     sampler = ShuffledBatchSampler(dataset, batch_size, False, False, 0, None)
     loader = build_candidate_loader(dataset, sampler, num_workers, 2, 1)
-    model = ClosedSetMatcher(config).to(device)
-    model.load_state_dict(checkpoint["model_state"], strict=True)
-    model.eval()
     rows_by_pdb: dict[str, list[dict[str, Any]]] = {}
     with torch.no_grad():
         for cpu_batch in loader:
@@ -409,7 +410,7 @@ def _run_matcher_condition(
     if extra_prediction_ids:
         raise ValueError(f"Matcher 预测含 manifest 集合外 PDB: {extra_prediction_ids[:5]}。")
     metrics = _metrics_from_rows(rows_by_pdb, float(threshold), expected_pdb_ids)
-    return metrics, rows_by_pdb, manifest_pdb_ids
+    return metrics, rows_by_pdb, manifest_pdb_ids, model_code_source
 
 
 def _metrics_from_rows(
@@ -583,6 +584,7 @@ def build_final_test_artifact(
     - output.predictions.*[].identity_supported: bool. 目标图和语言资产是否均可用.
     - output.predictions.*[].predicted_smiles: str 或 None. PDB 内闭集 argmax 精确 SMILES.
     - output.predictions.*[].foreground_probability: float. sigmoid 后前景概率.
+    - output.model_code_source: dict. 从训练 run 解析出的模型代码 release 与 manifest 路径.
     - output.curves.gaussian: dict. 真实受体/CryoAtom2 的 Stage1-only 与 Stage1+Matcher 曲线及唯一 Emap2lig 曲线.
     - output.curves.source_probability_mean: dict. 同一冻结预测按概率均值排序的五条曲线.
     - output.test_1: 可选 dict. 仅复用 test_0 预测筛选官方 149-PDB 严格子集, 保存来源、定义和两种受体指标.
@@ -593,7 +595,12 @@ def build_final_test_artifact(
     preview = json.loads(Path(stage1_preview_path).read_text(encoding="utf-8"))
     if preview.get("status") != "stage1_only_preview":
         raise ValueError("最终评估必须连接已验收的 Stage1-only 预览元数据。")
-    real_metrics, real_rows, real_manifest_pdb_ids = _run_matcher_condition(
+    (
+        real_metrics,
+        real_rows,
+        real_manifest_pdb_ids,
+        real_model_code_source,
+    ) = _run_matcher_condition(
         checkpoint_path,
         real_manifest_path,
         split,
@@ -602,7 +609,12 @@ def build_final_test_artifact(
         pp_top_k=pp_top_k,
         cache_gib_per_worker=cache_gib_per_worker,
     )
-    cryo_metrics, cryo_rows, cryo_manifest_pdb_ids = _run_matcher_condition(
+    (
+        cryo_metrics,
+        cryo_rows,
+        cryo_manifest_pdb_ids,
+        cryo_model_code_source,
+    ) = _run_matcher_condition(
         checkpoint_path,
         cryoatom2_manifest_path,
         split,
@@ -635,6 +647,8 @@ def build_final_test_artifact(
         raise ValueError("真实受体 test_0 manifest 与 Stage1-only 预览的 PDB 集合不一致。")
     if set(cryo_manifest_pdb_ids) != reference_set:
         raise ValueError("CryoAtom2 test_0 manifest 与 Stage1-only 预览的 PDB 集合不一致。")
+    if real_model_code_source != cryo_model_code_source:
+        raise ValueError("两种受体条件没有使用同一份训练 release 模型代码。")
 
     curves: dict[str, Any] = {}
     for sorting in ("gaussian", "source_probability_mean"):
@@ -665,6 +679,7 @@ def build_final_test_artifact(
         "real_manifest_path": str(real_manifest_path),
         "cryoatom2_manifest_path": str(cryoatom2_manifest_path),
         "stage1_preview_path": str(stage1_preview_path),
+        "model_code_source": real_model_code_source,
         "candidate_order": (
             "candidate_selected=true 按指定分数排序后，追加 candidate_selected=false 的同分数排序"
         ),

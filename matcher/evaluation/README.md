@@ -51,12 +51,13 @@ Find_1 对 `candidate_selected=True` 和 `False` 分别按 Gaussian `candidate_s
 
 ## 正式冻结 test 产物
 
-`build_final_test_artifact()` 用同一个 BEST 对真实受体与 CryoAtom2 test_0 各前向一次，写出 `matcher_frozen_test_v1` JSON。同一次候选预测同时服务两种 Find_1 排序，不为第二种排序重复前向。
+`build_final_test_artifact()` 用同一个 BEST 对真实受体与 CryoAtom2 test_0 各前向一次，写出 `matcher_frozen_test_v1` JSON。同一次候选预测同时服务两种 Find_1 排序，不为第二种排序重复前向。模型配置、模型类和 checkpoint 加载规则固定从训练 run 的 `run.json` 所指 release 读取；当前评估 release 只提供冻结清单读取、扩展 top-k 汇总和绘图逻辑。
 
 | 顶层字段 | 类型或结构 | 含义 |
 | --- | --- | --- |
 | `schema` | `str` | 固定为 `"matcher_frozen_test_v1"`。 |
 | `status` | `str` | 固定为 `"final_with_matcher"`。 |
+| `model_code_source` | `dict` | 训练 run、训练项目根和 release manifest 路径；两种受体条件必须逐字段相同。 |
 | `checkpoint_path` | `str` | 被评估的真实 BEST 路径。 |
 | `real_manifest_path` | `str` | 真实受体 test_0 manifest 路径。 |
 | `cryoatom2_manifest_path` | `str` | CryoAtom2 test_0 manifest 路径。 |

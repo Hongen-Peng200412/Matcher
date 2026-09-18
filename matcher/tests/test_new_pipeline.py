@@ -18,6 +18,7 @@ from matcher.data.labels import OccurrenceMask, assign_candidate_target
 from matcher.data.smiles_graph import SmilesGraph, SmilesGraphStore
 from matcher.datasets.batching import collate_candidates
 from matcher.datasets.candidate_data import load_manifest_dataset
+from matcher.evaluation.checkpoint import load_matcher_from_training_release
 from matcher.evaluation.metrics import (
     fit_foreground_threshold,
     foreground_average_precision,
@@ -43,6 +44,72 @@ from matcher.training.losses import (
     compute_matcher_loss,
     smiles_identity_cross_entropy,
 )
+
+
+def test_checkpoint_loader_uses_training_release_package(tmp_path: Path) -> None:
+    project_root = tmp_path / "Matcher_snapshot" / "Matcher"
+    for relative in ("matcher", "matcher/model", "matcher/training"):
+        directory = project_root / relative
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / "__init__.py").write_text("", encoding="utf-8")
+    (project_root / "matcher/model/config.py").write_text(
+        "class MatcherModelConfig:\n"
+        "    def __init__(self, variant):\n"
+        "        self.variant = variant\n"
+        "    @classmethod\n"
+        "    def from_dict(cls, values):\n"
+        "        return cls(values['variant'])\n",
+        encoding="utf-8",
+    )
+    (project_root / "matcher/model/ligand_matcher.py").write_text(
+        "from torch import nn\n"
+        "class ClosedSetMatcher(nn.Module):\n"
+        "    def __init__(self, config):\n"
+        "        super().__init__()\n"
+        "        self.config = config\n"
+        "        self.projection = nn.Linear(1, 1, bias=False)\n",
+        encoding="utf-8",
+    )
+    (project_root / "matcher/training/checkpointing.py").write_text(
+        "import torch\n"
+        "def load_checkpoint(path, map_location='cpu'):\n"
+        "    return torch.load(path, map_location=map_location, weights_only=False)\n",
+        encoding="utf-8",
+    )
+    release_manifest = project_root.parent / "manifest.json"
+    release_manifest.write_text("{}\n", encoding="utf-8")
+    run_directory = tmp_path / "run"
+    run_directory.mkdir()
+    (run_directory / "run.json").write_text(
+        json.dumps(
+            {
+                "source_project_root": str(project_root),
+                "source_release_manifest_path": str(release_manifest),
+            }
+        ),
+        encoding="utf-8",
+    )
+    checkpoint_path = run_directory / "BEST.pt"
+    torch.save(
+        {
+            "model_config": {"variant": "snapshot_variant"},
+            "model_state": {"projection.weight": torch.tensor([[2.0]])},
+        },
+        checkpoint_path,
+    )
+
+    model, checkpoint, config, provenance = load_matcher_from_training_release(
+        checkpoint_path,
+        torch.device("cpu"),
+    )
+
+    assert config.variant == "snapshot_variant"
+    assert model.__class__.__module__.startswith("_matcher_training_snapshot_")
+    assert torch.equal(
+        model.projection.weight,
+        checkpoint["model_state"]["projection.weight"],
+    )
+    assert provenance["training_project_root"] == str(project_root.resolve())
 
 
 def test_manifest_source_mismatch_does_not_touch_published_jsonl(tmp_path: Path) -> None:
