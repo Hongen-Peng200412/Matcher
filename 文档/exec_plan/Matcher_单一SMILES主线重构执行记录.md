@@ -102,6 +102,13 @@ bash 训练与运行/submit_task.sh --sh tmp/matcher_gpu_preflight.sh --resource
 - 科学审查发现阶段 E 评估器没有失败关闭真实受体、CryoAtom2、Stage1-only 预览和 Emap2lig 的 179-PDB 集合。修复后两份 manifest 各自要求 179 个唯一 PDB，并与两种排序的三套预览来源逐集合相等；`test_1` 必须是 test_0 的 149-PDB 严格子集，五个空候选 PDB 仍作为未命中保留。
 - 测试结果不再写 validation 专用 `selection`。正式训练与测试代码也不再计算或持久化 SHA-256；运行目录改为保存 `resolved_config.json` 和 `manifest.snapshot.json`，checkpoint 保存解析配置与 manifest 快照路径。一次性 SHA 证据仍只保留在本执行记录。
 - Dataset/Batch、坐标变换、损失、梯度累积、指标和冻结 JSON 的注释已按真实字段、形状、掩码、索引和分母补全；正式代码注释与 Docstring 已统一使用技能要求的英文标点，结构化字段保持一项一行。
+
+### 2026-09-18：阶段 E 启动
+
+- Find_1 训练第 6 片已经完成并通过正式验收；完整 train 根现含互不重复的 1,650 个 PDB。阶段 E 禁止继续使用不含第 6 片的旧训练 manifest，新入口固定为 `/storage/penghongen/Matcher/manifests/final_train_validation_shards01_06_v1/manifest.json`。
+- 用户确认 selection 的唯一有效改善量为 `0.001`。每个 epoch 的优化器更新确定性地划为三个连续区段，同一 DataLoader 只遍历一次；每段后执行完整 validation。连续第三次未改善触发平台动作，前两次平台把学习率乘以 `0.8`，第三次平台直接早停；最多 15 个 epoch、45 次完整 validation。
+- 每次完整 validation 保存独立 checkpoint 并更新 LAST；只有达到 `0.001` 改善量才更新 BEST。训练结束后复用 BEST 检查时保存的预测拟合一次前景阈值，不额外执行完整 validation。
+- 当前实现从干净的 `Learn/CUMULATIVE@d275bc6ece36c742f3573c1112d470403d4a9ecb` 建立 `codex/final-train-control`。本地语法编译、25 项测试和差异空白检查通过；服务器 manifest、GPU 门禁和正式训练状态由 `文档/记录/正式单一SMILES训练/` 持续记录。
 - 修复后只对三份原报告中的明确问题做窄口径复核，再对窄复核指出的具体行做最后一次小范围确认。科学逻辑、函数布局与 Git 边界、代码注释与 YAML 三条审查线均返回最终 `PASS`，没有继续扩大审查范围。
 
 ### 2026-09-17：阶段 D 与训练前停止点

@@ -4,7 +4,7 @@ name: trunk_only  # str, 输出子目录名和 W&B 运行名前缀; 必须是非
 output_root: /storage/penghongen/Matcher/runs  # str, 服务器训练运行根目录; 每次运行在此建立 name/run_stamp
 seed: 3409  # int, Python、NumPy、PyTorch、采样器和 DataLoader 共用随机种子
 data:  # mapping, manifest、划分、批量和 DataLoader 读取参数
-  manifest_path: /storage/penghongen/Matcher/manifests/final_train_validation/manifest.json  # str, 冻结训练和 validation 清单入口; 训练中不得原地追加
+  manifest_path: /storage/penghongen/Matcher/manifests/final_train_validation_shards01_06_v1/manifest.json  # str, 含完整训练第 1–6 片和 validation 的冻结清单入口; 训练中不得原地追加
   train_split: train  # str, manifest.splits 中的训练划分键
   validation_split: validation  # str, manifest.splits 中的完整 validation 划分键
   selected_only: true  # bool, true 表示训练只保留 candidate_selected=true; validation 始终由 engine 固定为已选候选
@@ -34,8 +34,12 @@ optimization:  # mapping, AdamW、梯度裁剪和停止条件
   learning_rate: 1.0e-4  # float>0, AdamW 初始学习率
   weight_decay: 1.0e-4  # float>=0, AdamW 权重衰减
   gradient_clip_norm: 200.0  # float>0, 每次参数更新前的全局梯度范数上限; 200 是宽松裁剪
-  max_epochs: 100  # int>0, 最多完成的训练和完整 validation 轮数
-  patience_bad_epochs: 2  # int>0, 连续多少次完整 validation 未严格改善 selection 后早停
+  validation_checks_per_epoch: 3  # int>0, 每个 epoch 顺序训练三个连续区段并各执行一次完整 validation
+  selection_improvement_minimum: 0.001  # float>0, selection 相对 BEST 至少增加该值才更新 BEST 并清零坏检查数
+  patience_bad_validation_checks: 2  # int>0, 允许连续两次未改善; 第三次未改善时执行平台动作
+  learning_rate_reduction_factor: 0.8  # float, 范围 (0,1), 前两次平台动作把当前学习率乘以该值
+  max_learning_rate_reductions: 2  # int>0, 整次训练最多实际降低两次学习率; 下一次平台直接早停
+  max_epochs: 15  # int>0, 最多训练 15 个 epoch，即最多执行 45 次完整 validation
 tracking:  # mapping, W&B 模式、命名和记录间隔
   mode: online  # str, W&B 模式; 可取 online、offline 或 disabled
   entity: null  # str|null, W&B 实体名称; null 使用当前登录账户默认实体
