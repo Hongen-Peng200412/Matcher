@@ -12,8 +12,9 @@
 | `build_stage1_only_preview.sh` | 冻结 Find_1 与 Emap2lig 的 Stage1-only top-k 元数据 |
 | `plot_stage1_only_preview.sh` | 从冻结元数据绘制一张明确标记的预览图 |
 | `evaluate_frozen_test.sh` | 阶段 E 用同一 BEST 评估真实受体、CryoAtom2 和可选 test_1 子集 |
+| `plot_frozen_test.sh` | 从冻结测试 JSON 生成一张指标图和两张正式 top-k 图 |
 
-`build_stage1_manifest.sh` 不应对仍在写入的训练分片运行。当前负责第 6 片推理的独立任务不由这些脚本接管。
+`build_stage1_manifest.sh` 不应对仍在写入的训练分片运行。正式 train/validation manifest 已纳入闭合并验收通过的第 6 片；训练与冻结测试不得重新构建该清单。
 
 ## 四项正式训练
 

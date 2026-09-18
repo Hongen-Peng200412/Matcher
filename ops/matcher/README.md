@@ -8,10 +8,11 @@
 | `build_stage1_manifest.py` | 扫描指定 Stage1 划分，发布候选、身份 JSONL 和 manifest |
 | `plot_stage1_preview.py` | 从冻结元数据画一张明确标记的 Stage1-only preview |
 | `evaluate_frozen_test.py` | 阶段 E 用同一 BEST 运行两种受体条件和可选 test_1 筛选 |
+| `plot_frozen_test.py` | 从同一份冻结测试 JSON 生成指标图和两种排序的 top-k 图 |
 
 正式 shell 命令由 `训练与运行/sh/` 提供。测试命令、临时 SHA-256 取证和服务器一次性动态命令不写入这些 Python 文件。
 
 ## 写入边界
 
-构建器只写显式 `--output-path` 及其同目录派生文件。Emap2lig、Find_1、AdaLigand 和 Pocket_Plus 来源均只读。train manifest 只能在用户确认本轮全部 Stage1 分片闭合后发布；当前不纳入未完成的第 6 片。
+构建器只写显式 `--output-path` 及其同目录派生文件。Emap2lig、Find_1、AdaLigand 和 Pocket_Plus 来源均只读。正式 train manifest 已在全部六个 Stage1 分片闭合后发布；训练与测试期间不得重新扫描来源或改写这份冻结清单。
 
