@@ -50,6 +50,7 @@ bash 训练与运行/sh/final_smiles/evaluate_density_blob_only.sh
 - 第二次门禁使用绝对数值 `1e-6` 比较经过完整训练区段后的两条非确定性 CUDA 轨迹，并在显式回收前检查训练 worker，因门禁表达错误而失败；未进入训练。
 - 第三次门禁尝试启用 PyTorch 全确定性算法，但 `upsample_trilinear3d_backward_out_cuda` 没有确定性实现，因此失败关闭；未进入训练。
 - 最终门禁以候选顺序与固定计数严格一致、核心指标与损失相称一致并显式关闭阶段 worker 的口径通过。当前正式训练是本实验唯一训练尝试。
+- 第一次冻结测试已经完成真实受体与 CryoAtom2 的 test_0 前向，但旧 `_read_pdb_subset()` 按逐行文本读取官方 JSON，把 160 行 JSON 文本误当成 160 个 PDB 标识，因而在 test_1 筛选前失败关闭。未发布 `frozen_test.json` 或图表；try_lock 自动恢复，after_lock 保留。修复只把该入口改为读取官方 JSON 顶层 `pdb_ids`，没有修改模型前向、阈值、候选排序或指标。
 
 ## 训练结果
 
