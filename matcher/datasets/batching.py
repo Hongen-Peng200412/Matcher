@@ -25,8 +25,8 @@ def _pad_float(values: list[np.ndarray]) -> tuple[torch.Tensor, torch.Tensor]:
     沿第一维补零一组同宽浮点二维数组, 并返回有效位置掩码.
 
     - values: 非空二维数组列表; 第二维宽度必须相同, 第一维允许为零.
-    - return[0]: float32 张量, (B, N_max, D), 无效位置补零.
-    - return[1]: bool 张量, (B, N_max), 原数组覆盖位置为 True.
+    - return[0]: float32 张量, (B, N_max, D), 无效位置补零, 特征.
+    - return[1]: bool 张量, (B, N_max), 原数组覆盖位置为 True, mask.
     """
     # int, N_max; 批内数组第一轴的最大长度.
     maximum = max(len(value) for value in values)
@@ -49,8 +49,8 @@ def _pad_integer(values: list[np.ndarray]) -> tuple[torch.Tensor, torch.Tensor]:
     沿第一维补零一组 int64 二维索引, 并返回有效位置掩码.
 
     - values: 非空二维索引数组列表; 第二维宽度必须相同, 第一维允许为零.
-    - return[0]: int64 张量, (B, N_max, D), 无效位置补零.
-    - return[1]: bool 张量, (B, N_max), 原数组覆盖位置为 True.
+    - return[0]: int64 张量, (B, N_max, D), 无效位置补零, 特征.
+    - return[1]: bool 张量, (B, N_max), 原数组覆盖位置为 True, mask.
     """
     # int, N_max; 批内索引数组第一轴的最大长度.
     maximum = max(len(value) for value in values)

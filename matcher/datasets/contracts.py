@@ -46,6 +46,7 @@ class CandidateItem(TypedDict):
     保存一个候选的未补齐输入、监督和 PDB 内闭集 SMILES 身份轴.
 
     - metadata: CandidateMetadata. 保存当前候选来源、两种排序分数、几何真值和身份支持状态.
+
     - voxel_input: float16 数组, (C,48,48,48). strongest/trunk_only 的 C=106, density_blob_only 的 C=1, pocket_only 的 C=0.
     - a_tokens: float32 数组. strongest/trunk_only 为 (N_A,230), 依次连接 L0[0:50]、L1[50:114]、L2[114:178]、L3[178:226]、概率[226]、归一化相对 XYZ[227:230]. pocket_only 为原始 L0 的 (N_A,50). density_blob_only 为 (0,230).
     - p_tokens: float32 数组, (N_P,116). strongest/trunk_only 依次连接 L2[0:64]、L3[64:112]、概率[112]、归一化相对 XYZ[113:116]. 其它变体为 (0,116).
@@ -53,12 +54,15 @@ class CandidateItem(TypedDict):
     - v_index_zyx: int64 数组, (N_V,3). 每个 V token 在 supplied 48 立方体中的 Z、Y、X 整数索引, 与 v_tokens 第一轴对齐.
     - pp_tokens: float32 数组, (N_PP,4). strongest/trunk_only 依次保存概率[0]和归一化相对 XYZ[1:4]. 其它变体为 (0,4).
     - pp_index_zyx: int64 数组, (N_PP,3). 每个 PP token 在 supplied 48 立方体中的 Z、Y、X 整数索引, 与 pp_tokens 第一轴对齐.
+
     - foreground_target: bool. 候选是否通过候选覆盖率和 occurrence 覆盖率均不低于 0.30 的前景目标.
     - ligand_area_target: bool 数组, (48,48,48). True 表示 supplied crop 中至少一个真实 occurrence 占据该体素.
     - binding_area_target: bool 数组, (48,48,48). True 表示 supplied crop 中至少一个 binding_atom 受体原子占据该体素.
+
     - full_candidate_voxel_count: int. 当前 source blob 在完整 F2 网格中的体素数, 用于计算 supplied crop 保留率.
     - candidate_manual_features: float32 数组, (12,). 按 A、P、V、PP 顺序, 每组依次为 token 数、概率均值、概率最大值. 禁用模态的三项均为零.
     - candidate_sampling_features: float32 数组, (4,). 依次为 crop_boundary_limited、crop_center_to_v_centroid_l2_voxels、crop_center_to_v_centroid_linf_voxels、v_retained_fraction. pocket_only 全零.
+
     - identity_smiles: list[str], 长度 I. 当前 PDB 内同时具有合法图和 SMI-TED 向量的精确 PreparedLigand.smiles, 按字符串升序且不重复.
     - language_embeddings: float32 数组, (I,768). 与 identity_smiles 逐槽对齐的 SMI-TED 表示.
     - smiles_graphs: list[SmilesGraph]. strongest/density_blob_only/pocket_only 的长度为 I 并逐槽对齐, trunk_only 固定为空列表.
@@ -94,29 +98,34 @@ class CandidateBatch(TypedDict):
     保存补齐后的物理批次和按需连接的 SMILES 图.
 
     - metadata: list[CandidateMetadata], 长度 B. 与全部批次张量第一轴逐候选对齐.
-    - voxel_input: 浮点张量, (B,C,48,48,48). C 的四变体规则与 CandidateItem 相同.
+    - voxel_input: 浮点张量, (B, C, 48, 48, 48). C 的四变体规则与 CandidateItem 相同.
     - foreground_target: bool 张量, (B,). True 表示几何真前景, 与身份资产是否可用无关.
-    - ligand_area_target: bool 张量, (B,48,48,48). True 表示真实配体占据体素.
-    - binding_area_target: bool 张量, (B,48,48,48). True 表示结合受体原子占据体素.
+    - ligand_area_target: bool 张量, (B, 48, 48, 48). True 表示真实配体占据体素.
+    - binding_area_target: bool 张量, (B, 48, 48, 48). True 表示结合受体原子占据体素.
+
     - full_candidate_voxel_count: int64 张量, (B,). 每个完整 source blob 的体素数.
-    - candidate_manual_features: float32 张量, (B,12). 字段顺序与 CandidateItem 相同.
-    - candidate_sampling_features: float32 张量, (B,4). 字段顺序与 CandidateItem 相同.
-    - a_tokens: float32 张量, (B,N_A_max,F_A). F_A 为 230 或 pocket_only 的 50, 尾部补零.
-    - a_mask: bool 张量, (B,N_A_max). True 表示 a_tokens 的真实 token, False 表示补零槽.
-    - p_tokens: float32 张量, (B,N_P_max,116). 尾部补零, 禁用变体的 N_P_max=0.
-    - p_mask: bool 张量, (B,N_P_max). True 表示 p_tokens 的真实 token, False 表示补零槽.
-    - v_tokens: float32 张量, (B,N_V_max,68). 尾部补零, pocket_only 的 N_V_max=0.
-    - v_mask: bool 张量, (B,N_V_max). True 表示 v_tokens 的真实 token, False 表示补零槽.
-    - v_index_zyx: int64 张量, (B,N_V_max,3). 与 v_tokens 对齐的 supplied crop Z、Y、X 索引, 补零槽为零.
-    - pp_tokens: float32 张量, (B,N_PP_max,4). 尾部补零, 禁用变体的 N_PP_max=0.
-    - pp_mask: bool 张量, (B,N_PP_max). True 表示 pp_tokens 的真实 token, False 表示补零槽.
-    - pp_index_zyx: int64 张量, (B,N_PP_max,3). 与 pp_tokens 对齐的 supplied crop Z、Y、X 索引, 补零槽为零.
-    - language_embeddings: float32 张量, (B,I_max,768). 每个样本的 I 个有效身份写入前缀, 尾部补零.
-    - identity_mask: bool 张量, (B,I_max). True 表示 language_embeddings 和 identity_smiles 的真实身份槽, False 表示补零槽.
+    - candidate_manual_features: float32 张量, (B, 12). 字段顺序与 CandidateItem 相同.
+    - candidate_sampling_features: float32 张量, (B, 4). 字段顺序与 CandidateItem 相同.
+    - a_tokens: float32 张量, (B, N_A_max, F_A). F_A 为 230 或 pocket_only 的 50, 尾部补零.
+    - a_mask: bool 张量, (B, N_A_max). True 表示 a_tokens 的真实 token, False 表示补零槽.
+    - p_tokens: float32 张量, (B, N_P_max, 116). 尾部补零, 禁用变体的 N_P_max=0.
+    - p_mask: bool 张量, (B, N_P_max). True 表示 p_tokens 的真实 token, False 表示补零槽.
+    - v_tokens: float32 张量, (B, N_V_max, 68). 尾部补零, pocket_only 的 N_V_max=0.
+    - v_mask: bool 张量, (B, N_V_max). True 表示 v_tokens 的真实 token, False 表示补零槽.
+    - v_index_zyx: int64 张量, (B, N_V_max, 3). 与 v_tokens 对齐的 supplied crop Z、Y、X 索引, 补零槽为零.
+    - pp_tokens: float32 张量, (B, N_PP_max, 4). 尾部补零, 禁用变体的 N_PP_max=0.
+    - pp_mask: bool 张量, (B, N_PP_max). True 表示 pp_tokens 的真实 token, False 表示补零槽.
+    - pp_index_zyx: int64 张量, (B, N_PP_max, 3). 与 pp_tokens 对齐的 supplied crop Z、Y、X 索引, 补零槽为零.
+
+    - language_embeddings: float32 张量, (B, I_max, 768). 每个样本的 I 个有效身份写入前缀, 尾部补零.
+    - identity_mask: bool 张量, (B, I_max). True 表示 language_embeddings 和 identity_smiles 的真实身份槽, False 表示补零槽.
     - identity_target: int64 张量, (B,). 受支持真前景指向有效身份槽, 背景或不受支持真前景为 -1.
-    - identity_smiles: list[list[str]], 外层长度 B. 每个内层列表只含 I 个有效精确 SMILES, 不保存补零字符串.
+    - identity_smiles: list[list[str]], 外层长度 B. 正确身份槽下标 0..I-1. 每个内层列表只含 I 个有效精确 SMILES, 不保存补零字符串.
+
+
     - graph_to_sample: int64 张量, (G,). 第 g 项把连接图 g 映射到批次样本下标 [0,B).
     - graph_to_identity: int64 张量, (G,). 第 g 项把连接图 g 映射到所属样本的身份槽 [0,I). 与 graph_to_sample 共同定位写回位置.
+
     - graph_element: int64 张量, (N,). G 张图连接后的原子序数. trunk_only 的 N=0.
     - graph_charge: int64 张量, (N,). 与 graph_element 逐原子对齐的形式电荷.
     - graph_atom_in_ring: float32 张量, (N,4). 与连接原子轴对齐的四种环大小标志.
