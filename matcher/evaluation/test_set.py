@@ -463,17 +463,17 @@ def _read_pdb_subset(path: Path) -> set[str]:
     """
     读取官方 test_1 补充子集列表.
 
-    - path: UTF-8 文本路径, 每个非空行保存一个 PDB 标识.
+    - path: 官方 test_1 JSON; 顶层 pdb_ids 按 test_0 顺序保存 PDB 标识.
     - return: 统一小写后的 149 个唯一 PDB 标识.
     """
-    pdb_ids = {
-        line.strip().lower()
-        for line in Path(path).read_text(encoding="utf-8").splitlines()
-        if line.strip()
-    }
-    if len(pdb_ids) != 149:
-        raise ValueError(f"test_1 官方 PDB 列表必须含 149 个唯一标识，实际为 {len(pdb_ids)}。")
-    return pdb_ids
+    record = json.loads(Path(path).read_text(encoding="utf-8"))
+    values = record.get("pdb_ids") if isinstance(record, dict) else None
+    if not isinstance(values, list) or not all(isinstance(value, str) for value in values):
+        raise ValueError("test_1 官方 JSON 缺少字符串 pdb_ids 列表。")
+    pdb_ids = [value.lower() for value in values]
+    if len(pdb_ids) != 149 or len(set(pdb_ids)) != 149:
+        raise ValueError(f"test_1 官方 PDB 列表必须含 149 个唯一标识，实际为 {len(set(pdb_ids))}。")
+    return set(pdb_ids)
 
 
 def _preview_pdb_axis(curve: dict[str, Any], label: str) -> list[str]:

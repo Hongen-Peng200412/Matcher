@@ -29,6 +29,7 @@ from matcher.evaluation.test_set import (
     _matcher_curve,
     _metrics_from_rows,
     _ranked_hit_curve,
+    _read_pdb_subset,
 )
 from matcher.model.config import MatcherModelConfig
 from matcher.model.ligand_matcher import ClosedSetMatcher
@@ -110,6 +111,17 @@ def test_checkpoint_loader_uses_training_release_package(tmp_path: Path) -> None
         checkpoint["model_state"]["projection.weight"],
     )
     assert provenance["training_project_root"] == str(project_root.resolve())
+
+
+def test_test1_subset_reads_official_json_pdb_ids(tmp_path: Path) -> None:
+    path = tmp_path / "test_1.json"
+    expected = [f"{index:04x}" for index in range(149)]
+    path.write_text(
+        json.dumps({"name": "test_1", "parent": "test_0", "pdb_ids": expected}),
+        encoding="utf-8",
+    )
+
+    assert _read_pdb_subset(path) == set(expected)
 
 
 def test_manifest_source_mismatch_does_not_touch_published_jsonl(tmp_path: Path) -> None:
