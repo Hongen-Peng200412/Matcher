@@ -35,6 +35,7 @@ from matcher.training.config import load_smiles_experiment
 from matcher.training.engine import (
     _ValidationPolicyState,
     _partition_optimizer_updates,
+    _train_epoch_segments,
     _write_manifest_snapshot,
 )
 from matcher.training.losses import (
@@ -650,6 +651,72 @@ def test_optimizer_updates_are_partitioned_without_omission_or_repetition() -> N
     assert _partition_optimizer_updates(9, 3) == (3, 3, 3)
     with pytest.raises(ValueError, match="不小于"):
         _partition_optimizer_updates(2, 3)
+
+
+def test_training_segments_consume_one_loader_iteration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = load_smiles_experiment(Path("configs/experiments/final_smiles/trunk_only.yaml"))
+
+    class CountingLoader:
+        def __init__(self) -> None:
+            self.iteration_count = 0
+
+        def __len__(self) -> int:
+            return 10
+
+        def __iter__(self):
+            self.iteration_count += 1
+            for index in range(10):
+                yield {
+                    "feature": torch.asarray([[float(index)]]),
+                    "foreground_target": torch.asarray([True]),
+                    "identity_target": torch.asarray([0]),
+                }
+
+    class ScalarModel(torch.nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.weight = torch.nn.Parameter(torch.asarray(1.0))
+
+        def forward(self, batch: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+            return {"prediction": batch["feature"].mean() * self.weight}
+
+    def fake_loss(
+        outputs: dict[str, torch.Tensor],
+        batch: dict[str, torch.Tensor],
+        weights: LossWeights,
+    ) -> dict[str, torch.Tensor]:
+        del batch, weights
+        value = outputs["prediction"].square() + 1.0
+        return {
+            "total": value,
+            "foreground": value,
+            "ligand_area": value,
+            "binding_area": value,
+            "identity": value,
+            "identity_eligible_count": torch.asarray(1),
+        }
+
+    monkeypatch.setattr("matcher.training.engine.compute_matcher_loss", fake_loss)
+    loader = CountingLoader()
+    model = ScalarModel()
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1.0e-4)
+    segments = list(
+        _train_epoch_segments(
+            model,
+            loader,
+            optimizer,
+            config,
+            torch.device("cpu"),
+            0,
+            None,
+        )
+    )
+    assert loader.iteration_count == 1
+    assert [segment for segment, _, _ in segments] == [1, 2, 3]
+    assert [step for _, _, step in segments] == [4, 7, 10]
+    assert [summary["optimizer_update_count"] for _, summary, _ in segments] == [4.0, 3.0, 3.0]
 
 
 def test_validation_policy_uses_one_threshold_and_stops_after_two_real_lr_reductions() -> None:
