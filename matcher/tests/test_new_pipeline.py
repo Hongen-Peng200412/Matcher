@@ -572,7 +572,7 @@ def test_smiles_metrics_return_none_for_zero_support() -> None:
     }
 
 
-def test_stage1_hit_and_ranking_keep_selected_candidates_only() -> None:
+def test_stage1_hit_and_ranking_append_unselected_after_selected_prefix() -> None:
     intersections = np.asarray([[3, 0], [0, 2], [3, 0]])
     pred_sizes = np.asarray([10, 10, 10])
     gt_sizes = np.asarray([10, 10])
@@ -583,8 +583,55 @@ def test_stage1_hit_and_ranking_keep_selected_candidates_only() -> None:
         np.asarray([True, False, True]),
         hit,
     )
-    assert curve[0] is True
+    assert curve[:2] == [True, True]
     assert all(curve)
+
+
+def test_stage1_unselected_candidate_cannot_displace_selected_prefix() -> None:
+    curve = _ranked_hit_curve(
+        np.asarray([0.1, 0.2, 0.99]),
+        np.asarray([2, 1, 0]),
+        np.asarray([True, True, False]),
+        np.asarray([False, False, True]),
+    )
+    assert curve[:3] == [False, False, True]
+
+
+def test_matcher_curve_uses_the_same_selected_priority_order(tmp_path: Path) -> None:
+    pdb_ids = [f"pdb{index:03d}" for index in range(179)]
+    rows = {
+        pdb_ids[0]: [
+            {
+                "candidate_selected": True,
+                "gaussian_score": 0.2,
+                "source_blob_index": 2,
+                "foreground_target": False,
+                "identity_supported": False,
+                "predicted_smiles": None,
+                "target_smiles": None,
+            },
+            {
+                "candidate_selected": True,
+                "gaussian_score": 0.1,
+                "source_blob_index": 1,
+                "foreground_target": False,
+                "identity_supported": False,
+                "predicted_smiles": None,
+                "target_smiles": None,
+            },
+            {
+                "candidate_selected": False,
+                "gaussian_score": 0.99,
+                "source_blob_index": 0,
+                "foreground_target": True,
+                "identity_supported": True,
+                "predicted_smiles": "CC",
+                "target_smiles": "CC",
+            },
+        ]
+    }
+    curve = _matcher_curve("test", rows, pdb_ids, "gaussian_score", tmp_path / "best.pt")
+    assert curve["hit_count"][:3] == [0, 0, 1]
 
 
 def test_final_metrics_and_topk_keep_empty_pdb_in_fixed_denominator(tmp_path: Path) -> None:
@@ -592,6 +639,7 @@ def test_final_metrics_and_topk_keep_empty_pdb_in_fixed_denominator(tmp_path: Pa
         "nonempty": [
             {
                 "foreground_target": True,
+                "candidate_selected": True,
                 "foreground_probability": 0.9,
                 "predicted_smiles": "CC",
                 "target_smiles": "CC",
@@ -603,6 +651,7 @@ def test_final_metrics_and_topk_keep_empty_pdb_in_fixed_denominator(tmp_path: Pa
             },
             {
                 "foreground_target": False,
+                "candidate_selected": True,
                 "foreground_probability": 0.1,
                 "predicted_smiles": None,
                 "target_smiles": None,

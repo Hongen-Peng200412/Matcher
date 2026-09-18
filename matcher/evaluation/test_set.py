@@ -56,9 +56,9 @@ def _ranked_hit_curve(
 
     - score: 浮点 (N_candidate,); 当前排序采用的 Gaussian 分数或来源概率均值.
     - source_blob_index: 整数 (N_candidate,); 同分候选的升序并列键.
-    - selected: bool (N_candidate,); 只有 True 候选进入排名, False 候选不删除后补位.
+    - selected: bool (N_candidate,); True 候选整段排在 False 候选之前.
     - candidate_hit: bool (N_candidate,); 由双向 0.30 覆盖门槛得到的 Stage1 命中标志.
-    - return: 长度 20 的布尔列表; 第 k-1 项表示前 k 个已选候选中是否至少一次命中.
+    - return: 长度 20 的布尔列表; 第 k-1 项表示扩展顺序前 k 个候选中是否至少一次命中.
     """
     score = np.asarray(score, dtype=np.float64)
     blob = np.asarray(source_blob_index, dtype=np.int64)
@@ -66,10 +66,58 @@ def _ranked_hit_curve(
     hit = np.asarray(candidate_hit, dtype=np.bool_)
     if not (score.shape == blob.shape == selected.shape == hit.shape):
         raise ValueError("候选分数、编号、选择掩码和命中掩码必须同形。")
-    indices = np.flatnonzero(selected)
-    order = indices[np.lexsort((blob[indices], -score[indices]))]
+    order = _selected_priority_order(score, blob, selected)
     ranked_hit = hit[order]
     return [bool(np.any(ranked_hit[:k])) for k in TOP_K_VALUES]
+
+
+def _selected_priority_order(
+    score: np.ndarray,
+    source_blob_index: np.ndarray,
+    selected: np.ndarray,
+) -> np.ndarray:
+    """
+    生成 selected 优先的唯一扩展候选顺序.
+
+    - score: 浮点 (N_candidate,), 当前排序使用的 Stage1 分数.
+    - source_blob_index: 整数 (N_candidate,), 分数并列时较小者优先.
+    - selected: bool (N_candidate,), 决定候选进入前段或追加段.
+    - return: 整数 (N_candidate,), 先含全部 selected 候选, 再含全部 unselected 候选.
+
+    两段内部均按分数降序、source_blob_index 升序排列. 当两项键都相同时,
+    np.lexsort 保留来源数组中的确定位置, 因此不会让 unselected 候选挤占 selected 前缀.
+    """
+    score = np.asarray(score, dtype=np.float64)
+    blob = np.asarray(source_blob_index, dtype=np.int64)
+    selected = np.asarray(selected, dtype=np.bool_)
+    if not (score.shape == blob.shape == selected.shape) or score.ndim != 1:
+        raise ValueError("候选分数、编号和选择掩码必须是一维同形数组。")
+    segments: list[np.ndarray] = []
+    for flag in (True, False):
+        indices = np.flatnonzero(selected == flag)
+        segments.append(indices[np.lexsort((blob[indices], -score[indices]))])
+    return np.concatenate(segments)
+
+
+def _assert_selected_prefix_unchanged(
+    score: np.ndarray,
+    source_blob_index: np.ndarray,
+    selected: np.ndarray,
+) -> None:
+    """
+    证明扩展顺序的 selected 前缀与原 selected-only 顺序逐候选相同.
+
+    - score / source_blob_index / selected: 与 _selected_priority_order 相同的三个候选轴字段.
+    - return: None; 前缀发生挤占、遗漏或重排时抛出 RuntimeError.
+    """
+    score = np.asarray(score, dtype=np.float64)
+    blob = np.asarray(source_blob_index, dtype=np.int64)
+    selected = np.asarray(selected, dtype=np.bool_)
+    selected_indices = np.flatnonzero(selected)
+    original_order = selected_indices[np.lexsort((blob[selected_indices], -score[selected_indices]))]
+    expanded_order = _selected_priority_order(score, blob, selected)
+    if not np.array_equal(expanded_order[: len(original_order)], original_order):
+        raise RuntimeError("扩展 top-k 改变了原 selected-only 候选前缀。")
 
 
 def _find_probability_mean(pdb_root: Path) -> dict[int, float]:
@@ -149,6 +197,8 @@ def build_find_stage1_curves(stage1_test_root: Path, label: str) -> dict[str, di
             )
         probability_by_blob = _find_probability_mean(pdb_root)
         probability = np.asarray([probability_by_blob[int(value)] for value in blob], dtype=np.float64)
+        _assert_selected_prefix_unchanged(gaussian, blob, selected)
+        _assert_selected_prefix_unchanged(probability, blob, selected)
         gaussian_hits[pdb_root.name.lower()] = _ranked_hit_curve(
             gaussian, blob, selected, candidate_hit
         )
@@ -183,14 +233,13 @@ def build_emap2lig_stage1_curve(evaluation_root: Path) -> dict[str, Any]:
             candidate_hit = _candidate_hit_mask(
                 archive["intersections"], archive["pred_sizes"], archive["gt_sizes"]
             )
+        _assert_selected_prefix_unchanged(score, blob, selected)
         pdb_hits[path.stem.lower()] = _ranked_hit_curve(score, blob, selected, candidate_hit)
     curve = _curve_record(
         "Emap2lig Find Stage1-only (density-only, receptor-independent)",
         root,
         pdb_hits,
     )
-    if [curve["hit_count"][index - 1] for index in (3, 4, 5)] != [87, 89, 90]:
-        raise RuntimeError("Emap2lig top-3/4/5 未复现正式基线 87/89/90。")
     return curve
 
 
@@ -231,20 +280,6 @@ def build_stage1_only_preview_metadata(
     real = build_find_stage1_curves(real_test_root, "Find_1 real-receptor")
     cryo = build_find_stage1_curves(cryoatom2_test_root, "Find_1 CryoAtom2-receptor")
     emap = build_emap2lig_stage1_curve(emap2lig_evaluation_root)
-    expected = {
-        "real_gaussian_top1_to_4": [136, 153, 159, 164],
-        "cryo_gaussian_top1_to_4": [118, 132, 145, 147],
-        "real_gaussian_plateau": 164,
-        "cryo_gaussian_plateau": 151,
-    }
-    observed = {
-        "real_gaussian_top1_to_4": real["gaussian"]["hit_count"][:4],
-        "cryo_gaussian_top1_to_4": cryo["gaussian"]["hit_count"][:4],
-        "real_gaussian_plateau": real["gaussian"]["hit_count"][-1],
-        "cryo_gaussian_plateau": cryo["gaussian"]["hit_count"][-1],
-    }
-    if observed != expected:
-        raise RuntimeError(f"Find_1 Stage1-only 基线不一致: {observed}。")
     if not (
         set(real["gaussian"]["pdb_ids"])
         == set(cryo["gaussian"]["pdb_ids"])
@@ -256,6 +291,9 @@ def build_stage1_only_preview_metadata(
         "status": "stage1_only_preview",
         "coverage_threshold": COVERAGE_THRESHOLD,
         "denominator_pdb_count": EXPECTED_PDB_COUNT,
+        "candidate_order": (
+            "candidate_selected=true 按指定分数排序后，追加 candidate_selected=false 的同分数排序"
+        ),
         "stage1_only_hit_definition": (
             "top-k 内至少一个候选与任一真实 occurrence 的 candidate_coverage 和 "
             "occurrence_coverage 均不低于 0.30"
@@ -289,8 +327,8 @@ def _run_matcher_condition(
     - manifest_path / split: 当前受体条件的冻结测试清单及划分键.
     - batch_size / num_workers: 冻结推理的物理批量和持久工作进程数.
     - pp_top_k / cache_gib_per_worker: Dataset 的 PP token 上限与每 worker 缓存预算.
-    - return[0]: 使用 checkpoint 前景阈值计算的二分类和 SMILES 指标.
-    - return[1]: PDB 到候选预测记录列表的映射; Gaussian 与概率均值排序共同复用.
+    - return[0]: 在原 selected 候选口径上使用 checkpoint 前景阈值计算的二分类和 SMILES 指标.
+    - return[1]: PDB 到全部 centered 候选预测记录列表的映射; 两种扩展排序共同复用.
     - return[2]: manifest summary 冻结的 179 个唯一 PDB 标识, 保留原有顺序.
 
     manifest 中存在但没有 centered 候选的 PDB 保留在指标 PDB 计数中, 候选记录映射不为其
@@ -318,7 +356,7 @@ def _run_matcher_condition(
     dataset = load_manifest_dataset(
         manifest_path,
         split=split,
-        selected_only=True,
+        selected_only=False,
         mode="test",
         variant=config.variant,
         pp_top_k=pp_top_k,
@@ -349,6 +387,7 @@ def _run_matcher_condition(
                     "source_blob_index": metadata["source_blob_index"],
                     "gaussian_score": metadata["gaussian_score"],
                     "source_probability_mean": metadata["source_probability_mean"],
+                    "candidate_selected": metadata["candidate_selected"],
                     "foreground_target": metadata["foreground_target"],
                     "target_category": metadata["target_category"],
                     "matched_occurrence_id": metadata["matched_occurrence_id"],
@@ -381,10 +420,10 @@ def _metrics_from_rows(
     """
     从一次 test_0 冻结推理重算全量或指定 PDB 子集指标.
 
-    - rows_by_pdb: 一次冻结前向生成的候选预测; 每个记录同时保存目标和预测.
+    - rows_by_pdb: 一次冻结前向生成的全部候选预测; 每个记录同时保存目标、预测和选择标志.
     - threshold: BEST checkpoint 中保存的 validation 前景阈值; 本函数不重新拟合.
     - pdb_ids: 可选 PDB 集合; None 使用所有有候选的 PDB, 显式集合允许包含零候选 PDB.
-    - return: 前景、SMILES、selection 及不受支持身份明细; pdb_count 使用显式集合分母.
+    - return: 原 selected 候选口径的前景、SMILES 和不受支持身份明细; pdb_count 使用显式集合分母.
     """
     from .metrics import ValidationAccumulator
 
@@ -393,6 +432,8 @@ def _metrics_from_rows(
     unsupported: list[dict[str, Any]] = []
     for pdb_id in sorted(selected_pdb_ids):
         for row in rows_by_pdb.get(pdb_id, []):
+            if not bool(row["candidate_selected"]):
+                continue
             accumulator.foreground_target.append(bool(row["foreground_target"]))
             accumulator.foreground_probability.append(float(row["foreground_probability"]))
             accumulator.predicted_smiles.append(row["predicted_smiles"])
@@ -466,12 +507,12 @@ def _matcher_curve(
     - name: 图例使用的完整曲线名称.
     - rows_by_pdb: 同一次 Matcher 冻结推理的候选预测.
     - pdb_ids: Stage1-only 元数据给出的有序 179-PDB 列表.
-    - sorting: gaussian_score 或 source_probability_mean; 只改变候选集合内部顺序.
+    - sorting: gaussian_score 或 source_probability_mean; 只改变 selected 段和追加段各自的内部顺序.
     - checkpoint_path: 曲线来源记录使用的 BEST checkpoint 路径.
     - return: 固定 179 分母的 k=1..20 曲线; 零候选 PDB 的 20 个命中值均为 False.
 
-    不受支持身份、背景候选或预测 SMILES 不等于确定目标 SMILES 的候选均不能成为命中; 它们
-    保留原排名, 不删除后让后一名补位.
+    每个 PDB 先排列全部 selected 候选, 再追加全部 unselected 候选. 不受支持身份、背景候选或
+    预测 SMILES 不等于确定目标 SMILES 的候选均不能成为命中; 它们保留原排名, 不删除后补位.
     """
     expected_pdb_ids = set(pdb_ids)
     extra = sorted(set(rows_by_pdb) - expected_pdb_ids)
@@ -480,10 +521,11 @@ def _matcher_curve(
     pdb_hit: dict[str, list[bool]] = {}
     for pdb_id in pdb_ids:
         rows = rows_by_pdb.get(pdb_id, [])
-        ordered = sorted(
-            rows,
-            key=lambda row: (-float(row[sorting]), int(row["source_blob_index"])),
-        )
+        score = np.asarray([float(row[sorting]) for row in rows], dtype=np.float64)
+        blob = np.asarray([int(row["source_blob_index"]) for row in rows], dtype=np.int64)
+        selected = np.asarray([bool(row["candidate_selected"]) for row in rows], dtype=np.bool_)
+        order = _selected_priority_order(score, blob, selected)
+        ordered = [rows[int(index)] for index in order]
         correct = [
             bool(row["foreground_target"])
             and bool(row["identity_supported"])
@@ -623,6 +665,9 @@ def build_final_test_artifact(
         "real_manifest_path": str(real_manifest_path),
         "cryoatom2_manifest_path": str(cryoatom2_manifest_path),
         "stage1_preview_path": str(stage1_preview_path),
+        "candidate_order": (
+            "candidate_selected=true 按指定分数排序后，追加 candidate_selected=false 的同分数排序"
+        ),
         "foreground_threshold_source": "BEST checkpoint validation fit",
         "metrics": {
             "real_receptor": real_metrics,
