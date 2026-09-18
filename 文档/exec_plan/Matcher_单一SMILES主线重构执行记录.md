@@ -41,7 +41,11 @@
 /home/penghongen/anaconda3/envs/AdaLigand_stage1_py310/bin/python -m matcher.evaluation.test_set --real-test-root /storage/penghongen/AdaLigand_stage1_inference/Find_1/真实受体/artifacts/Find_1/held_out_test_0 --cryoatom2-test-root /storage/penghongen/AdaLigand_stage1_inference/Find_1/CryoAtom2受体/artifacts/Find_1/held_out_test_0 --emap2lig-evaluation-root /storage/penghongen/AdaLigand_stage1_inference/Emap2lig/official_find_li/held_out_test_0/evaluation --output-path /storage/penghongen/Matcher/evaluation/stage1_only_preview/stage1_only_preview.json
 ```
 
-真实受体和 CryoAtom2 的 test_0 manifest 使用同一 `ops.matcher.build_stage1_manifest` 入口，分别写入 `test0_real_smiles_v1/manifest.json` 与 `test0_cryoatom2_smiles_v1/manifest.json`。两张预览图由 `python -m ops.matcher.plot_stage1_preview` 从同一份 Stage1-only JSON 生成。
+真实受体和 CryoAtom2 的 test_0 manifest 使用同一 `ops.matcher.build_stage1_manifest` 入口，分别写入 `test0_real_smiles_v1/manifest.json` 与 `test0_cryoatom2_smiles_v1/manifest.json`。扩展 top-k 契约冻结后，两张预览图使用以下正式命令从同一份 Stage1-only JSON 重新生成：
+
+```bash
+/home/penghongen/anaconda3/envs/AdaLigand_stage1_py310/bin/python -m ops.matcher.plot_stage1_preview --metadata-path /storage/penghongen/Matcher/evaluation/stage1_only_preview/stage1_only_preview.json --output-directory /storage/penghongen/Matcher/evaluation/stage1_only_preview
+```
 
 ## 机械门禁命令
 
@@ -89,8 +93,8 @@ bash 训练与运行/submit_task.sh --sh tmp/matcher_gpu_preflight.sh --resource
 - CryoAtom2 test_0 manifest SHA-256 为 `14f8d2316d0555fb5b794f034ff96a577597149909deb8b2c340164faede7fda`，含 2,407 个候选、1,651 个已选候选、1,403 个真前景和两个不受支持真前景。
 - 对两份 test_0 清单逐候选重算完整交集矩阵，最大几何平均、双向 0.30 覆盖与较小 occurrence_id 并列规则的偏差数均为 0。`9ian` occurrence 0 的真实受体/CryoAtom2 已选排名为 3/5；`9oq7` occurrence 10 的排名为 2/1。
 - 两种受体条件各有 174 个 PDB 含 centered 候选，另外五个 PDB 为空候选。最终报告器把 manifest 摘要中的全部 179 个 PDB 作为固定 top-k 分母，空候选 PDB 的 k=1…20 均为未命中，不虚构候选。
-- Stage1-only JSON SHA-256 为 `482f4e7edcf6f855af65c7b4272d1ba92cd3c0696780fb61fbbc2732bc2ec83d`。Emap2lig top-3/4/5 严格复现 87/89/90，且两种 Find_1 排序引用的 Emap2lig 曲线逐点相同。
-- 两张预览图分别为 `topk_gaussian_stage1_only_preview.png` 和 `topk_source_probability_mean_stage1_only_preview.png`；SHA-256 分别为 `dbc1a8a19295752bd83a09dc6965515b810575074c99f40e89bf884d40fa4b30` 与 `2955736592e5cbcf8d184eadfa87b0df6b2222694929c9dd53f056f752c39775`。两图没有 Matcher 数值，也未被称为最终图。
+- 扩展 top-k Stage1-only JSON SHA-256 为 `cd554ebfac2865dfd3c2a67fcef93eb707690c058a36b9e9f1da26722a6a0b62`。Emap2lig top-3/4/5 严格复现 87/89/90，且两种 Find_1 排序引用的 Emap2lig 曲线逐点相同。
+- 两张扩展 top-k 预览图分别为 `topk_gaussian_stage1_only_preview.png` 和 `topk_source_probability_mean_stage1_only_preview.png`；SHA-256 分别为 `a05369f1060c59c6ea3a0b870f362eb9330364c811ddc1fa306380ecf8de79a0` 与 `53568cec2f27b936df2f9bfa497e49b63f814deb0dcde4466edab4de47aa6177`。两图没有 Matcher 数值，也未被称为最终图。
 - 删除六分类、类别概率到 PairScorer 的连接、旧身份损失变体、seen/unseen、calibration、历史活动 YAML 和平行 `matcher/smiles_identity/` 包。旧实现仍可由 Git 恢复。
 - Job 378693 当前由 PocketXMol 真实训练占用，GPU0 显存约 73 GiB 且持续计算；本轮没有触碰其锁或进程。Matcher BF16 前后向和完整 validation GPU 门禁按用户最新决定延后到阶段 E 正式运行之前，不借用该 GPU。
 
