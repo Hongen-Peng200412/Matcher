@@ -50,14 +50,22 @@ class OptimizationConfig:
 
     - learning_rate / weight_decay: AdamW 初始学习率和权重衰减.
     - gradient_clip_norm: 每次参数更新前的全局梯度范数上限.
-    - max_epochs: 最多完成的训练与完整 validation 轮数.
-    - patience_bad_epochs: 连续多少次完整 validation 未严格改善 selection 后早停.
+    - validation_checks_per_epoch: 每个 epoch 内连续训练区段和完整 validation 的数量.
+    - selection_improvement_minimum: 当前 selection 相对 BEST 的最小有效改善量.
+    - patience_bad_validation_checks: 平台动作前允许连续出现的未改善 validation 次数.
+    - learning_rate_reduction_factor: 平台动作实际降低学习率时使用的乘数.
+    - max_learning_rate_reductions: 整次训练允许实际降低学习率的累计次数.
+    - max_epochs: 最多训练 epoch 数; 完整 validation 上限等于它与每 epoch 检查数的乘积.
     """
     learning_rate: float
     weight_decay: float
     gradient_clip_norm: float
+    validation_checks_per_epoch: int
+    selection_improvement_minimum: float
+    patience_bad_validation_checks: int
+    learning_rate_reduction_factor: float
+    max_learning_rate_reductions: int
     max_epochs: int
-    patience_bad_epochs: int
 
 
 @dataclass(frozen=True)
@@ -169,8 +177,10 @@ def load_smiles_experiment(path: Path) -> SmilesExperimentConfig:
         config.data.accumulation_steps,
         config.data.prefetch_factor,
         config.data.pp_top_k,
+        config.optimization.validation_checks_per_epoch,
+        config.optimization.patience_bad_validation_checks,
+        config.optimization.max_learning_rate_reductions,
         config.optimization.max_epochs,
-        config.optimization.patience_bad_epochs,
         config.tracking.log_every_updates,
     )
     if any(type(value) is not int or value <= 0 for value in positive_integers):
@@ -180,6 +190,8 @@ def load_smiles_experiment(path: Path) -> SmilesExperimentConfig:
     positive_floats = (
         config.optimization.learning_rate,
         config.optimization.gradient_clip_norm,
+        config.optimization.selection_improvement_minimum,
+        config.optimization.learning_rate_reduction_factor,
     )
     if any(
         isinstance(value, bool)
@@ -188,7 +200,9 @@ def load_smiles_experiment(path: Path) -> SmilesExperimentConfig:
         or float(value) <= 0
         for value in positive_floats
     ):
-        raise ValueError("学习率和梯度裁剪阈值必须是有限正数。")
+        raise ValueError("学习率、裁剪阈值、改善量和学习率乘数必须是有限正数。")
+    if config.optimization.learning_rate_reduction_factor >= 1:
+        raise ValueError("learning_rate_reduction_factor 必须小于 1。")
     if (
         isinstance(config.optimization.weight_decay, bool)
         or not isinstance(config.optimization.weight_decay, (int, float))

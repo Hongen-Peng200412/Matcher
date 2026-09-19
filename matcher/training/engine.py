@@ -13,10 +13,10 @@ import os
 import platform
 import random
 import socket
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Iterator, cast
 
 import numpy as np
 import torch
@@ -167,6 +167,116 @@ def _validation_images(
     }
 
 
+@dataclass
+class _ValidationPolicyState:
+    """
+    保存跨 validation 检查累计的 BEST、平台计数和学习率降低次数.
+
+    - best_score: 最近一次达到最小改善量并写入 BEST 的 selection.
+    - best_epoch: BEST 所属的零起始 epoch 编号.
+    - best_validation_check: BEST 所属的全局 validation 检查编号, 编号从一开始.
+    - bad_validation_checks: 自上次有效改善或平台动作后连续未改善的检查数.
+    - learning_rate_reductions: 整次训练已经实际降低学习率的累计次数.
+    """
+
+    best_score: float = -math.inf
+    best_epoch: int = -1
+    best_validation_check: int = -1
+    bad_validation_checks: int = 0
+    learning_rate_reductions: int = 0
+
+    def observe(
+        self,
+        score: float,
+        epoch: int,
+        validation_check: int,
+        optimizer: torch.optim.Optimizer,
+        config: SmilesExperimentConfig,
+    ) -> dict[str, bool]:
+        """
+        应用一次统一的 BEST、平台降学习率与早停规则.
+
+        - score: 本次完整 validation 的有限 selection.
+        - epoch: 本次检查所属的零起始 epoch 编号.
+        - validation_check: 本次检查的一起始全局编号.
+        - optimizer: 当前 AdamW; 平台动作直接更新全部参数组的学习率.
+        - config: 提供最小改善量、平台耐心、降低乘数和累计降低上限.
+        - return: improved、plateau、learning_rate_reduced 和 should_stop 四个布尔状态.
+
+        patience_bad_validation_checks=2 表示前两次未改善只累计计数, 第三次未改善才执行
+        平台动作. 有效改善清零坏检查数, 但不清零累计学习率降低次数.
+        """
+        if not math.isfinite(score):
+            raise ValueError("validation selection 必须是有限值。")
+        improved = score >= (
+            self.best_score + config.optimization.selection_improvement_minimum
+        )
+        if improved:
+            self.best_score = score
+            self.best_epoch = epoch
+            self.best_validation_check = validation_check
+            self.bad_validation_checks = 0
+            return {
+                "improved": True,
+                "plateau": False,
+                "learning_rate_reduced": False,
+                "should_stop": False,
+            }
+
+        self.bad_validation_checks += 1
+        plateau = (
+            self.bad_validation_checks
+            > config.optimization.patience_bad_validation_checks
+        )
+        if not plateau:
+            return {
+                "improved": False,
+                "plateau": False,
+                "learning_rate_reduced": False,
+                "should_stop": False,
+            }
+
+        self.bad_validation_checks = 0
+        if (
+            self.learning_rate_reductions
+            >= config.optimization.max_learning_rate_reductions
+        ):
+            return {
+                "improved": False,
+                "plateau": True,
+                "learning_rate_reduced": False,
+                "should_stop": True,
+            }
+        for parameter_group in optimizer.param_groups:
+            parameter_group["lr"] *= config.optimization.learning_rate_reduction_factor
+        self.learning_rate_reductions += 1
+        return {
+            "improved": False,
+            "plateau": True,
+            "learning_rate_reduced": True,
+            "should_stop": False,
+        }
+
+
+def _partition_optimizer_updates(total_updates: int, part_count: int) -> tuple[int, ...]:
+    """
+    把一个 epoch 的优化器更新划成顺序连续、大小最多相差一次更新的区段.
+
+    - total_updates: 当前 epoch 实际执行的优化器更新总数.
+    - part_count: 连续训练区段数, 也就是该 epoch 的完整 validation 次数.
+    - return: 每个区段的正整数更新数; 总和严格等于 total_updates.
+    """
+    if type(total_updates) is not int or type(part_count) is not int:
+        raise TypeError("total_updates 和 part_count 必须是整数。")
+    if part_count <= 0 or total_updates < part_count:
+        raise ValueError("优化器更新总数必须不小于正的区段数。")
+    quotient, remainder = divmod(total_updates, part_count)
+    return tuple(
+        quotient + (1 if index < remainder else 0)
+        for index in range(part_count)
+    )
+
+
 @torch.no_grad()
 def _validate(
     model: ClosedSetMatcher,
@@ -251,7 +361,7 @@ def _validate(
     return result, accumulator
 
 
-def _train_epoch(
+def _train_epoch_segments(
     model: ClosedSetMatcher,
     loader: Any,
     optimizer: torch.optim.Optimizer,
@@ -259,9 +369,9 @@ def _train_epoch(
     device: torch.device,
     global_step: int,
     tracker: Any,
-) -> tuple[dict[str, float], int]:
+) -> Iterator[tuple[int, dict[str, float], int]]:
     """
-    执行一个完整训练 epoch, 并按名义 global batch 的真实分母累计梯度.
+    单次遍历一个训练 epoch, 并在连续区段边界依次交回控制权.
 
     - model: 当前 ClosedSetMatcher. 函数入口切换到 train 模式.
     - loader: 产生 CandidateBatch 的训练 DataLoader. 批次数必须形成完整累积窗口.
@@ -270,18 +380,29 @@ def _train_epoch(
     - device: 当前单卡 CUDA 设备.
     - global_step: 进入本 epoch 前已经完成的参数更新数.
     - tracker: wandb.Run 或 None. None 时不写在线指标.
-    - return[0]: dict[str, float]. 五项物理批次均值损失与整个 epoch 的身份 eligible 计数.
-    - return[1]: int. 完成本 epoch 后的累计参数更新数.
+    - yield[0]: int. 当前区段在 epoch 内的一起始编号.
+    - yield[1]: dict[str, float]. 当前区段的五项物理批次均值损失与身份 eligible 计数.
+    - yield[2]: int. 完成当前区段后的累计参数更新数.
 
+    DataLoader 只建立一次迭代器, 三个区段连续消费它, 不重启采样器, 也不重复训练样本.
     每个物理批次候选数相同, 因此前景和区域均除以 accumulation_steps. 身份候选数会在
     物理批次之间变化, 先读取一个完整累积窗口的真值计数, 再让各批身份均值按其合格候选
     数占窗口总数的比例回传. 这样 32x1、16x2 与 8x4 使用相同的身份损失定义.
     """
+    physical_batch_count = len(loader)
+    if physical_batch_count % config.data.accumulation_steps:
+        raise RuntimeError("训练批次数必须形成完整梯度累积窗口。")
+    segment_update_counts = _partition_optimizer_updates(
+        physical_batch_count // config.data.accumulation_steps,
+        config.optimization.validation_checks_per_epoch,
+    )
     model.train()
     optimizer.zero_grad(set_to_none=True)
     totals = {name: 0.0 for name in ("total", "foreground", "ligand_area", "binding_area", "identity")}
     physical_batches = 0
     identity_eligible = 0
+    segment_index = 0
+    segment_updates = 0
     window: list[CandidateBatch] = []
     for cpu_batch in loader:
         window.append(cpu_batch)
@@ -344,6 +465,7 @@ def _train_epoch(
         optimizer.step()
         optimizer.zero_grad(set_to_none=True)
         global_step += 1
+        segment_updates += 1
         if global_step % config.tracking.log_every_updates == 0:
             if latest_losses is None:
                 raise RuntimeError("完整梯度累积窗口未产生损失。")
@@ -357,11 +479,21 @@ def _train_epoch(
                 global_step,
             )
         window.clear()
-    if window or physical_batches == 0:
-        raise RuntimeError("训练批次数必须形成完整梯度累积窗口。")
-    summary = {name: value / physical_batches for name, value in totals.items()}
-    summary["identity_eligible_count"] = float(identity_eligible)
-    return summary, global_step
+        if segment_updates == segment_update_counts[segment_index]:
+            summary = {name: value / physical_batches for name, value in totals.items()}
+            summary["identity_eligible_count"] = float(identity_eligible)
+            summary["optimizer_update_count"] = float(segment_updates)
+            yield segment_index + 1, summary, global_step
+            segment_index += 1
+            segment_updates = 0
+            totals = {
+                name: 0.0
+                for name in ("total", "foreground", "ligand_area", "binding_area", "identity")
+            }
+            physical_batches = 0
+            identity_eligible = 0
+    if window or segment_index != len(segment_update_counts):
+        raise RuntimeError("训练 epoch 未严格完成全部连续区段。")
 
 
 # ================================================================================================
@@ -375,8 +507,9 @@ def run_smiles_training(config: SmilesExperimentConfig, config_path: Path) -> Pa
     - config_path: 与 config 对应的 YAML 路径; 路径写入来源证据.
     - return: 新建的运行目录, 内含 run.json、history.jsonl、BEST.pt、LAST.pt 和 summary.json.
 
-    每个 epoch 后运行完整 validation, 并仅以 selection 严格改善更新 BEST. 自然早停后重新
-    载入 BEST, 在同一 validation 预测上拟合一次前景 F1 阈值并写回 BEST; test 不参与该过程.
+    每个 epoch 连续训练三个区段, 每段后遍历同一完整 validation. selection 至少提高配置中的
+    最小改善量才更新 BEST; 平台最多实际降低两次学习率, 第三次平台直接早停. 训练结束后只用
+    已保存的 BEST validation 预测拟合一次前景 F1 阈值, 不额外执行第 46 次 validation.
     """
     _set_seed(config.seed)
     if not torch.cuda.is_available():
@@ -387,6 +520,8 @@ def run_smiles_training(config: SmilesExperimentConfig, config_path: Path) -> Pa
     run_directory.mkdir(parents=True, exist_ok=False)
     config_path = Path(config_path).resolve()
     manifest_path = config.data.manifest_path.resolve()
+    project_root = Path(__file__).resolve().parents[2]
+    release_manifest_path = project_root.parent / "manifest.json"
     resolved_config = json.loads(json.dumps(asdict(config), default=str))
     resolved_config_path = run_directory / "resolved_config.json"
     manifest_snapshot_path = run_directory / "manifest.snapshot.json"
@@ -400,6 +535,10 @@ def run_smiles_training(config: SmilesExperimentConfig, config_path: Path) -> Pa
         "hostname": socket.gethostname(),
         "slurm_job_id": os.environ.get("SLURM_JOB_ID"),
         "task_launch_dir": os.environ.get("TASK_LAUNCH_DIR"),
+        "source_project_root": str(project_root),
+        "source_release_manifest_path": (
+            str(release_manifest_path) if release_manifest_path.is_file() else None
+        ),
         "config_path": str(config_path),
         "resolved_config_path": str(resolved_config_path),
         "manifest_path": str(manifest_path),
@@ -409,6 +548,9 @@ def run_smiles_training(config: SmilesExperimentConfig, config_path: Path) -> Pa
             "torch": torch.__version__,
             "cuda_runtime": torch.version.cuda,
             "gpu_name": torch.cuda.get_device_name(device),
+            "gpu_capability": list(torch.cuda.get_device_capability(device)),
+            "gpu_total_memory_bytes": torch.cuda.get_device_properties(device).total_memory,
+            "cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES"),
             "num_workers": config.data.num_workers,
         },
     }
@@ -444,77 +586,103 @@ def run_smiles_training(config: SmilesExperimentConfig, config_path: Path) -> Pa
             lr=config.optimization.learning_rate,
             weight_decay=config.optimization.weight_decay,
         )
-        best_score = -math.inf
-        best_epoch = -1
-        bad_epochs = 0
+        policy = _ValidationPolicyState()
+        best_validation: dict[str, Any] | None = None
+        best_accumulator: ValidationAccumulator | None = None
         global_step = 0
         last_epoch = -1
+        validation_check = 0
+        stopped_by_early_stopping = False
         for epoch in range(config.optimization.max_epochs):
             train_sampler.set_epoch(epoch)
-            training, global_step = _train_epoch(
+            segments = _train_epoch_segments(
                 model, train_loader, optimizer, config, device, global_step, tracker
             )
-            validation, _ = _validate(
-                model, validation_loader, config, device, global_step, tracker
-            )
-            score = float(validation["metrics"]["selection"])
-            improved = score > best_score
-            if improved:
-                best_score = score
-                best_epoch = epoch
-                bad_epochs = 0
-            else:
-                bad_epochs += 1
-            epoch_record = {
-                "epoch": epoch,
-                "global_step": global_step,
-                "training": training,
-                "validation": validation,
-                "selection": score,
-                "improved": improved,
-                "bad_validation_epochs": bad_epochs,
-            }
-            append_jsonl(run_directory / "history.jsonl", epoch_record)
-            checkpoint = {
-                "schema_version": CHECKPOINT_SCHEMA_VERSION,
-                "epoch": epoch,
-                "global_step": global_step,
-                "best_epoch": best_epoch,
-                "best_score": best_score,
-                "bad_validation_epochs": bad_epochs,
-                "model_config": config.model.to_dict(),
-                "experiment_config": resolved_config,
-                "manifest_path": str(manifest_path),
-                "manifest_snapshot_path": str(manifest_snapshot_path),
-                "model_state": model.state_dict(),
-                "optimizer_state": optimizer.state_dict(),
-                "validation": validation,
-            }
-            save_checkpoint(run_directory / "LAST.pt", checkpoint)
-            if improved:
-                save_checkpoint(run_directory / "BEST.pt", checkpoint)
-            _track(
-                tracker,
-                {
-                    "selection/best_score": best_score,
-                    "selection/improved": int(improved),
-                    "selection/bad_validation_epochs": bad_epochs,
-                },
-                global_step,
-            )
-            last_epoch = epoch
-            if bad_epochs >= config.optimization.patience_bad_epochs:
+            for epoch_segment, training, global_step in segments:
+                validation_check += 1
+                validation, accumulator = _validate(
+                    model, validation_loader, config, device, global_step, tracker
+                )
+                score = float(validation["metrics"]["selection"])
+                decision = policy.observe(
+                    score,
+                    epoch,
+                    validation_check,
+                    optimizer,
+                    config,
+                )
+                if decision["improved"]:
+                    best_validation = validation
+                    best_accumulator = accumulator
+                validation_record = {
+                    "event": "validation_check",
+                    "epoch": epoch,
+                    "epoch_segment": epoch_segment,
+                    "validation_check": validation_check,
+                    "global_step": global_step,
+                    "training": training,
+                    "validation": validation,
+                    "selection": score,
+                    **decision,
+                    "best_score": policy.best_score,
+                    "bad_validation_checks": policy.bad_validation_checks,
+                    "learning_rate_reductions": policy.learning_rate_reductions,
+                    "learning_rate": float(optimizer.param_groups[0]["lr"]),
+                }
+                append_jsonl(run_directory / "history.jsonl", validation_record)
+                checkpoint = {
+                    "schema_version": CHECKPOINT_SCHEMA_VERSION,
+                    "epoch": epoch,
+                    "epoch_segment": epoch_segment,
+                    "validation_check": validation_check,
+                    "global_step": global_step,
+                    "best_epoch": policy.best_epoch,
+                    "best_validation_check": policy.best_validation_check,
+                    "best_score": policy.best_score,
+                    "bad_validation_checks": policy.bad_validation_checks,
+                    "learning_rate_reductions": policy.learning_rate_reductions,
+                    "learning_rate": float(optimizer.param_groups[0]["lr"]),
+                    "model_config": config.model.to_dict(),
+                    "experiment_config": resolved_config,
+                    "manifest_path": str(manifest_path),
+                    "manifest_snapshot_path": str(manifest_snapshot_path),
+                    "model_state": model.state_dict(),
+                    "optimizer_state": optimizer.state_dict(),
+                    "validation": validation,
+                }
+                checkpoint_path = (
+                    run_directory
+                    / "checkpoints"
+                    / f"epoch_{epoch + 1:02d}_validation_{validation_check:02d}.pt"
+                )
+                save_checkpoint(checkpoint_path, checkpoint)
+                save_checkpoint(run_directory / "LAST.pt", checkpoint)
+                if decision["improved"]:
+                    save_checkpoint(run_directory / "BEST.pt", checkpoint)
+                _track(
+                    tracker,
+                    {
+                        "selection/best_score": policy.best_score,
+                        "selection/improved": int(decision["improved"]),
+                        "selection/bad_validation_checks": policy.bad_validation_checks,
+                        "selection/learning_rate_reductions": policy.learning_rate_reductions,
+                        "selection/plateau": int(decision["plateau"]),
+                    },
+                    global_step,
+                )
+                last_epoch = epoch
+                if decision["should_stop"]:
+                    stopped_by_early_stopping = True
+                    cast(Any, segments).close()
+                    break
+            if stopped_by_early_stopping:
                 break
-        if best_epoch < 0:
+        if policy.best_epoch < 0 or best_validation is None or best_accumulator is None:
             raise RuntimeError("训练未产生有限 validation selection。")
         best_checkpoint = dict(load_checkpoint(run_directory / "BEST.pt", map_location=device))
-        model.load_state_dict(best_checkpoint["model_state"], strict=True)
-        best_validation, accumulator = _validate(
-            model, validation_loader, config, device, global_step, tracker
-        )
         threshold, threshold_metrics = fit_foreground_threshold(
-            np.asarray(accumulator.foreground_target, dtype=np.bool_),
-            np.asarray(accumulator.foreground_probability, dtype=np.float64),
+            np.asarray(best_accumulator.foreground_target, dtype=np.bool_),
+            np.asarray(best_accumulator.foreground_probability, dtype=np.float64),
         )
         best_checkpoint["foreground_threshold"] = threshold
         best_checkpoint["positive_class_definition"] = "five_true_ligand_categories"
@@ -527,7 +695,8 @@ def run_smiles_training(config: SmilesExperimentConfig, config_path: Path) -> Pa
         save_checkpoint(run_directory / "BEST.pt", best_checkpoint)
         threshold_record = {
             "event": "best_threshold",
-            "best_epoch": best_epoch,
+            "best_epoch": policy.best_epoch,
+            "best_validation_check": policy.best_validation_check,
             "foreground_threshold": threshold,
             "foreground": threshold_metrics,
             "validation": best_validation,
@@ -544,11 +713,15 @@ def run_smiles_training(config: SmilesExperimentConfig, config_path: Path) -> Pa
         summary = {
             **provenance,
             "finished_at_utc": datetime.now(timezone.utc).isoformat(),
-            "best_epoch": best_epoch,
-            "best_score": best_score,
+            "best_epoch": policy.best_epoch,
+            "best_validation_check": policy.best_validation_check,
+            "best_score": policy.best_score,
             "last_epoch": last_epoch,
             "global_step": global_step,
-            "stopped_by_patience": bad_epochs >= config.optimization.patience_bad_epochs,
+            "validation_check_count": validation_check,
+            "learning_rate_reductions": policy.learning_rate_reductions,
+            "stopped_by_early_stopping": stopped_by_early_stopping,
+            "stopped_by_max_epochs": not stopped_by_early_stopping,
             "foreground_threshold": threshold,
             "tracking_url": getattr(tracker, "url", None),
         }
