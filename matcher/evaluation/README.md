@@ -28,6 +28,7 @@
 | `status` | `str` | 固定为 `"stage1_only_preview"`。 |
 | `coverage_threshold` | `float` | 双向覆盖门槛，当前为 `0.3`。 |
 | `denominator_pdb_count` | `int` | 每个 top-k 点固定分母，当前为 `179`。 |
+| `candidate_order` | `str` | 先排列全部 `candidate_selected=true` 候选，再追加全部 `false` 候选；两段使用同一指定分数。 |
 | `stage1_only_hit_definition` | `str` | top-k 内任一候选对任一真实 occurrence 的两项覆盖率均不低于 0.30 即命中。 |
 | `candidate_set_note` | `str` | 声明 Find_1 与 Emap2lig 保留各自候选集合，不能逐候选配对。 |
 | `curves.gaussian` | 曲线映射 | 含 `real_receptor`、`cryoatom2_receptor`、`emap2lig`。 |
@@ -42,24 +43,26 @@
 | `pdb_count` | `int` | 固定为 179。 | `179` |
 | `pdb_ids` | `list[str]`，长度 179 | 曲线固定 PDB 轴，按小写标识排序。 | `["9abc", "9def"]` 是缩短格式示例 |
 | `top_k` | `list[int]`，长度 20 | 固定为 1 到 20。 | `[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]` |
-| `hit_count` | `list[int]`，长度 20 | 第 `j` 项是 top-`top_k[j]` 命中的 PDB 数。 | Emap2lig 的第 3、4、5 项为 `87`、`89`、`90` |
+| `hit_count` | `list[int]`，长度 20 | 第 `j` 项是扩展 top-`top_k[j]` 命中的 PDB 数。 | `[80, 92, 101, ...]` 是缩短格式示例 |
 | `hit_ratio` | `list[float]`，长度 20 | `hit_count[j] / 179`，与 `top_k` 逐项对齐。 | `87 / 179` |
 | `pdb_hit` | `dict[str,list[bool]]` | 每个 PDB 对应 20 个累积命中值；一旦命中，后续更大 k 保持 `true`。 | `{"9abc": [false, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true]}` |
 
-Find_1 只在冻结的 `candidate_selected=True` 集合内分别按 Gaussian `candidate_score` 和 `source_probability_mean` 降序。Emap2lig 按实例内原生 ligand probability 均值排序；每张图只有一条 Emap2lig 曲线，不复制为两种受体条件。
+Find_1 对 `candidate_selected=True` 和 `False` 分别按 Gaussian `candidate_score` 或 `source_probability_mean` 降序，再把 `False` 段追加到 `True` 段之后。分数并列时使用较小的 `source_blob_index`；两项键都相同时保留来源顺序。因此，unselected 候选不能挤占原 selected 前缀。Emap2lig 对自身候选使用相同的分段规则和实例内原生 ligand probability 均值；每张图只有一条 Emap2lig 曲线，不复制为两种受体条件。
 
 ## 正式冻结 test 产物
 
-`build_final_test_artifact()` 用同一个 BEST 对真实受体与 CryoAtom2 test_0 各前向一次，写出 `matcher_frozen_test_v1` JSON。同一次候选预测同时服务两种 Find_1 排序，不为第二种排序重复前向。
+`build_final_test_artifact()` 用同一个 BEST 对真实受体与 CryoAtom2 test_0 各前向一次，写出 `matcher_frozen_test_v1` JSON。同一次候选预测同时服务两种 Find_1 排序，不为第二种排序重复前向。模型配置、模型类和 checkpoint 加载规则固定从训练 run 的 `run.json` 所指 release 读取；当前评估 release 只提供冻结清单读取、扩展 top-k 汇总和绘图逻辑。
 
 | 顶层字段 | 类型或结构 | 含义 |
 | --- | --- | --- |
 | `schema` | `str` | 固定为 `"matcher_frozen_test_v1"`。 |
 | `status` | `str` | 固定为 `"final_with_matcher"`。 |
+| `model_code_source` | `dict` | 训练 run、训练项目根和 release manifest 路径；两种受体条件必须逐字段相同。 |
 | `checkpoint_path` | `str` | 被评估的真实 BEST 路径。 |
 | `real_manifest_path` | `str` | 真实受体 test_0 manifest 路径。 |
 | `cryoatom2_manifest_path` | `str` | CryoAtom2 test_0 manifest 路径。 |
 | `stage1_preview_path` | `str` | 已验收 Stage1-only 预览 JSON 路径。 |
+| `candidate_order` | `str` | Stage1-only 与 Stage1+Matcher 共用的 selected 优先扩展顺序。 |
 | `foreground_threshold_source` | `str` | 固定声明阈值来自 BEST validation 拟合。 |
 | `metrics` | 条件映射 | `real_receptor` 和 `cryoatom2_receptor` 各一份指标。 |
 | `predictions` | 条件映射 | 两种受体条件下按 PDB 分组的候选预测。 |
@@ -70,8 +73,8 @@ Find_1 只在冻结的 `candidate_selected=True` 集合内分别按 Gaussian `ca
 
 | 字段 | 类型或结构 | 含义与特殊值 |
 | --- | --- | --- |
-| `candidate_count` | `int` | 当前 PDB 集合内的候选数。 |
-| `foreground_prauc` | `float|null` | 全候选前景 PRAUC；没有正类时严格 JSON 写为 `null`。 |
+| `candidate_count` | `int` | 当前 PDB 集合内 `candidate_selected=true` 的候选数；保持原冻结指标口径。 |
+| `foreground_prauc` | `float|null` | 原 selected 候选口径的前景 PRAUC；没有正类时严格 JSON 写为 `null`。 |
 | `foreground_threshold` | `float` | BEST validation 保存的固定阈值。 |
 | `foreground` | 映射 | 含 `true_positive`、`false_positive`、`false_negative`、`true_negative` 和 `f1`。 |
 | `smiles_match.overall` | 映射 | 含 `correct_count`、`eligible_count`、`accuracy`；零支持时准确率为 `null`。 |
@@ -88,6 +91,7 @@ Find_1 只在冻结的 `candidate_selected=True` 集合内分别按 Gaussian `ca
 | `source_blob_index` | `int >= 0` | 源 F2 blob 编号，也是排序同分时的升序次级键。 |
 | `gaussian_score` | 有限 `float` | Find_1 Gaussian 排序分数。 |
 | `source_probability_mean` | 有限 `float` | 源 blob 内 Stage1 概率均值。 |
+| `candidate_selected` | `bool` | `true` 进入扩展顺序前段，`false` 进入追加段。 |
 | `foreground_target` | `bool` | 候选是否通过双向 0.30 覆盖门槛。 |
 | `target_category` | `str|null` | 真前景的五类分层标签；背景为 `null`。 |
 | `matched_occurrence_id` | `int >= 0|null` | 最大覆盖 occurrence 编号；背景为 `null`。 |
@@ -100,7 +104,7 @@ Find_1 只在冻结的 `candidate_selected=True` 集合内分别按 Gaussian `ca
 
 ### `curves.<sorting>`
 
-每种排序含 `real_stage1_only`、`real_stage1_matcher`、`cryo_stage1_only`、`cryo_stage1_matcher` 和 `emap2lig`。每条记录沿用预览曲线的 `name`、`source`、`pdb_count`、`pdb_ids`、`top_k`、`hit_count`、`hit_ratio`、`pdb_hit` 字段。Stage1+Matcher 命中不使用前景阈值：候选必须是真前景、身份受支持且 `predicted_smiles` 与唯一 `target_smiles` 逐字相同；失败候选留在原排名，不能删除后让后一名补位。
+每种排序含 `real_stage1_only`、`real_stage1_matcher`、`cryo_stage1_only`、`cryo_stage1_matcher` 和 `emap2lig`。Stage1-only 与 Stage1+Matcher 使用逐候选相同的 selected 优先扩展顺序。每条记录沿用预览曲线的 `name`、`source`、`pdb_count`、`pdb_ids`、`top_k`、`hit_count`、`hit_ratio`、`pdb_hit` 字段。Stage1+Matcher 命中不使用前景阈值：候选必须是真前景、身份受支持且 `predicted_smiles` 与唯一 `target_smiles` 逐字相同；失败候选留在原排名，不能删除后让后一名补位。
 
 ### 可选 `test_1`
 
