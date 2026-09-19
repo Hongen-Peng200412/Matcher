@@ -4,7 +4,7 @@
 
 | 字段 | 当前值 |
 | --- | --- |
-| 状态 | 正式训练已自然早停；冻结 BEST 测试运行中 |
+| 状态 | 正式训练与冻结 BEST 测试均已完成 |
 | Slurm Job | `378587` |
 | 硬件 | hnode02，H100 GPU 0，32 CPU |
 | 正式 YAML | `configs/experiments/final_smiles/strongest.yaml` |
@@ -21,7 +21,7 @@
 | BEST SHA-256 | `ebf53b1d65cdcd31c1857df454db85aee183551f4fb015ecccb5f7e8ff053941` |
 | 测试 release | `/home/penghongen/Feedback/Matcher/releases/Matcher_c2b763cf90e2/Matcher` |
 | 测试 launch | `/home/penghongen/Feedback/PocketXMol/launches/378587/evaluate_strongest_job378587_20260919T235054_a9` |
-| 正式测试 | 运行中；输出根为 `/storage/penghongen/Matcher/evaluation/final_smiles/strongest` |
+| 正式测试 | 已完成；`frozen_test.json` SHA-256=`89946a64a27959b79f7ac26a8f8efff2237cb8a3fcedbe47e555c846c61078f4` |
 
 ## 正式运行命令
 
@@ -59,8 +59,12 @@ bash 训练与运行/sh/final_smiles/evaluate_strongest.sh
 - `BEST.pt`、`LAST.pt` 与 `summary.json` 的 SHA-256 依次为 `ebf53b1d65cdcd31c1857df454db85aee183551f4fb015ecccb5f7e8ff053941`、`7b496a474193c849d71498069839c5f7bc8a051f000024f7dc7d2b07d1d38e89` 和 `5c4513ca67e83053c75caa8227525867e01b1bfe8605373c4b85db046873db30`。
 - allocation 已恢复精确 `try_lock_378587`，`after_lock_378587` 继续保留；没有读取 calibration 科学产物。
 
-## 冻结测试状态
+## 冻结测试结果
 
 - 2026-09-19 23:50:54（Asia/Shanghai）使用测试 release `Matcher_c2b763cf90e2` 启动正式 test_0/test_1；动态命令 SHA-256 为 `7a90b00685910be62a031d75c4957c9ade2bf03ec868626b74ddda305572aca4`。
 - launch 明确绑定 H100、32 CPU、冻结 BEST、正式评估脚本和测试 release；模型配置、模型类和 checkpoint 规则仍由训练 run 指向的 `Matcher_6fe5cfa8f1f1` 加载。
-- 测试只删除精确 `try_lock_378587`，`after_lock_378587` 保留；两种受体条件共用冻结阈值 `0.333984375`，不读取 calibration、不在测试集拟合阈值、不改变 Stage1 候选排序。
+- 第 9 次 allocation 执行成功，随后恢复精确 `try_lock_378587`；`after_lock_378587` 始终保留。真实受体和 CryoAtom2 分别完成 2,251 和 2,407 个全部 centered 候选的前向，其中 selected 候选分别为 1,653 和 1,651 个。
+- 两种受体条件共用冻结阈值 `0.333984375`，不读取 calibration、不在测试集拟合阈值、不改变 Stage1 候选排序。真实受体 test_0 的前景 PRAUC/F1 为 `0.9066759340/0.8528660095`，SMILES 匹配准确率为 `0.8586429725`（1,063/1,238）；CryoAtom2 的对应结果为 `0.8657636064/0.8157589803` 和 `0.8681034483`（1,007/1,160）。
+- test_1 只复用 test_0 前向筛选官方 149-PDB 集合。真实受体的前景 PRAUC/F1 为 `0.9277244216/0.8579823702`，SMILES 匹配准确率为 `0.8546448087`（782/915）；CryoAtom2 的对应结果为 `0.8894804601/0.8243314106` 和 `0.8566265060`（711/830）。两种受体条件各有两个不受支持身份目标，按契约保留 Stage1 排名、纳入前景评价并排除出身份准确率分母。
+- Gaussian 排序下，真实受体 Stage1-only/Stage1+Matcher 的 top-1、top-5、top-20 命中数分别为 `138/128`、`167/163`、`167/165`；CryoAtom2 为 `122/114`、`155/148`、`159/154`。来源概率均值排序下，真实受体为 `148/140`、`166/161`、`167/165`；CryoAtom2 为 `134/122`、`157/151`、`159/154`。每项分母均固定为 179 个 PDB。
+- `foreground_and_smiles_metrics.png`、`topk_gaussian_final.png` 和 `topk_source_probability_mean_final.png` 的 SHA-256 依次为 `183a302d017b73ab2021571270566ff351ad3d7e1d4e0e2c6238f151bd40b692`、`f0e3e11dd222be409133eba9072cc8daf52556b8468dd10958c714a74ee5c857` 和 `a892f7453eb11b6474699db57eaa194038649ed5900ffb9df52e5bb1fff899d5`。人工检查确认图中没有预览标记残留，Emap2lig 在两张 top-k 图中均为同一条 receptor-independent 曲线。
