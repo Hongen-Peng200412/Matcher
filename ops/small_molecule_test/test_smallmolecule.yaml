@@ -1,0 +1,64 @@
+# Stage3 小分子子集的独立评测配置。
+# ops.small_molecule_test 的构建、评估与绘图入口共同读取本文件; Matcher 训练代码不读取它。
+
+schema: matcher_test_smallmolecule_config_v1  # str, 本轮配置契约版本
+
+# --- 只读科学来源 ---
+sources:
+  stage3_occurrences: /storage/penghongen/PocketXMol/data/smiles-v1/frozen/test.jsonl  # str, 446 个 Stage3 测试 occurrence
+  data_root: /storage/penghongen/AdaLigand/Ori_Data  # str, occurrence 类别与 Matcher Dataset 共用数据根
+  prepared_root: /storage/penghongen/AdaLigand/Ori_Data/stage1_preparation_box_pool_2/ligand_language_models/prepared  # str, 顶层 PreparedLigand.smiles 的按 PDB 目录
+  real_manifest: /storage/penghongen/Matcher/manifests/test0_real_smiles_v1/manifest.json  # str, 真实受体完整 test_0 候选与身份入口
+  cryoatom2_manifest: /storage/penghongen/Matcher/manifests/test0_cryoatom2_smiles_v1/manifest.json  # str, CryoAtom2 完整 test_0 候选与身份入口
+  find_real_root: /storage/penghongen/AdaLigand_stage1_inference/Find_1/真实受体/artifacts/Find_1/held_out_test_0  # str, 真实受体 Find_1 完整 blob 与 centered 几何
+  find_cryoatom2_root: /storage/penghongen/AdaLigand_stage1_inference/Find_1/CryoAtom2受体/artifacts/Find_1/held_out_test_0  # str, CryoAtom2 Find_1 完整 blob 与 centered 几何
+  emap2lig_root: /storage/penghongen/AdaLigand_stage1_inference/Emap2lig/official_find_li/held_out_test_0  # str, Emap2lig 正式覆盖数组、原生均值概率与完整 blob
+
+# --- 本轮独立产物根 ---
+outputs:
+  manifest_root: /storage/penghongen/Matcher/manifests/test_smallmolecule_v1  # str, 原子发布的模型无关评测清单
+  evaluation_root: /storage/penghongen/Matcher/evaluation/test_smallmolecule_v1  # str, Stage1-only、两模型结果和派生图共同根
+
+# --- A800 正式身份前向 ---
+runtime:
+  split: held_out_test_0  # str, 两份来源 manifest 中的固定测试划分键
+  batch_size: 32  # int, 一次 Matcher 前向的候选数
+  num_workers: 8  # int, 当前受体条件唯一活动 DataLoader 的工作进程数
+  prefetch_factor: 2  # int, 每个工作进程预取的物理批次数
+  worker_generator_seed: 3407  # int, DataLoader 工作进程播种值
+  sampler_seed: 3407  # int, 不洗牌采样器仍显式记录的基准种子
+  torch_seed: 3407  # int, 当前评测进程与 CUDA 随机种子
+  pp_top_k: 2048  # int, strongest 使用的 PP token 上限; density_blob_only 不读取 PP
+  cache_gib_per_worker: 8.0  # float, 每个 Dataset 工作进程的 PDB 载荷缓存预算
+
+# --- 冻结训练结果 ---
+models:
+  density_blob_only:
+    checkpoint: /storage/penghongen/Matcher/runs/density_blob_only/predict_calibration_job379403_20260918T184914_a8/BEST.pt  # str, 已冻结 BEST
+    training_run_name: predict_calibration_job379403_20260918T184914_a8  # str, 版本化结果目录名
+  strongest:
+    checkpoint: /storage/penghongen/Matcher/runs/strongest/train_docking_job378587_20260918T185357_a8/BEST.pt  # str, 已自然早停的冻结 BEST
+    training_run_name: train_docking_job378587_20260918T185357_a8  # str, 版本化结果目录名
+
+# --- 冻结机械门禁 ---
+expected:
+  pdb_count: 77  # int, Stage3 测试 PDB 固定分母
+  stage3_occurrence_count: 446  # int, PocketXMol test.jsonl occurrence 数
+  stage3_identity_count: 104  # int, PDB 内精确 SMILES 去重后的 Stage3 身份数
+  identity_count: 180  # int, 77 个 PDB 的完整受支持 Matcher 身份槽总数
+  small_molecule_answer_identity_count: 127  # int, 最终 small-molecule argmax 允许身份数
+  real_candidate_count: 598  # int, 真实受体 77-PDB 全部 centered 候选数
+  cryoatom2_candidate_count: 632  # int, CryoAtom2 77-PDB 全部 centered 候选数
+  emap2lig_candidate_count: 30561  # int, Emap2lig 77-PDB 全部原生候选数
+  outside_centered_candidate_count: {real_receptor: 1, cryoatom2_receptor: 1}  # mapping, 仍按完整 blob 计算中心的框外候选数
+  target_scope_counts:
+    real_receptor: {background: 209, non_stage3_foreground: 85, stage3_foreground: 304}  # mapping, 三态候选数
+    cryoatom2_receptor: {background: 263, non_stage3_foreground: 76, stage3_foreground: 293}  # mapping, 三态候选数
+    emap2lig: {background: 30288, non_stage3_foreground: 30, stage3_foreground: 243}  # mapping, 三态候选数
+  # int 列表, 顺序依次为 k=1、3、5、10、20 的 PDB 命中数。
+  stage1_checkpoint_hit_counts:
+    real_gaussian: [63, 67, 69, 69, 69]
+    real_probability_mean: [64, 66, 68, 69, 69]
+    cryoatom2_gaussian: [49, 62, 66, 68, 68]
+    cryoatom2_probability_mean: [57, 66, 68, 68, 68]
+    emap2lig_probability_mean: [45, 50, 53, 54, 54]
