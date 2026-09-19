@@ -18,6 +18,7 @@ from matcher.data.labels import OccurrenceMask, assign_candidate_target
 from matcher.data.smiles_graph import SmilesGraph, SmilesGraphStore
 from matcher.datasets.batching import collate_candidates
 from matcher.datasets.candidate_data import load_manifest_dataset
+from matcher.evaluation.checkpoint import load_matcher_from_training_release
 from matcher.evaluation.metrics import (
     fit_foreground_threshold,
     foreground_average_precision,
@@ -28,16 +29,99 @@ from matcher.evaluation.test_set import (
     _matcher_curve,
     _metrics_from_rows,
     _ranked_hit_curve,
+    _read_pdb_subset,
 )
 from matcher.model.config import MatcherModelConfig
 from matcher.model.ligand_matcher import ClosedSetMatcher
 from matcher.training.config import load_smiles_experiment
-from matcher.training.engine import _write_manifest_snapshot
+from matcher.training.engine import (
+    _ValidationPolicyState,
+    _partition_optimizer_updates,
+    _train_epoch_segments,
+    _write_manifest_snapshot,
+)
 from matcher.training.losses import (
     LossWeights,
     compute_matcher_loss,
     smiles_identity_cross_entropy,
 )
+
+
+def test_checkpoint_loader_uses_training_release_package(tmp_path: Path) -> None:
+    project_root = tmp_path / "Matcher_snapshot" / "Matcher"
+    for relative in ("matcher", "matcher/model", "matcher/training"):
+        directory = project_root / relative
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / "__init__.py").write_text("", encoding="utf-8")
+    (project_root / "matcher/model/config.py").write_text(
+        "class MatcherModelConfig:\n"
+        "    def __init__(self, variant):\n"
+        "        self.variant = variant\n"
+        "    @classmethod\n"
+        "    def from_dict(cls, values):\n"
+        "        return cls(values['variant'])\n",
+        encoding="utf-8",
+    )
+    (project_root / "matcher/model/ligand_matcher.py").write_text(
+        "from torch import nn\n"
+        "class ClosedSetMatcher(nn.Module):\n"
+        "    def __init__(self, config):\n"
+        "        super().__init__()\n"
+        "        self.config = config\n"
+        "        self.projection = nn.Linear(1, 1, bias=False)\n",
+        encoding="utf-8",
+    )
+    (project_root / "matcher/training/checkpointing.py").write_text(
+        "import torch\n"
+        "def load_checkpoint(path, map_location='cpu'):\n"
+        "    return torch.load(path, map_location=map_location, weights_only=False)\n",
+        encoding="utf-8",
+    )
+    release_manifest = project_root.parent / "manifest.json"
+    release_manifest.write_text("{}\n", encoding="utf-8")
+    run_directory = tmp_path / "run"
+    run_directory.mkdir()
+    (run_directory / "run.json").write_text(
+        json.dumps(
+            {
+                "source_project_root": str(project_root),
+                "source_release_manifest_path": str(release_manifest),
+            }
+        ),
+        encoding="utf-8",
+    )
+    checkpoint_path = run_directory / "BEST.pt"
+    torch.save(
+        {
+            "model_config": {"variant": "snapshot_variant"},
+            "model_state": {"projection.weight": torch.tensor([[2.0]])},
+        },
+        checkpoint_path,
+    )
+
+    model, checkpoint, config, provenance = load_matcher_from_training_release(
+        checkpoint_path,
+        torch.device("cpu"),
+    )
+
+    assert config.variant == "snapshot_variant"
+    assert model.__class__.__module__.startswith("_matcher_training_snapshot_")
+    assert torch.equal(
+        model.projection.weight,
+        checkpoint["model_state"]["projection.weight"],
+    )
+    assert provenance["training_project_root"] == str(project_root.resolve())
+
+
+def test_test1_subset_reads_official_json_pdb_ids(tmp_path: Path) -> None:
+    path = tmp_path / "test_1.json"
+    expected = [f"{index:04x}" for index in range(149)]
+    path.write_text(
+        json.dumps({"name": "test_1", "parent": "test_0", "pdb_ids": expected}),
+        encoding="utf-8",
+    )
+
+    assert _read_pdb_subset(path) == set(expected)
 
 
 def test_manifest_source_mismatch_does_not_touch_published_jsonl(tmp_path: Path) -> None:
@@ -567,7 +651,7 @@ def test_smiles_metrics_return_none_for_zero_support() -> None:
     }
 
 
-def test_stage1_hit_and_ranking_keep_selected_candidates_only() -> None:
+def test_stage1_hit_and_ranking_append_unselected_after_selected_prefix() -> None:
     intersections = np.asarray([[3, 0], [0, 2], [3, 0]])
     pred_sizes = np.asarray([10, 10, 10])
     gt_sizes = np.asarray([10, 10])
@@ -578,8 +662,55 @@ def test_stage1_hit_and_ranking_keep_selected_candidates_only() -> None:
         np.asarray([True, False, True]),
         hit,
     )
-    assert curve[0] is True
+    assert curve[:2] == [True, True]
     assert all(curve)
+
+
+def test_stage1_unselected_candidate_cannot_displace_selected_prefix() -> None:
+    curve = _ranked_hit_curve(
+        np.asarray([0.1, 0.2, 0.99]),
+        np.asarray([2, 1, 0]),
+        np.asarray([True, True, False]),
+        np.asarray([False, False, True]),
+    )
+    assert curve[:3] == [False, False, True]
+
+
+def test_matcher_curve_uses_the_same_selected_priority_order(tmp_path: Path) -> None:
+    pdb_ids = [f"pdb{index:03d}" for index in range(179)]
+    rows = {
+        pdb_ids[0]: [
+            {
+                "candidate_selected": True,
+                "gaussian_score": 0.2,
+                "source_blob_index": 2,
+                "foreground_target": False,
+                "identity_supported": False,
+                "predicted_smiles": None,
+                "target_smiles": None,
+            },
+            {
+                "candidate_selected": True,
+                "gaussian_score": 0.1,
+                "source_blob_index": 1,
+                "foreground_target": False,
+                "identity_supported": False,
+                "predicted_smiles": None,
+                "target_smiles": None,
+            },
+            {
+                "candidate_selected": False,
+                "gaussian_score": 0.99,
+                "source_blob_index": 0,
+                "foreground_target": True,
+                "identity_supported": True,
+                "predicted_smiles": "CC",
+                "target_smiles": "CC",
+            },
+        ]
+    }
+    curve = _matcher_curve("test", rows, pdb_ids, "gaussian_score", tmp_path / "best.pt")
+    assert curve["hit_count"][:3] == [0, 0, 1]
 
 
 def test_final_metrics_and_topk_keep_empty_pdb_in_fixed_denominator(tmp_path: Path) -> None:
@@ -587,6 +718,7 @@ def test_final_metrics_and_topk_keep_empty_pdb_in_fixed_denominator(tmp_path: Pa
         "nonempty": [
             {
                 "foreground_target": True,
+                "candidate_selected": True,
                 "foreground_probability": 0.9,
                 "predicted_smiles": "CC",
                 "target_smiles": "CC",
@@ -598,6 +730,7 @@ def test_final_metrics_and_topk_keep_empty_pdb_in_fixed_denominator(tmp_path: Pa
             },
             {
                 "foreground_target": False,
+                "candidate_selected": True,
                 "foreground_probability": 0.1,
                 "predicted_smiles": None,
                 "target_smiles": None,
@@ -627,7 +760,131 @@ def test_four_formal_yaml_files_differ_only_by_registered_variant_and_area_bound
     for name, config in configs.items():
         assert config.model.variant == name
         assert config.optimization.gradient_clip_norm == 200.0
+        assert config.data.batch_size == 32
+        assert config.data.accumulation_steps == 1
+        assert config.optimization.validation_checks_per_epoch == 3
+        assert config.optimization.selection_improvement_minimum == 0.001
+        assert config.optimization.patience_bad_validation_checks == 2
+        assert config.optimization.learning_rate_reduction_factor == 0.8
+        assert config.optimization.max_learning_rate_reductions == 2
+        assert config.optimization.max_epochs == 15
         if name == "pocket_only":
             assert config.loss_weights.ligand_area == config.loss_weights.binding_area == 0.0
         else:
             assert config.loss_weights.ligand_area == config.loss_weights.binding_area == 0.1
+
+
+def test_optimizer_updates_are_partitioned_without_omission_or_repetition() -> None:
+    assert _partition_optimizer_updates(10, 3) == (4, 3, 3)
+    assert _partition_optimizer_updates(9, 3) == (3, 3, 3)
+    with pytest.raises(ValueError, match="不小于"):
+        _partition_optimizer_updates(2, 3)
+
+
+def test_training_segments_consume_one_loader_iteration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = load_smiles_experiment(Path("configs/experiments/final_smiles/trunk_only.yaml"))
+
+    class CountingLoader:
+        def __init__(self) -> None:
+            self.iteration_count = 0
+
+        def __len__(self) -> int:
+            return 10
+
+        def __iter__(self):
+            self.iteration_count += 1
+            for index in range(10):
+                yield {
+                    "feature": torch.asarray([[float(index)]]),
+                    "foreground_target": torch.asarray([True]),
+                    "identity_target": torch.asarray([0]),
+                }
+
+    class ScalarModel(torch.nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.weight = torch.nn.Parameter(torch.asarray(1.0))
+
+        def forward(self, batch: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+            return {"prediction": batch["feature"].mean() * self.weight}
+
+    def fake_loss(
+        outputs: dict[str, torch.Tensor],
+        batch: dict[str, torch.Tensor],
+        weights: LossWeights,
+    ) -> dict[str, torch.Tensor]:
+        del batch, weights
+        value = outputs["prediction"].square() + 1.0
+        return {
+            "total": value,
+            "foreground": value,
+            "ligand_area": value,
+            "binding_area": value,
+            "identity": value,
+            "identity_eligible_count": torch.asarray(1),
+        }
+
+    monkeypatch.setattr("matcher.training.engine.compute_matcher_loss", fake_loss)
+    loader = CountingLoader()
+    model = ScalarModel()
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1.0e-4)
+    segments = list(
+        _train_epoch_segments(
+            model,
+            loader,
+            optimizer,
+            config,
+            torch.device("cpu"),
+            0,
+            None,
+        )
+    )
+    assert loader.iteration_count == 1
+    assert [segment for segment, _, _ in segments] == [1, 2, 3]
+    assert [step for _, _, step in segments] == [4, 7, 10]
+    assert [summary["optimizer_update_count"] for _, summary, _ in segments] == [4.0, 3.0, 3.0]
+
+
+def test_validation_policy_uses_one_threshold_and_stops_after_two_real_lr_reductions() -> None:
+    config = load_smiles_experiment(Path("configs/experiments/final_smiles/strongest.yaml"))
+    parameter = torch.nn.Parameter(torch.asarray(1.0))
+    optimizer = torch.optim.AdamW([parameter], lr=config.optimization.learning_rate)
+    state = _ValidationPolicyState()
+
+    first = state.observe(0.5000, 0, 1, optimizer, config)
+    assert first["improved"] is True
+    assert state.best_score == pytest.approx(0.5000)
+
+    for validation_check, score in enumerate((0.5009, 0.5008), start=2):
+        decision = state.observe(score, 0, validation_check, optimizer, config)
+        assert decision["plateau"] is False
+    first_plateau = state.observe(0.5007, 0, 4, optimizer, config)
+    assert first_plateau["learning_rate_reduced"] is True
+    assert state.learning_rate_reductions == 1
+    assert optimizer.param_groups[0]["lr"] == pytest.approx(8.0e-5)
+
+    improvement = state.observe(0.5010, 1, 5, optimizer, config)
+    assert improvement["improved"] is True
+    assert state.bad_validation_checks == 0
+    assert state.learning_rate_reductions == 1
+
+    for validation_check in (6, 7):
+        state.observe(0.5015, 1, validation_check, optimizer, config)
+    second_plateau = state.observe(0.5014, 2, 8, optimizer, config)
+    assert second_plateau["learning_rate_reduced"] is True
+    assert state.learning_rate_reductions == 2
+    assert optimizer.param_groups[0]["lr"] == pytest.approx(6.4e-5)
+
+    for validation_check in (9, 10):
+        state.observe(0.5012, 2, validation_check, optimizer, config)
+    final_plateau = state.observe(0.5011, 3, 11, optimizer, config)
+    assert final_plateau == {
+        "improved": False,
+        "plateau": True,
+        "learning_rate_reduced": False,
+        "should_stop": True,
+    }
+    assert state.learning_rate_reductions == 2
+    assert optimizer.param_groups[0]["lr"] == pytest.approx(6.4e-5)
