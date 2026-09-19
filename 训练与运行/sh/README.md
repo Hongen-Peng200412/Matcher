@@ -14,6 +14,12 @@
 | `evaluate_frozen_test.sh` | 阶段 E 用同一 BEST 评估真实受体、CryoAtom2 和可选 test_1 子集 |
 | `plot_frozen_test.sh` | 从冻结测试 JSON 生成一张指标图和两张正式 top-k 图 |
 
+## Stage3 小分子子集评测
+
+[`small_molecule_test/`](small_molecule_test/README.md) 是与完整 179-PDB `test_0` 并存的
+独立评测入口。它不修改训练 Dataset、训练循环或既有测试产物；清单、Stage1-only、两项
+冻结 BEST 的身份前向和绘图均有相互分离的短脚本。
+
 `build_stage1_manifest.sh` 不应对仍在写入的训练分片运行。正式 train/validation manifest 已纳入闭合并验收通过的第 6 片；训练与冻结测试不得重新构建该清单。
 
 ## 四项正式训练

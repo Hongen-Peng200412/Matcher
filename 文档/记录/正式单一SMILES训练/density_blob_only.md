@@ -22,6 +22,7 @@
 | 测试 release | `/home/penghongen/Feedback/Matcher/releases/Matcher_c2b763cf90e2/Matcher` |
 | 测试 launch | `/storage/penghongen/Adaligand_infered_receptor_data/cryoatom2/calibration/运行日志与统计/slurm/launches/379403/evaluate_density_job379403_20260919T050117_a10` |
 | 正式测试 | 已完成；`frozen_test.json` SHA-256=`82c9864268570bd01b3d226e99e57e0eb3b7d7b072ac16a086c0fa7c0521ef37` |
+| `test_smallmolecule` | 实现、机械测试与独立审查已完成；尚未触发 A800 正式运行 |
 
 ## 正式运行命令
 
@@ -75,3 +76,9 @@ bash 训练与运行/sh/final_smiles/evaluate_density_blob_only.sh
 - validation 固定遍历 5,544 个 selected 候选，其中 3,218 个真前景候选具备受支持身份；SMILES 匹配正确 2,735 个。
 - 本次 selection 相对初始状态构成有效改善，`bad_validation_checks=0`，学习率保持 `1.0e-4`。
 - 当时已写出 `checkpoints/epoch_01_validation_01.pt`、`LAST.pt` 和 `BEST.pt`；该段记录只保留首步历史，不代表当前状态。
+
+## `test_smallmolecule` 当前状态
+
+- 2026-09-19 已从 `6d4c886` 建立独立工作树 `C:/Users/15919/Desktop/Matcher_small_molecule_test`。评测将继续使用本日志记录的冻结 BEST 和训练 source release，不重训模型，也不依据小分子测试结果重新选择 checkpoint。
+- 新评测不读取、不应用且不报告 BEST 中的前景阈值；Matcher 前景头不参与尝试次数、SMILES 命中或 docking handoff。
+- 当前已完成独立实现、4 项本地契约测试和三项独立审查；科学逻辑与注释窄复核均为 PASS。正式运行命令、评测 release、launch、结果路径和指标将在实际生成后回填到本节前部；失败尝试只追加到本日志的“先前尝试”，不另建日志。
