@@ -4,7 +4,7 @@
 
 | 字段 | 当前值 |
 | --- | --- |
-| 状态 | 正式训练与冻结 BEST 测试均已完成 |
+| 状态 | 正式训练、冻结 BEST 测试与 `test_smallmolecule` 均已完成 |
 | Slurm Job | `378587` |
 | 硬件 | hnode02，H100 GPU 0，32 CPU |
 | 正式 YAML | `configs/experiments/final_smiles/strongest.yaml` |
@@ -22,6 +22,7 @@
 | 测试 release | `/home/penghongen/Feedback/Matcher/releases/Matcher_c2b763cf90e2/Matcher` |
 | 测试 launch | `/home/penghongen/Feedback/PocketXMol/launches/378587/evaluate_strongest_job378587_20260919T235054_a9` |
 | 正式测试 | 已完成；`frozen_test.json` SHA-256=`89946a64a27959b79f7ac26a8f8efff2237cb8a3fcedbe47e555c846c61078f4` |
+| `test_smallmolecule` | 已完成；正式结果 SHA-256=`7403b549e43b666477ff9e8e29311d285c0c82d8dfc8077e5ffd79dd11dee400` |
 
 ## 正式运行命令
 
@@ -33,6 +34,13 @@ bash 训练与运行/sh/final_smiles/train_strongest.sh
 
 ```bash
 bash 训练与运行/sh/final_smiles/evaluate_strongest.sh
+```
+
+Stage3 小分子子集正式评测和独立绘图使用：
+
+```bash
+bash 训练与运行/sh/small_molecule_test/evaluate_strongest.sh
+bash 训练与运行/sh/small_molecule_test/plot_strongest.sh
 ```
 
 ## 门禁与只读核查
@@ -68,3 +76,11 @@ bash 训练与运行/sh/final_smiles/evaluate_strongest.sh
 - test_1 只复用 test_0 前向筛选官方 149-PDB 集合。真实受体的前景 PRAUC/F1 为 `0.9277244216/0.8579823702`，SMILES 匹配准确率为 `0.8546448087`（782/915）；CryoAtom2 的对应结果为 `0.8894804601/0.8243314106` 和 `0.8566265060`（711/830）。两种受体条件各有两个不受支持身份目标，按契约保留 Stage1 排名、纳入前景评价并排除出身份准确率分母。
 - Gaussian 排序下，真实受体 Stage1-only/Stage1+Matcher 的 top-1、top-5、top-20 命中数分别为 `138/128`、`167/163`、`167/165`；CryoAtom2 为 `122/114`、`155/148`、`159/154`。来源概率均值排序下，真实受体为 `148/140`、`166/161`、`167/165`；CryoAtom2 为 `134/122`、`157/151`、`159/154`。每项分母均固定为 179 个 PDB。
 - `foreground_and_smiles_metrics.png`、`topk_gaussian_final.png` 和 `topk_source_probability_mean_final.png` 的 SHA-256 依次为 `183a302d017b73ab2021571270566ff351ad3d7e1d4e0e2c6238f151bd40b692`、`f0e3e11dd222be409133eba9072cc8daf52556b8468dd10958c714a74ee5c857` 和 `a892f7453eb11b6474699db57eaa194038649ed5900ffb9df52e5bb1fff899d5`。人工检查确认图中没有预览标记残留，Emap2lig 在两张 top-k 图中均为同一条 receptor-independent 曲线。
+
+## `test_smallmolecule` 结果
+
+- 2026-09-20 使用评测 release `/home/penghongen/Feedback/Matcher/releases/Matcher_4f819012083c/Matcher` 在 Job 379403 的 A800 上完成门禁与正式前向。门禁 launch 为 `/home/penghongen/Feedback/Matcher/launches/379403/test_smallmolecule_gate_strongest_job379403_20260920T011249`；正式评测与绘图 launch 分别为同一父目录下的 `test_smallmolecule_evaluate_strongest_job379403_20260920T014327` 和 `test_smallmolecule_plot_strongest_job379403_20260920T021405`。
+- 正式结果位于 `/storage/penghongen/Matcher/evaluation/test_smallmolecule_v1/strongest/train_docking_job378587_20260918T185357_a8/`。`evaluation.json` SHA-256 为 `7403b549e43b666477ff9e8e29311d285c0c82d8dfc8077e5ffd79dd11dee400`；`docking_handoff_candidates.jsonl` 含 2,130 条记录，SHA-256 为 `54ac6c16635dc7ed06e04cae85dd9330157f5d22c4d14f505b8b173e7ae3db8f`。
+- 评测直接加载本日志记录的冻结 BEST 和训练 source release，不重训模型，也不依据小分子测试结果重新选择 checkpoint。前景头和冻结阈值均不参与尝试次数、SMILES 命中或 docking 交接候选。
+- 按 `k=1/3/5/10/20`，真实受体两档答案轴结果相同：Gaussian 为 `58/61/63/64/64`，概率均值为 `59/61/62/64/64`。CryoAtom2 完整身份轴的 Gaussian 与概率均值分别为 `43/57/59/62/62` 和 `50/61/61/62/62`；small-molecule 答案轴分别为 `44/58/60/63/63` 和 `51/62/62/63/63`。答案范围掩码只在 CryoAtom2 上带来 1 个额外命中，没有改变模型前向使用的完整身份集合。
+- Gaussian 与概率均值图 SHA-256 分别为 `bcfa657f5477c00dc7f6d970aeb040459146f1334196199c8f432fbe86a67c95` 和 `9fc9f93185264645e50912053b85077be145f9eb02f0a18cd8848c2276f66ecd`。正式运行完成后，精确 `try_lock_379403` 已恢复，`after_lock_379403` 保留，`pre_lock_379403` 与 `kill_lock_379403` 不存在。

@@ -22,6 +22,7 @@
 | 测试 release | `/home/penghongen/Feedback/Matcher/releases/Matcher_c2b763cf90e2/Matcher` |
 | 测试 launch | `/storage/penghongen/Adaligand_infered_receptor_data/cryoatom2/calibration/运行日志与统计/slurm/launches/379403/evaluate_density_job379403_20260919T050117_a10` |
 | 正式测试 | 已完成；`frozen_test.json` SHA-256=`82c9864268570bd01b3d226e99e57e0eb3b7d7b072ac16a086c0fa7c0521ef37` |
+| `test_smallmolecule` | 已完成；正式结果 SHA-256=`ef6935cdd0ac7a1f0cf859406da0a8b9c79aaa6286c0ea458e992b7436448eeb` |
 
 ## 正式运行命令
 
@@ -33,6 +34,13 @@ bash 训练与运行/sh/final_smiles/train_density_blob_only.sh
 
 ```bash
 bash 训练与运行/sh/final_smiles/evaluate_density_blob_only.sh
+```
+
+Stage3 小分子子集正式评测和独立绘图使用：
+
+```bash
+bash 训练与运行/sh/small_molecule_test/evaluate_density_blob_only.sh
+bash 训练与运行/sh/small_molecule_test/plot_density_blob_only.sh
 ```
 
 ## 门禁与只读核查
@@ -75,3 +83,11 @@ bash 训练与运行/sh/final_smiles/evaluate_density_blob_only.sh
 - validation 固定遍历 5,544 个 selected 候选，其中 3,218 个真前景候选具备受支持身份；SMILES 匹配正确 2,735 个。
 - 本次 selection 相对初始状态构成有效改善，`bad_validation_checks=0`，学习率保持 `1.0e-4`。
 - 当时已写出 `checkpoints/epoch_01_validation_01.pt`、`LAST.pt` 和 `BEST.pt`；该段记录只保留首步历史，不代表当前状态。
+
+## `test_smallmolecule` 结果
+
+- 2026-09-20 使用评测 release `/home/penghongen/Feedback/Matcher/releases/Matcher_4f819012083c/Matcher` 在 Job 379403 的 A800 上完成门禁与正式前向。门禁 launch 为 `/home/penghongen/Feedback/Matcher/launches/379403/test_smallmolecule_gate_density_job379403_20260920T000939`；正式评测与绘图 launch 分别为同一父目录下的 `test_smallmolecule_evaluate_density_job379403_20260920T004033` 和 `test_smallmolecule_plot_density_job379403_20260920T011114`。
+- 正式结果位于 `/storage/penghongen/Matcher/evaluation/test_smallmolecule_v1/density_blob_only/predict_calibration_job379403_20260918T184914_a8/`。`evaluation.json` SHA-256 为 `ef6935cdd0ac7a1f0cf859406da0a8b9c79aaa6286c0ea458e992b7436448eeb`；`docking_handoff_candidates.jsonl` 含 2,148 条记录，SHA-256 为 `f8e133d84760e8a86495349dc01960864a2840cd6c4fdd4e4f1454f18e24816c`。
+- 评测直接加载本日志记录的冻结 BEST 和训练 source release，不重训模型，也不依据小分子测试结果重新选择 checkpoint。前景头和冻结阈值均不参与尝试次数、SMILES 命中或 docking 交接候选。
+- 按 `k=1/3/5/10/20`，真实受体 Gaussian 与概率均值的 Stage1+Stage2 命中数分别为 `59/62/63/64/64` 和 `58/62/62/64/64`；CryoAtom2 分别为 `45/58/60/62/62` 和 `52/62/62/62/62`。完整身份轴与 small-molecule 答案轴在四条曲线上完全相同。
+- Gaussian 与概率均值图 SHA-256 分别为 `86c05407bedc95e684eb4348dd4416adc8e4451660eaf46390d7b0b262ee29f8` 和 `3ece618c81c8abd44a80274d42bcdb4b1a221209cdd30ee7b5f63c68061239fa`。正式运行完成后，精确 `try_lock_379403` 已恢复，`after_lock_379403` 保留，`pre_lock_379403` 与 `kill_lock_379403` 不存在。
