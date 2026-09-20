@@ -4,7 +4,7 @@
 
 ## 当前状态
 
-- 阶段: 修订后的 `0.30/0.00/0.00/1.00` 训练已通过实际 H100 门禁并从头启动；当前等待首个训练区段与完整 validation。
+- 阶段: 修订后的 `0.30/0.00/0.00/1.00` 训练已通过实际 H100 门禁并稳定运行；首个训练区段和完整 validation 已完成。
 - 正式资源: H100 Job `378587`，30 个阶段互斥 worker；`after_lock_378587` 保留。
 - 正式实验目录: `测试结果与追溯/experiment-centric/strongest-1/`。
 - release：`/home/penghongen/Feedback/Matcher/releases/Matcher_a67eb7f830e0/Matcher`；内容 SHA-256 `a67eb7f830e0a3625da349daf9481fe653f2231ba4d860bc9aa8a1101a760f87`；对应实现提交 `ab87ead233e08c70fb387bae081403ebcbb4eba7`。
@@ -15,6 +15,7 @@
 - 测试 release：必须复用上述训练 release，从快照恢复模型类、配置和 checkpoint。
 - BEST checkpoint 与两套评测产物: 待训练自然停止后填写。
 - 正式 YAML: `configs/experiments/final_smiles/strongest.yaml`；实验标识 `strongest-1`，30 个阶段互斥 worker，修订后的损失权重 `0.30/0.00/0.00/1.00`。
+- 首次完整 validation：epoch 0、第 1 区段、`global_step=465`；前景 PRAUC `0.766326075409999`、SMILES 匹配准确率 `0.8502175264139217`、selection `0.8308579607976317`。该记录只用于确认正式运行稳定，不替代最终 BEST。
 
 ## 正式命令
 

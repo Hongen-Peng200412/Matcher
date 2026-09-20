@@ -4,7 +4,7 @@
 
 ## 当前状态
 
-- 阶段：实际 H100 门禁已通过，正式从头训练已启动；当前等待首个训练区段与完整 validation。
+- 阶段：实际 H100 门禁已通过，正式从头训练稳定运行；首个训练区段和完整 validation 已完成。
 - 正式资源：H100 Job `386151`，32 CPU，剩余 walltime 为无限；活动阶段计划使用 30 个非持久 DataLoader worker。
 - 稳定实验标识：`density_only-106`；代码模型变体：`density_only_106`。
 - 正式 YAML：`configs/experiments/final_smiles/density_only_106.yaml`。
@@ -19,6 +19,7 @@
 - 训练 launch：`/home/penghongen/Feedback/Matcher/launches/386151/train_density_only106_job386151_20260920T230728`。
 - 运行根：`/storage/penghongen/Matcher/runs/density_only-106/train_density_only106_job386151_20260920T230728`。
 - W&B：`https://wandb.ai/pencounkdual-111/Matcher/runs/jfdp3ifl`。
+- 首次完整 validation：epoch 0、第 1 区段、`global_step=465`；前景 PRAUC `0.712084939914394`、SMILES 匹配准确率 `0.7569919204474829`、selection `0.7466287710936931`。该记录只用于确认正式运行稳定，不替代最终 BEST。
 
 ## 正式命令
 
