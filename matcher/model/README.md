@@ -18,8 +18,8 @@
 | `candidate_embedding` | `(B,D_m)` | 候选体素与当前变体启用 token 融合后的候选级表示。 |
 | `foreground_logit` | `(B,)` | 候选是否属于五类真实配体的单一 logit。 |
 | `identity_logits` | `(B,I_max)` | 当前 PDB 闭集 SMILES 身份分数；`identity_mask=false` 的补齐槽写为当前 dtype 的最小有限值。 |
-| `ligand_area_logits` | `(B,48,48,48)` 或 `None` | 启用区域监督的 U-Net 变体返回配体区域辅助 logit；`blob_only`、`density_only` 与 `pocket_only` 返回 `None`。 |
-| `binding_area_logits` | `(B,48,48,48)` 或 `None` | 启用区域监督的 U-Net 变体返回结合区域辅助 logit；`blob_only`、`density_only` 与 `pocket_only` 返回 `None`。 |
+| `ligand_area_logits` | `(B,48,48,48)` 或 `None` | 启用区域监督的 U-Net 变体返回配体区域辅助 logit；`blob_only`、`density_only`、`density_only_106` 与 `pocket_only` 返回 `None`。 |
+| `binding_area_logits` | `(B,48,48,48)` 或 `None` | 启用区域监督的 U-Net 变体返回结合区域辅助 logit；`blob_only`、`density_only`、`density_only_106` 与 `pocket_only` 返回 `None`。 |
 | `voxel_features` | `(B,C_v,48,48,48)` 或 `None` | 有 U-Net 的变体返回最高分辨率体素特征；`blob_only` 与 `pocket_only` 返回 `None`。 |
 | `identity_score_native` | `(B,I_max)` | 未屏蔽的语言基线分数；补零槽不得读取。 |
 | `identity_score_graph_increment` | `(B,I_max)` | 已乘图门的未屏蔽图增量；`trunk_only` 为零。 |
@@ -34,6 +34,7 @@
 | `strongest` | 106 通道 U-Net；A/P/V/PP；mean/max 与候选条件注意力摘要拼接。A、P、PP 各有一个从 0.01 开始的独立直接标量门，门同时作用于投影 token 和该模态三项统计；V 不加门。 | SMI-TED native、SMILES 图增量、同 PDB 身份清单增量。 |
 | `blob_only` | 只使用 V/blob token、V 三项统计和四项裁剪统计；不建立 U-Net、体素调制器或区域头。 | 与 `strongest` 相同。 |
 | `density_only` | 单实验密度 U-Net；最高分辨率特征执行空间 mean/max 并投影为候选表示；不建立 token 投影器、体素调制器、候选模态聚合器或区域头。 | 与 `strongest` 相同。 |
+| `density_only_106` | 56 通道完整密度 bank 与 50 通道受体特征体素网格；RAUNet 摘要结构与 density_only 相同；不建立 token、人工统计或区域头。 | 与 `strongest` 相同。 |
 | `density_blob_only` | 单实验密度 U-Net；V/blob token、V 三项统计和四项裁剪统计。 | 与 `strongest` 相同。 |
 | `pocket_only` | 50 维 A-L0 token 的掩码 mean/max；无 U-Net 和区域头。 | 与 `strongest` 相同。 |
 | `trunk_only` | 候选侧与 `strongest` 相同。 | 只有 SMI-TED native 打分器；不实例化图和清单增量模块。 |
@@ -55,7 +56,7 @@
 
 ## 身份分数
 
-`strongest`、`blob_only`、`density_only`、`density_blob_only` 和 `pocket_only` 的总身份分数为：
+`strongest`、`blob_only`、`density_only`、`density_only_106`、`density_blob_only` 和 `pocket_only` 的总身份分数为：
 
 ```text
 native 语言分数 + graph_gate × 图增量 + inventory_gate × 同 PDB 身份清单增量

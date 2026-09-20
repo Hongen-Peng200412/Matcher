@@ -1,8 +1,9 @@
 """按具名变体把 Stage1 候选编码成候选表示和前景分数。
 
 主要入口是 CandidateEncoder.forward。strongest/trunk_only 使用完整 106 通道体素与四类
-token；blob_only 只使用 V/blob token 和候选自身统计；density_only 只使用单实验密度
-通道；density_blob_only 使用单实验密度通道与 V token；pocket_only 只使用原始 A/L0。本模块返回内存张量，不读取清单、
+token；blob_only 只使用 V/blob token 和候选自身统计；density_only 只使用单实验密度通道；
+density_only_106 只使用 106 通道体素；density_blob_only 使用单实验密度通道与 V token；
+pocket_only 只使用原始 A/L0。本模块返回内存张量，不读取清单、
 不计算损失且不写入磁盘。
 """
 
@@ -230,12 +231,13 @@ class CandidateEncoder(nn.Module):
             - `strongest` 与 `trunk_only`: 使用 106 通道体素、A/P/V/PP token、12 项模态统计和 4 项裁剪统计. 两者在本类中完全相同, `trunk_only` 的差异只发生在后续身份打分器.
             - blob_only: 只使用 V/blob token、V 三项统计和 4 项裁剪统计，不实例化 RAUNet、体素调制器或区域头.
             - `density_only`: 只使用单实验密度 RAUNet 的最高分辨率空间 mean/max 摘要，不实例化 token 投影器、体素调制器、候选模态聚合器或区域头.
+            - `density_only_106`: 只使用 56 通道密度 bank 与 50 通道受体特征网格的 RAUNet 空间 mean/max 摘要，其余结构边界与 density_only 相同.
             - `density_blob_only`: 使用单实验密度通道、V token、仅 V 组非零的 12 项模态统计和 4 项裁剪统计.
             - `pocket_only`: 只对 A token 的原始 L0 做掩码均值与最大值归约, 不实例化 RAUNet、体素调制器或区域辅助头.
 
         输入参数:
             - batch: CandidateBatch. B 轴由 `collate_candidates` 的输入候选顺序定义, 每种 token 的第二轴补齐到当前批内最大长度.
-            - batch.voxel_input: 浮点张量, (B,C_in,48,48,48). strongest 与 trunk_only 的 C_in=106, density_only 与 density_blob_only 的 C_in=1, blob_only 与 pocket_only 不读取该字段.
+            - batch.voxel_input: 浮点张量, (B,C_in,48,48,48). strongest、density_only_106 与 trunk_only 的 C_in=106, density_only 与 density_blob_only 的 C_in=1, blob_only 与 pocket_only 不读取该字段.
             - batch.a_tokens: 浮点张量. strongest 与 trunk_only 为 (B,N_A,230), pocket_only 为 (B,N_A,50), blob_only 与 density_blob_only 不读取该字段.
             - batch.a_mask: bool 张量, (B,N_A). True 表示 `a_tokens` 第二维的真实受体原子, False 表示批内补零槽.
             - batch.p_tokens: 浮点张量, (B,N_P,116). 只由 `strongest` 与 `trunk_only` 读取.
@@ -259,11 +261,11 @@ class CandidateEncoder(nn.Module):
 
         实例状态:
             - self.config: MatcherModelConfig. 保留构造时的完整结构配置.
-            - self.voxel_backbone: RaUnetBackbone 或 None. U-Net 变体把 (B,C_in,48,48,48) 体素输入编码为 (B,C_v,48,48,48), 其中 density_only 与 density_blob_only 的 C_in=1, strongest/trunk_only 的 C_in=106.
+            - self.voxel_backbone: RaUnetBackbone 或 None. U-Net 变体把 (B,C_in,48,48,48) 体素输入编码为 (B,C_v,48,48,48), 其中 density_only 与 density_blob_only 的 C_in=1, density_only_106/strongest/trunk_only 的 C_in=106.
             - self.candidate_summary: Sequential 或 None. U-Net 变体把 RAUNet 特征的空间均值与最大值拼接向量 (B,2C_v) 映射为 (B,D_m).
-            - self.token_projectors: ModuleDict. `density_blob_only` 只含 `v`, `strongest` 与 `trunk_only` 含 `a`、`p`、`v`、`pp`, `density_only` 与 `pocket_only` 为空.
+            - self.token_projectors: ModuleDict. `density_blob_only` 只含 `v`, `strongest` 与 `trunk_only` 含 `a`、`p`、`v`、`pp`, `density_only`、`density_only_106` 与 `pocket_only` 为空.
             - self.voxel_modulators: ModuleDict. `density_blob_only` 只含 `v`, `strongest` 与 `trunk_only` 含 `v`、`pp`, 每项把 token 同位置的 C_v 维 RAUNet 特征映射到 D_m.
-            - self.aggregator: MeanMaxAggregator、MeanMaxCandidateConditionedResidualAggregator 或 None. 前者服务 `density_blob_only`, 后者服务 `strongest` 与 `trunk_only`; density_only 不建立聚合器.
+            - self.aggregator: MeanMaxAggregator、MeanMaxCandidateConditionedResidualAggregator 或 None. 前者服务 `density_blob_only`, 后者服务 `strongest` 与 `trunk_only`; density_only 与 density_only_106 不建立聚合器.
             - self.blob_encoder: BlobMeanMaxEncoder 或 None. 只在 blob_only 中归约 V/blob token 与七项候选自身统计.
             - self.pocket_encoder: PocketMeanMaxEncoder 或 None. 只在 `pocket_only` 中归约 50 维 A-L0 token.
             - self.ligand_area_head: VoxelBinaryHead 或 None. strongest、density_blob_only 与 trunk_only 从共享 RAUNet 特征产生配体区域 logit.
@@ -314,7 +316,7 @@ class CandidateEncoder(nn.Module):
                 nn.GELU(),
                 nn.LayerNorm(config.model_dim),
             )
-            if config.variant != "density_only":
+            if config.variant not in ("density_only", "density_only_106"):
                 # dict[str,int], 当前变体实际读取的 token 名称及原始宽度. density_blob_only 不为禁用的 A/P/PP 建立投影参数.
                 input_dims = (
                     {"v": V_TOKEN_DIM}
@@ -437,7 +439,7 @@ class CandidateEncoder(nn.Module):
 
         输入参数:
             - batch: CandidateBatch. B 轴由 `collate_candidates` 的输入候选顺序定义, 每种 token 的第二轴补齐到当前批内最大长度.
-            - batch.voxel_input: 浮点张量, (B,C_in,48,48,48). strongest 与 trunk_only 的 C_in=106, density_only 与 density_blob_only 的 C_in=1, blob_only 与 pocket_only 不读取该字段.
+            - batch.voxel_input: 浮点张量, (B,C_in,48,48,48). strongest、density_only_106 与 trunk_only 的 C_in=106, density_only 与 density_blob_only 的 C_in=1, blob_only 与 pocket_only 不读取该字段.
             - batch.a_tokens: 浮点张量. strongest 与 trunk_only 为 (B,N_A,230), pocket_only 为 (B,N_A,50), blob_only 与 density_blob_only 不读取该字段.
             - batch.a_mask: bool 张量, (B,N_A). True 表示 `a_tokens` 第二维的真实受体原子, False 表示批内补零槽.
             - batch.p_tokens: 浮点张量, (B,N_P,116). 只由 `strongest` 与 `trunk_only` 读取.
@@ -460,7 +462,7 @@ class CandidateEncoder(nn.Module):
             - output.voxel_features: 浮点张量 (B,C_v,48,48,48) 或 None. U-Net 变体返回共享 RAUNet 特征.
 
         blob_only 只读取 V/blob 与七项候选自身统计；density_only 只读取单实验密度；
-        pocket_only 只读取 A-L0。其余 U-Net 变体使用归一化后的 12 项模态统计和 4 项裁剪统计。
+        density_only_106 只读取 106 通道体素；pocket_only 只读取 A-L0。其余 U-Net 变体使用归一化后的 12 项模态统计和 4 项裁剪统计。
         本函数不消费 CandidateBatch 的身份字段或监督目标。
         """
         if self.config.variant == "blob_only":
@@ -505,8 +507,8 @@ class CandidateEncoder(nn.Module):
             )
             # 浮点张量, [B,2C_v] -> [B,D_m], 为四模态聚合提供候选级体素摘要, 也是条件注意力的查询.
             candidate_summary = self.candidate_summary(pooled)
-            if self.config.variant == "density_only":
-                # density_only 的候选表示就是单密度 RAUNet 最高分辨率特征的空间 mean/max 投影，不读取批次中的任何 token 或人工统计.
+            if self.config.variant in ("density_only", "density_only_106"):
+                # 两个体素-only 变体都直接使用 RAUNet 空间 mean/max 投影，不读取批次中的任何 token 或人工统计.
                 candidate_embedding = candidate_summary
                 ligand_area_logits = None
                 binding_area_logits = None
@@ -543,7 +545,7 @@ class CandidateEncoder(nn.Module):
         - return.ligand_area_logits: 浮点张量，(B,48,48,48)；配体区域未归一化分数.
         - return.binding_area_logits: 浮点张量，(B,48,48,48)；结合区域未归一化分数.
 
-        density_only 不调用本函数，因而不会实例化或读取 token、人工统计与区域头.
+        density_only 与 density_only_106 不调用本函数，因而不会实例化或读取 token、人工统计与区域头.
         """
         # 二元组, 浮点 (B,0,D_m) token 与 bool (B,0) 掩码. 禁用模态共享该只读空占位.
         empty = self._empty_modality(

@@ -199,12 +199,12 @@ def _item(variant: str) -> dict[str, object]:
         voxel = np.zeros((voxel_channels, spatial, spatial, spatial), dtype=np.float16)
         a_tokens = (
             np.empty((0, 230), dtype=np.float32)
-            if variant in ("density_only", "density_blob_only")
+            if variant in ("density_only", "density_only_106", "density_blob_only")
             else np.ones((1, 230), dtype=np.float32)
         )
     v_tokens = (
         np.ones((1, 68), dtype=np.float32)
-        if variant not in ("density_only", "pocket_only")
+        if variant not in ("density_only", "density_only_106", "pocket_only")
         else np.empty((0, 68), dtype=np.float32)
     )
     return {
@@ -308,9 +308,30 @@ def test_density_only_centered_fields_contain_only_index_and_experimental_densit
     assert fields == {"centered_box_index", "experimental_density_48"}
 
 
+def test_density_only_106_centered_fields_contain_only_voxel_construction_inputs() -> None:
+    fields = set(_centered_fields("density_only_106"))
+    assert fields == {
+        "centered_box_index",
+        "crop_start_local_zyx",
+        "box_origin_world",
+        "voxel_size_world",
+        "experimental_density_48",
+        "simulated_density_48",
+    }
+    assert fields.isdisjoint(
+        {
+            "A_feat_L0",
+            "P_feat_L2",
+            "voxel_final",
+            "source_probability_48",
+            "source_voxel_count",
+        }
+    )
+
+
 @pytest.mark.parametrize(
     "variant",
-    ["strongest", "blob_only", "density_only", "density_blob_only", "pocket_only", "trunk_only"],
+    ["strongest", "blob_only", "density_only", "density_only_106", "density_blob_only", "pocket_only", "trunk_only"],
 )
 def test_model_variants_forward_and_direct_identity_loss(variant: str) -> None:
     batch = collate_candidates([_item(variant)])
@@ -319,7 +340,7 @@ def test_model_variants_forward_and_direct_identity_loss(variant: str) -> None:
     assert output["foreground_logit"].shape == (1,)
     assert output["identity_logits"].shape == (1, 1)
     assert torch.isfinite(output["foreground_logit"]).all()
-    area_weight = 0.0 if variant in ("blob_only", "density_only", "pocket_only") else 0.1
+    area_weight = 0.0 if variant in ("blob_only", "density_only", "density_only_106", "pocket_only") else 0.1
     weights = LossWeights(1.0, area_weight, area_weight, 1.0)
     loss = compute_matcher_loss(output, batch, weights)
     assert torch.isfinite(loss["total"])
@@ -349,6 +370,16 @@ def test_strongest_gates_and_blob_only_parameter_boundaries() -> None:
     assert blob_only.candidate_encoder.ligand_area_head is None
     assert blob_only.candidate_encoder.binding_area_head is None
     assert not any("voxel_backbone" in name for name in names)
+    assert not any("voxel_modulators" in name for name in names)
+
+    density_only_106 = ClosedSetMatcher(_config("density_only_106"))
+    names = tuple(dict(density_only_106.named_parameters()))
+    assert density_only_106.candidate_encoder.voxel_backbone is not None
+    assert density_only_106.candidate_encoder.candidate_summary is not None
+    assert density_only_106.candidate_encoder.aggregator is None
+    assert density_only_106.candidate_encoder.ligand_area_head is None
+    assert density_only_106.candidate_encoder.binding_area_head is None
+    assert not any("token_projectors" in name for name in names)
     assert not any("voxel_modulators" in name for name in names)
 
     density_only = ClosedSetMatcher(_config("density_only"))
@@ -416,7 +447,7 @@ def test_variants_share_identical_initial_values_for_common_parameters() -> None
     同一实验种子下，各变体的同名同形参数必须逐值相同。
     """
     models: dict[str, dict[str, torch.Tensor]] = {}
-    for variant in ("strongest", "blob_only", "density_only", "density_blob_only", "pocket_only", "trunk_only"):
+    for variant in ("strongest", "blob_only", "density_only", "density_only_106", "density_blob_only", "pocket_only", "trunk_only"):
         torch.manual_seed(3409)
         rng_state = torch.random.get_rng_state()
         model = ClosedSetMatcher(_config(variant))
@@ -531,6 +562,17 @@ def test_training_manifest_snapshot_keeps_original_generation_after_entry_moves(
         ("density_blob_only", ("a_tokens", "p_tokens", "pp_tokens")),
         (
             "density_only",
+            (
+                "a_tokens",
+                "p_tokens",
+                "v_tokens",
+                "pp_tokens",
+                "candidate_manual_features",
+                "candidate_sampling_features",
+            ),
+        ),
+        (
+            "density_only_106",
             (
                 "a_tokens",
                 "p_tokens",
@@ -889,7 +931,7 @@ def test_final_metrics_and_topk_keep_empty_pdb_in_fixed_denominator(tmp_path: Pa
 def test_formal_yaml_files_register_second_round_training_contract() -> None:
     root = Path("configs/experiments/final_smiles")
     configs = {path.stem: load_smiles_experiment(path) for path in sorted(root.glob("*.yaml"))}
-    assert set(configs) == {"strongest", "blob_only", "density_only", "density_blob_only", "pocket_only", "trunk_only"}
+    assert set(configs) == {"strongest", "blob_only", "density_only", "density_only_106", "density_blob_only", "pocket_only", "trunk_only"}
     assert {config.seed for config in configs.values()} == {3409}
     assert {config.data.selected_only for config in configs.values()} == {True}
     for name, config in configs.items():
@@ -902,27 +944,32 @@ def test_formal_yaml_files_register_second_round_training_contract() -> None:
         assert config.optimization.learning_rate_reduction_factor == 0.8
         assert config.optimization.max_learning_rate_reductions == 2
         assert config.optimization.max_epochs == 15
-        if name in ("blob_only", "density_only", "pocket_only"):
+        if name in ("blob_only", "density_only", "density_only_106", "pocket_only"):
             assert config.loss_weights.ligand_area == config.loss_weights.binding_area == 0.0
     strongest = configs["strongest"]
     blob_only = configs["blob_only"]
     density_only = configs["density_only"]
+    density_only_106 = configs["density_only_106"]
     pocket_only = configs["pocket_only"]
     assert strongest.name == "strongest-1"
     assert blob_only.name == "blob_only-0"
     assert density_only.name == "density_only-0"
+    assert density_only_106.name == "density_only-106"
     assert pocket_only.name == "pocket_only-0"
     assert strongest.data.num_workers == 30
     assert blob_only.data.num_workers == 15
     assert density_only.data.num_workers == 15
+    assert density_only_106.data.num_workers == 30
     assert pocket_only.data.num_workers == 15
     assert strongest.optimization.patience_bad_validation_checks == 3
     assert blob_only.optimization.patience_bad_validation_checks == 3
     assert density_only.optimization.patience_bad_validation_checks == 3
+    assert density_only_106.optimization.patience_bad_validation_checks == 3
     assert pocket_only.optimization.patience_bad_validation_checks == 3
-    assert strongest.loss_weights == LossWeights(0.30, 0.05, 0.05, 1.0)
+    assert strongest.loss_weights == LossWeights(0.30, 0.0, 0.0, 1.0)
     assert blob_only.loss_weights == LossWeights(0.30, 0.0, 0.0, 1.0)
     assert density_only.loss_weights == LossWeights(0.30, 0.0, 0.0, 1.0)
+    assert density_only_106.loss_weights == LossWeights(0.30, 0.0, 0.0, 1.0)
     assert pocket_only.loss_weights == LossWeights(0.30, 0.0, 0.0, 1.0)
 
 

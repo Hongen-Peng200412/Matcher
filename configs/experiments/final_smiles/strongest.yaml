@@ -30,8 +30,8 @@ model:  # mapping, strongest 的模型结构参数
 
 loss:  # mapping, 四项训练损失的标量系数
   foreground: 0.30  # float, 前景二分类 BCE 系数
-  ligand_area: 0.05  # float, 配体区域辅助损失系数
-  binding_area: 0.05  # float, 受体结合区域辅助损失系数
+  ligand_area: 0.00  # float, 第二轮修订契约不把配体区域头纳入优化目标
+  binding_area: 0.00  # float, 第二轮修订契约不把受体结合区域头纳入优化目标
   identity: 1.0  # float, 受支持真前景上的直接 SMILES 身份交叉熵系数
 
 optimization:  # mapping, AdamW、梯度裁剪和停止条件

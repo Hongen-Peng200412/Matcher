@@ -15,6 +15,7 @@ ModelVariant = Literal[
     "strongest",
     "blob_only",
     "density_only",
+    "density_only_106",
     "density_blob_only",
     "pocket_only",
     "trunk_only",
@@ -24,6 +25,7 @@ MODEL_VARIANTS = (
     "strongest",
     "blob_only",
     "density_only",
+    "density_only_106",
     "density_blob_only",
     "pocket_only",
     "trunk_only",
@@ -50,8 +52,8 @@ class MatcherModelConfig:
     图分支和身份清单分支的门初值固定为 0, 不作为 YAML 可变字段. strongest 与 trunk_only
     使用 mean/max 和候选条件注意力摘要拼接; blob_only 只使用 V token、V 三项统计和四项
     采样统计; density_only 只使用单实验密度 U-Net 的空间 mean/max 摘要;
-    density_blob_only 保留既有单密度与 V/blob 联合定义; pocket_only 只使用 A token 的原始
-    50 维 L0.
+    density_only_106 只使用 56 通道密度 bank 与 50 通道受体特征网格的同结构摘要;
+    density_blob_only 保留既有单密度与 V/blob 联合定义; pocket_only 只使用 A token 的原始 50 维 L0.
     """
     variant: ModelVariant
     model_dim: int
@@ -102,18 +104,18 @@ class MatcherModelConfig:
         """
         判断是否消费候选手动统计.
 
-        - return: density_only 与 pocket_only 为 False, 其余变体为 True.
+        - return: density_only、density_only_106 与 pocket_only 为 False, 其余变体为 True.
         """
-        return self.variant not in ("density_only", "pocket_only")
+        return self.variant not in ("density_only", "density_only_106", "pocket_only")
 
     @property
     def identity_manual_feature_dim(self) -> int:
         """
         返回身份配对残差实际消费的候选手动统计宽度.
 
-        - return: density_only 与 pocket_only 为 0，blob_only 只使用 V 的三项统计，其余变体使用 A、P、V、PP 的 12 项统计.
+        - return: density_only、density_only_106 与 pocket_only 为 0，blob_only 只使用 V 的三项统计，其余变体使用 A、P、V、PP 的 12 项统计.
         """
-        if self.variant in ("density_only", "pocket_only"):
+        if self.variant in ("density_only", "density_only_106", "pocket_only"):
             return 0
         if self.variant == "blob_only":
             return 3
@@ -124,9 +126,9 @@ class MatcherModelConfig:
         """
         判断是否消费四项候选裁剪统计.
 
-        - return: density_only 与 pocket_only 为 False, 其余变体为 True.
+        - return: density_only、density_only_106 与 pocket_only 为 False, 其余变体为 True.
         """
-        return self.variant not in ("density_only", "pocket_only")
+        return self.variant not in ("density_only", "density_only_106", "pocket_only")
 
     @property
     def uses_identity_increments(self) -> bool:
