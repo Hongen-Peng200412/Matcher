@@ -15,6 +15,8 @@
 | 8 | `plot_blob_only.sh` | 只从 blob_only-0 冻结 JSON 绘图 |
 | 9 | `evaluate_strongest_1.sh` | 用 strongest-1 的训练快照解释冻结 BEST，生成两档身份结果 |
 | 10 | `plot_strongest_1.sh` | 只从 strongest-1 冻结 JSON 绘图 |
+| 11 | `evaluate_density_only.sh` | 用 density_only-0 的训练快照解释冻结 BEST，生成两档身份结果 |
+| 12 | `plot_density_only.sh` | 只从 density_only-0 冻结 JSON 绘图 |
 
 每个脚本文件头记录独立提交命令。复用现有 A800 allocation 时，控制器把对应脚本作为
 极短 `run_cmd` 写入新的 launch；SHA-256、锁路径和一次性门禁命令只进入执行记录，不进入

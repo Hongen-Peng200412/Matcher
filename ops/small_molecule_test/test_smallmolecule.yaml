@@ -33,6 +33,10 @@ runtime:
 
 # --- 冻结训练结果 ---
 models:
+  density_only-0:
+    variant: density_only  # str, 第二轮单实验密度 checkpoint 内必须精确匹配的结构变体
+    checkpoint: /storage/penghongen/Matcher/runs/density_only-0/train_density_only0_job379403_20260920T205216/BEST.pt  # str, 第二轮训练自然停止后的冻结 BEST
+    training_run_name: train_density_only0_job379403_20260920T205216  # str, 版本化结果目录名
   strongest-1:
     variant: strongest  # str, 第二轮 strongest checkpoint 内必须精确匹配的结构变体
     checkpoint: /storage/penghongen/Matcher/runs/strongest-1/train_strongest1_job378587_20260920T142850/BEST.pt  # str, 第二轮训练自然停止后的冻结 BEST
