@@ -648,7 +648,7 @@ class RaUnetBackbone(nn.Module):
     复现正式 Stage1 的三维 RAUNet, 并把最高分辨率解码状态用于回收和输出.
 
     构造参数:
-    - input_channels: 整数 C_in; strongest/trunk_only 传 106, density_blob_only 传 1；blob_only 不实例化本类.
+    - input_channels: 整数 C_in; strongest/trunk_only 传 106, density_only/density_blob_only 传 1；blob_only/pocket_only 不实例化本类.
     - feature_channels: 整数 C_v; 必须等于 planes 中的 dec0, 使最高分辨率解码状态可以直接输出.
     - planes: 九项可转换为整数的序列; 依次为 enc0、enc1、enc2、enc3、bottleneck、dec3、dec2、dec1、dec0.
     - recycle_iterations: 正整数 R; 同一 voxel_input 的前向轮数, 前置轮显式 no_grad, 第 R-1 轮不受该内部上下文包裹, 是否建图由外层梯度模式决定.

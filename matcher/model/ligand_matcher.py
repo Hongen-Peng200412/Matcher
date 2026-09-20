@@ -1028,7 +1028,7 @@ class ClosedSetMatcher(nn.Module):
 
         forward 输入:
             - batch: CandidateBatch; 候选、身份和打分子模块消费下列数值字段.
-            - batch.voxel_input: 浮点张量, (B,C,48,48,48). strongest/trunk_only 的 C=106, density_blob_only 的 C=1, pocket_only 的 C=0.
+            - batch.voxel_input: 浮点张量, (B,C,48,48,48). strongest/trunk_only 的 C=106, density_only/density_blob_only 的 C=1, blob_only/pocket_only 的 C=0.
             - batch.a_tokens: 浮点张量, (B, N_A, 230); A 模态 token.
             - batch.a_mask: bool 张量, (B, N_A); A token 有效掩码.
             - batch.p_tokens: 浮点张量, (B, N_P, 116); P 模态 token.
@@ -1056,9 +1056,9 @@ class ClosedSetMatcher(nn.Module):
             - return: FullMatcherOutput; 合并以下五个候选字段和四个身份字段.
             - return.candidate_embedding: 浮点张量, (B, D_m); 候选级融合表示.
             - return.foreground_logit: 浮点张量, (B,); 候选是真实前景的二分类 logit.
-            - return.ligand_area_logits: strongest/density_blob_only/trunk_only 为浮点张量 (B,48,48,48), blob_only/pocket_only 为 None.
-            - return.binding_area_logits: strongest/density_blob_only/trunk_only 为浮点张量 (B,48,48,48), blob_only/pocket_only 为 None.
-            - return.voxel_features: strongest/density_blob_only/trunk_only 为浮点张量 (B,C_v,48,48,48), blob_only/pocket_only 为 None.
+            - return.ligand_area_logits: strongest/density_blob_only/trunk_only 为浮点张量 (B,48,48,48), blob_only/density_only/pocket_only 为 None.
+            - return.binding_area_logits: strongest/density_blob_only/trunk_only 为浮点张量 (B,48,48,48), blob_only/density_only/pocket_only 为 None.
+            - return.voxel_features: strongest/density_only/density_blob_only/trunk_only 为浮点张量 (B,C_v,48,48,48), blob_only/pocket_only 为 None.
             - return.identity_logits: 浮点张量, (B, I); 三个组件之和, 补零槽为 dtype 最小有限值.
             - return.identity_score_native: 浮点张量, (B, I); 未屏蔽语言基线.
             - return.identity_score_graph_increment: 浮点张量, (B, I); 未屏蔽且已乘图门的增量.

@@ -1,6 +1,6 @@
 # final_smiles：单一 SMILES 身份训练配置
 
-第二轮活动配置是 `strongest.yaml` 与 `blob_only.yaml`，稳定实验标识分别为 `strongest-1` 和 `blob_only-0`。`density_blob_only.yaml`、`pocket_only.yaml` 与 `trunk_only.yaml` 只保留历史模型的可恢复训练入口，不属于第二轮并行实验。
+第二轮活动配置是 `strongest.yaml`、`blob_only.yaml`、`density_only.yaml` 与 `pocket_only.yaml`，稳定实验标识依次为 `strongest-1`、`blob_only-0`、`density_only-0` 与 `pocket_only-0`。`density_blob_only.yaml` 与 `trunk_only.yaml` 只保留历史模型的可恢复训练入口。
 
 两项活动实验共享完整第 1–6 片 train/validation manifest、seed 3409、AdamW、学习率 `1e-4`、物理 batch 32、梯度累积 1、BF16、裁剪 200 和同一停止规则。`strongest-1` 的候选侧使用完整输入，前景、配体区域、结合区域和身份损失权重依次为 `0.30/0.05/0.05/1.00`；`blob_only-0` 的候选侧只使用 V/blob token、V 三项统计和四项裁剪统计，没有 U-Net 或区域头，对应权重为 `0.30/0/0/1.00`。
 

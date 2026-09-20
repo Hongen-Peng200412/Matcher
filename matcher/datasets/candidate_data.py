@@ -336,6 +336,8 @@ def _centered_fields(variant: ModelVariant) -> tuple[str, ...]:
     common = ("centered_box_index",)
     if variant == "pocket_only":
         return common + ("A_offsets", "A_feat_L0")
+    if variant == "density_only":
+        return common + ("experimental_density_48",)
     blob_fields = (
         "crop_start_local_zyx",
         "voxel_offsets",
@@ -533,7 +535,7 @@ class CandidateDataset(Dataset[CandidateItem]):
         - centered: 当前 PDB 按 variant 解压的 centered 字段.
         - payload: 当前 PDB 的 centered、受体、区域真值和语言向量载荷.
         - position: 当前候选在 centered 第一轴的位置.
-        - return.voxel_input: float16 数组, (C,48,48,48). C 按变体为 106、1 或 0; blob_only 为 0.
+        - return.voxel_input: float16 数组, (C,48,48,48). C 按变体为 106、1 或 0；density_only 为 1.
         - return.a_tokens: float32 数组, (N_A,230)、(N_A,50) 或禁用时 (0,230).
         - return.p_tokens: float32 数组, (N_P,116) 或禁用时 (0,116).
         - return.v_tokens: float32 数组, (N_V,68) 或禁用时 (0,68).
@@ -551,6 +553,25 @@ class CandidateDataset(Dataset[CandidateItem]):
         empty_v = np.empty((0, V_TOKEN_DIM), dtype=np.float32)
         empty_v_index = np.empty((0, 3), dtype=np.int64)
         empty_pp = np.empty((0, PP_TOKEN_DIM), dtype=np.float32)
+        if self.variant == "density_only":
+            # float16 (1,48,48,48), 只对 supplied 实验密度执行固定截断与全网格 z-score.
+            voxel_input = build_experimental_density_channel(
+                centered["experimental_density_48"][position]
+            ).astype(np.float16)
+            return {
+                "voxel_input": voxel_input,
+                "a_tokens": np.empty((0, A_TOKEN_DIM), dtype=np.float32),
+                "p_tokens": empty_p,
+                "v_tokens": empty_v,
+                "v_index_zyx": empty_v_index,
+                "pp_tokens": empty_pp,
+                "pp_index_zyx": empty_v_index.copy(),
+                "ligand_area_target": zeros_target,
+                "binding_area_target": zeros_target.copy(),
+                "full_candidate_voxel_count": 0,
+                "candidate_manual_features": np.zeros(CANDIDATE_MANUAL_FEATURE_DIM, dtype=np.float32),
+                "candidate_sampling_features": np.zeros(CANDIDATE_SAMPLING_FEATURE_DIM, dtype=np.float32),
+            }
         if self.variant == "pocket_only":
             return {
                 "voxel_input": np.empty((0, LOCAL_BOX_SIZE, LOCAL_BOX_SIZE, LOCAL_BOX_SIZE), dtype=np.float16),
@@ -669,10 +690,10 @@ class CandidateDataset(Dataset[CandidateItem]):
         - return.centered: dict[str, np.ndarray]. 当前变体允许读取的 F2_centered 字段.
         - return.position_by_centered_index: dict[int, int]. 稳定 centered_box_index 到数组第一轴位置的映射.  # NOTE: 这是冗余字段！: position_by_centered_index 为恒等映射, centered_blob_index 恒等于 position
 
-        - return.receptor_coords: float32 数组, (N_atom,3). 使用区域监督或受体体素的变体读取; blob_only 与 pocket_only 不读取.
+        - return.receptor_coords: float32 数组, (N_atom,3). 使用区域监督或受体体素的变体读取; blob_only、density_only 与 pocket_only 不读取.
         - return.receptor_features: float32 数组, (N_atom,50). strongest/trunk_only 使用的 49 维 L0 与 backbone 标志.
-        - return.binding_atom: bool 数组, (N_atom,). 使用区域监督的变体读取; blob_only 与 pocket_only 不读取.
-        - return.occurrence_masks: list[np.ndarray]. 使用区域监督的变体读取; blob_only 与 pocket_only 不读取.
+        - return.binding_atom: bool 数组, (N_atom,). 使用区域监督的变体读取; blob_only、density_only 与 pocket_only 不读取.
+        - return.occurrence_masks: list[np.ndarray]. 使用区域监督的变体读取; blob_only、density_only 与 pocket_only 不读取.
         - return.embedding_by_smiles: dict[str, np.ndarray]. 每个受支持精确 SMILES 到有限 float32 (768,) SMI-TED 向量的映射.
 
         返回映射可以进入字节预算缓存, 但不含全局 SMILES 图包副本.
@@ -687,7 +708,7 @@ class CandidateDataset(Dataset[CandidateItem]):
             "centered": centered,
             "position_by_centered_index": positions,
         }
-        if self.variant not in ("blob_only", "pocket_only"):
+        if self.variant not in ("blob_only", "density_only", "pocket_only"):
             receptor_path = self.data_root / "parse" / pdb_id / "receptor_tokens.npz"
             receptor_fields = ("coords",) if self.variant == "density_blob_only" else ("coords", "feat", "is_backbone")
             receptor = _load_npz_fields(receptor_path, receptor_fields)

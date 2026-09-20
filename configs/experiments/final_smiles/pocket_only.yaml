@@ -1,6 +1,6 @@
-# pocket_only 正式从零训练配置. matcher.training.config.load_smiles_experiment() 精确读取全部字段.
+# pocket_only-0 第二轮正式从零训练配置。matcher.training.config.load_smiles_experiment() 精确读取全部字段。
 
-name: pocket_only  # str, 输出子目录名和 W&B 运行名前缀; 必须是非空单级目录名
+name: pocket_only-0  # str, 受体 A-L0 消融的稳定实验标识、输出子目录名和 W&B 运行名前缀
 output_root: /storage/penghongen/Matcher/runs  # str, 服务器训练运行根目录; 每次运行在此建立 name/run_stamp
 seed: 3409  # int, Python、NumPy、PyTorch、采样器和 DataLoader 共用随机种子
 data:  # mapping, manifest、划分、批量和 DataLoader 读取参数
@@ -10,7 +10,7 @@ data:  # mapping, manifest、划分、批量和 DataLoader 读取参数
   selected_only: true  # bool, true 表示训练只保留 candidate_selected=true; validation 始终由 engine 固定为已选候选
   batch_size: 32  # int>0, 单个物理批次的候选数
   accumulation_steps: 1  # int>0, 每次参数更新累计的物理批次数; 与 batch_size 相乘得到名义 global batch
-  num_workers: 8  # int>=0, 当前训练或 validation 遍历的工作进程数; 0 表示主进程读取
+  num_workers: 15  # int>=0, A800 当前训练或 validation 阶段唯一活动的工作进程数; 两套工作进程不并存
   prefetch_factor: 2  # int>0, num_workers>0 时每个工作进程预取的物理批次数
   pp_top_k: 2048  # int>0, 公共 Dataset 参数; 本变体不读取 PP token
   cache_gib_per_worker: 8.0  # float>=0, 每个 Dataset worker 的 PDB 载荷最近使用缓存预算; 0 表示不缓存
@@ -26,7 +26,7 @@ model:  # mapping, pocket_only 的模型结构参数
   bottleneck_attention_layers: 4  # int>0, 公共 U-Net 瓶颈字段; 本变体不消费
   graph_layers: 4  # int>0, 精确 SMILES 图消息传递层数
 loss:  # mapping, 四项训练损失的标量系数
-  foreground: 1.0  # float, 前景二分类 BCE 系数
+  foreground: 0.30  # float, 前景二分类 BCE 系数
   ligand_area: 0.0  # float, 本变体没有配体区域头; 必须显式为 0
   binding_area: 0.0  # float, 本变体没有结合区域头; 必须显式为 0
   identity: 1.0  # float, 受支持真前景上的直接 SMILES 身份交叉熵系数
@@ -36,7 +36,7 @@ optimization:  # mapping, AdamW、梯度裁剪和停止条件
   gradient_clip_norm: 200.0  # float>0, 每次参数更新前的全局梯度范数上限; 200 是宽松裁剪
   validation_checks_per_epoch: 3  # int>0, 每个 epoch 顺序训练三个连续区段并各执行一次完整 validation
   selection_improvement_minimum: 0.001  # float>0, selection 相对 BEST 至少增加该值才更新 BEST 并清零坏检查数
-  patience_bad_validation_checks: 2  # int>0, 允许连续两次未改善; 第三次未改善时执行平台动作
+  patience_bad_validation_checks: 3  # int>0, 允许连续三次未改善; 第四次未改善时执行平台动作
   learning_rate_reduction_factor: 0.8  # float, 范围 (0,1), 前两次平台动作把当前学习率乘以该值
   max_learning_rate_reductions: 2  # int>0, 整次训练最多实际降低两次学习率; 下一次平台直接早停
   max_epochs: 15  # int>0, 最多训练 15 个 epoch，即最多执行 45 次完整 validation
@@ -44,5 +44,5 @@ tracking:  # mapping, W&B 模式、命名和记录间隔
   mode: online  # str, W&B 模式; 可取 online、offline 或 disabled
   entity: null  # str|null, W&B 实体名称; null 使用当前登录账户默认实体
   project: Matcher  # str, W&B 项目名称; 必须非空
-  group: final_smiles_four_variants  # str, 四项正式变体共用的 W&B 分组名称
+  group: second_round_training  # str, 第二轮正式模型与新增消融共用的 W&B 分组
   log_every_updates: 20  # int>0, 每多少次参数更新记录一次训练标量

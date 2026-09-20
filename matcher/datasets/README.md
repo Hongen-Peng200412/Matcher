@@ -47,7 +47,7 @@
 | 字段 | 数据类型与形状 | 含义、对齐和特殊值 |
 | --- | --- | --- |
 | metadata | CandidateMetadata | 上述非张量来源信息。 |
-| voxel_input | float16 (C,48,48,48) | strongest、trunk_only 的 C=106；density_blob_only 的 C=1；blob_only、pocket_only 的 C=0。106 通道由 56 个密度通道和 Dataset 散射的 50 个受体通道连接。 |
+| voxel_input | float16 (C,48,48,48) | strongest、trunk_only 的 C=106；density_only、density_blob_only 的 C=1；blob_only、pocket_only 的 C=0。106 通道由 56 个密度通道和 Dataset 散射的 50 个受体通道连接。 |
 | a_tokens | float32 (N_A,D_A) | strongest、trunk_only 的 D_A=230，切片依次为 L0 [0:50]、L1 [50:114]、L2 [114:178]、L3 [178:226]、概率 [226]、相对 XYZ [227:230]；pocket_only 为原始 L0 D_A=50；禁用时 (0,230)。 |
 | p_tokens | float32 (N_P,116) | 切片依次为 L2 [0:64]、L3 [64:112]、概率 [112]、相对 XYZ [113:116]；禁用时 (0,116)。 |
 | v_tokens | float32 (N_V,68) | supplied crop 内 V token；切片为 64 维特征 [0:64]、概率 [64]、相对 XYZ [65:68]；禁用时 (0,68)。 |
@@ -55,11 +55,11 @@
 | pp_tokens | float32 (N_PP,4) | 按 Stage1 概率降序、C 顺序下标稳定选择；列依次为概率和相对 X/Y/Z；禁用时 (0,4)。 |
 | pp_index_zyx | int64 (N_PP,3) | 与 pp_tokens 对齐的 Z/Y/X 索引；禁用时 (0,3)。 |
 | foreground_target | bool | 单一前景二分类目标。 |
-| ligand_area_target | bool (48,48,48) | 全部真实 occurrence 稀疏体素并集投影到 supplied crop；blob_only、pocket_only 返回空全假数组且区域损失权重必须为 0。 |
-| binding_area_target | bool (48,48,48) | 受体 binding_atom=True 原子投影到 supplied crop；blob_only、pocket_only 同样为全假数组。 |
+| ligand_area_target | bool (48,48,48) | 全部真实 occurrence 稀疏体素并集投影到 supplied crop；blob_only、density_only、pocket_only 返回空全假数组且区域损失权重必须为 0。 |
+| binding_area_target | bool (48,48,48) | 受体 binding_atom=True 原子投影到 supplied crop；blob_only、density_only、pocket_only 同样为全假数组。 |
 | full_candidate_voxel_count | int | crop 前完整 centered 候选的 V 体素数；例如 321，用于解释裁剪保留比例。 |
-| candidate_manual_features | float32 (12,) | 按 A、P、V、PP 分四组，每组依次为 token 数、概率均值、概率最大值；禁用模态的三项为 0，pocket_only 全 0。 |
-| candidate_sampling_features | float32 (4,) | 依次为是否触及 crop 边界、crop 中心到 V 质心的 L2 距离、L∞ 距离和 V 保留比例；距离单位为体素，pocket_only 全 0。 |
+| candidate_manual_features | float32 (12,) | 按 A、P、V、PP 分四组，每组依次为 token 数、概率均值、概率最大值；禁用模态的三项为 0，density_only、pocket_only 全 0。 |
+| candidate_sampling_features | float32 (4,) | 依次为是否触及 crop 边界、crop 中心到 V 质心的 L2 距离、L∞ 距离和 V 保留比例；距离单位为体素，density_only、pocket_only 全 0。 |
 | identity_smiles | list[str]，长度 I | 当前 PDB 的受支持精确 SMILES，按字符串递增；可为空。 |
 | language_embeddings | float32 (I,768) | 与 identity_smiles 逐槽对齐的 SMI-TED 向量。 |
 | smiles_graphs | list[SmilesGraph] | 图分支启用时长度为 I 并逐槽对齐；trunk_only 固定为空列表。每图含 element (N_i,)、charge (N_i,)、atom_in_ring (N_i,4)、edge_index (2,E_i) 和 edge_features (E_i,9)。 |
@@ -111,6 +111,7 @@
 | strongest | 106 通道体素、A/P/V/PP、12 项模态统计和 4 项裁剪统计。 | 读取。 |
 | blob_only | V/blob token、V 三项统计和 4 项裁剪统计；不读取密度、模拟密度、受体栅格或区域标签。 | 读取。 |
 | density_blob_only | 1 通道实验密度、V、V 对应三项统计和 4 项裁剪统计。 | 读取。 |
+| density_only | 1 通道实验密度；不读取 V/A/P/PP、模拟密度、受体栅格或人工统计。 | 读取。 |
 | pocket_only | 原始 A_feat_L0 (N_A,50)；不读取 U-Net、V、P、PP。 | 读取。 |
 | trunk_only | 候选侧与 strongest 相同。 | 不读取，连接图字段为空。 |
 

@@ -225,7 +225,7 @@ def load_smiles_experiment(path: Path) -> SmilesExperimentConfig:
         raise TypeError("tracking.project 必须是非空字符串。")
     if not isinstance(config.tracking.group, str) or not config.tracking.group:
         raise TypeError("tracking.group 必须是非空字符串。")
-    if config.model.variant in ("blob_only", "pocket_only") and (
+    if config.model.variant in ("blob_only", "density_only", "pocket_only") and (
         config.loss_weights.ligand_area != 0 or config.loss_weights.binding_area != 0
     ):
         raise ValueError("没有区域辅助头的变体必须把两个区域损失权重设为 0。")
