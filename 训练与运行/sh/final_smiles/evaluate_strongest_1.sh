@@ -7,7 +7,7 @@ result_path="${output_root}/frozen_test.json"
 mkdir -p "${output_root}"
 
 python -m ops.matcher.evaluate_frozen_test \
-    --checkpoint /storage/penghongen/Matcher/runs/strongest-1/train_strongest1_job378587_20260920T142850/BEST.pt \
+    --checkpoint /storage/penghongen/Matcher/runs/strongest-1/train_strongest1_revised_job378587_20260920T230727/BEST.pt \
     --real-manifest /storage/penghongen/Matcher/manifests/test0_real_smiles_v1/manifest.json \
     --cryoatom2-manifest /storage/penghongen/Matcher/manifests/test0_cryoatom2_smiles_v1/manifest.json \
     --split held_out_test_0 \
