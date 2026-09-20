@@ -12,6 +12,7 @@
 - 训练 launch: `train_strongest1_job378587_20260920T142850`。
 - 运行根: `/storage/penghongen/Matcher/runs/strongest-1/train_strongest1_job378587_20260920T142850`。
 - W&B: `https://wandb.ai/pencounkdual-111/Matcher/runs/qm0n26ai`。
+- 冻结评估 release: `/home/penghongen/Feedback/Matcher/releases/Matcher_3eb13a177574/Matcher`；内容 SHA-256 `3eb13a177574601050eac8c0069c9534707f5daa8726f84f8620e23ce8865a42`。该 release 已准备全测试集与 Stage3 小分子短入口，但必须等待训练自然停止后才可绑定冻结 BEST 执行。
 - 首个训练区段与首次完整 validation: global step `465`；训练总损失 `0.7534053509`；validation 前景 PRAUC `0.7758368492`、SMILES 匹配准确率 `0.8433809820`、selection `0.8277938744`，已写入首个 BEST。
 - BEST checkpoint 与两套评测产物: 待训练自然停止后填写。
 - 正式 YAML: `configs/experiments/final_smiles/strongest.yaml`；实验标识 `strongest-1`，30 个阶段互斥 worker，损失权重 `0.30/0.05/0.05/1.00`。
@@ -19,6 +20,14 @@
 ## 正式命令
 
 `bash 训练与运行/sh/final_smiles/train_strongest.sh`
+
+训练自然停止后使用：
+
+`bash 训练与运行/sh/final_smiles/evaluate_strongest_1.sh`
+
+`bash 训练与运行/sh/small_molecule_test/evaluate_strongest_1.sh`
+
+`bash 训练与运行/sh/small_molecule_test/plot_strongest_1.sh`
 
 ## 失败或中断尝试
 
