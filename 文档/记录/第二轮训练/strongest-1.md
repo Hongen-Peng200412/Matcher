@@ -4,11 +4,15 @@
 
 ## 当前状态
 
-- 阶段: 旧 `0.30/0.05/0.05/1.00` 训练已按用户授权中断并由新契约取代；当前等待新 release 的实际 H100 门禁与从头训练。
+- 阶段: 修订后的 `0.30/0.00/0.00/1.00` 训练已通过实际 H100 门禁并从头启动；当前等待首个训练区段与完整 validation。
 - 正式资源: H100 Job `378587`，30 个阶段互斥 worker；`after_lock_378587` 保留。
 - 正式实验目录: `测试结果与追溯/experiment-centric/strongest-1/`。
-- 新 release、门禁 launch、训练 launch、运行根与 W&B：待新契约正式触发后填写。
-- 测试 release：与本轮训练共用的新 release；待实际 H100 门禁通过并触发正式训练后填写。全测试集与 Stage3 小分子测试必须从该训练 release 快照恢复模型类、配置和 checkpoint。
+- release：`/home/penghongen/Feedback/Matcher/releases/Matcher_a67eb7f830e0/Matcher`；内容 SHA-256 `a67eb7f830e0a3625da349daf9481fe653f2231ba4d860bc9aa8a1101a760f87`；对应实现提交 `ab87ead233e08c70fb387bae081403ebcbb4eba7`。
+- 门禁 launch：`/home/penghongen/Feedback/Matcher/launches/378587/gate_strongest1_revised_job378587_20260920T230032`；报告：`/home/penghongen/Feedback/Matcher/gates/second_round/strongest-1/gate_strongest1_revised_job378587_20260920T230032.json`，`passed=true`。
+- 训练 launch：`/home/penghongen/Feedback/Matcher/launches/378587/train_strongest1_revised_job378587_20260920T230727`。
+- 运行根：`/storage/penghongen/Matcher/runs/strongest-1/train_strongest1_revised_job378587_20260920T230727`。
+- W&B：`https://wandb.ai/pencounkdual-111/Matcher/runs/smn9trvg`。
+- 测试 release：必须复用上述训练 release，从快照恢复模型类、配置和 checkpoint。
 - BEST checkpoint 与两套评测产物: 待训练自然停止后填写。
 - 正式 YAML: `configs/experiments/final_smiles/strongest.yaml`；实验标识 `strongest-1`，30 个阶段互斥 worker，修订后的损失权重 `0.30/0.00/0.00/1.00`。
 
