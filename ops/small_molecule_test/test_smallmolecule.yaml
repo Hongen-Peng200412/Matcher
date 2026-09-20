@@ -33,6 +33,10 @@ runtime:
 
 # --- 冻结训练结果 ---
 models:
+  blob_only-0:
+    variant: blob_only  # str, 第二轮 blob-only checkpoint 内必须精确匹配的结构变体
+    checkpoint: /storage/penghongen/Matcher/runs/blob_only-0/train_blob_only0_job379403_20260920T142850/BEST.pt  # str, 第二轮训练自然早停后的冻结 BEST
+    training_run_name: train_blob_only0_job379403_20260920T142850  # str, 版本化结果目录名
   density_blob_only:
     variant: density_blob_only  # str, checkpoint 内必须精确匹配的模型结构变体
     checkpoint: /storage/penghongen/Matcher/runs/density_blob_only/predict_calibration_job379403_20260918T184914_a8/BEST.pt  # str, 已冻结 BEST

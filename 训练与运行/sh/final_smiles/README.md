@@ -6,6 +6,7 @@
 | --- | --- |
 | `train_strongest.sh` | 在 H100 上从头训练 strongest-1 |
 | `train_blob_only.sh` | 在 A800 上从头训练 blob_only-0 |
+| `evaluate_blob_only.sh` | 用 blob_only-0 冻结 BEST 生成正式 test_0、test_1 与三张图 |
 | `train_density_blob_only.sh` | 从头训练 density_blob_only |
 | `train_pocket_only.sh` | 从头训练 pocket_only |
 | `train_trunk_only.sh` | 从头训练 trunk_only |
