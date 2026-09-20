@@ -6,7 +6,7 @@ Date: 2026-09-20
 
 Stage3 专用小分子子集的 Stage1-only、density_blob_only 与 strongest 正式评测均已完成。服务器结果根为 `/storage/penghongen/Matcher/evaluation/test_smallmolecule_v1/`；Job 379403 已恢复精确 try_lock，after_lock 保留，pre_lock 与 kill_lock 不存在。
 
-实现线为 `codex/test-smallmolecule@33da59eade04700577fd3f7bf85178b3624878a2`。学习线为 `Learn/test-smallmolecule`，从已完成的 `Learn/final-train-control@4d57f4dc531cc0285253c8148b5da5d027c5ebd2` 继续组织文档、实现与测试。两条线中的 `ops/small_molecule_test/`、`训练与运行/sh/small_molecule_test/` 和 `tmp/test_smallmolecule/` 已逐路径确认完全一致。
+实现线为 `codex/test-smallmolecule@33da59eade04700577fd3f7bf85178b3624878a2`。学习线从已完成的 `Learn/final-train-control@4d57f4dc531cc0285253c8148b5da5d027c5ebd2` 继续组织文档、实现与测试；`Learn/test-smallmolecule` 与 `Learn/CUMULATIVE` 最终共同指向本交接记录所在的学习端点。两条线中的 `ops/small_molecule_test/`、`训练与运行/sh/small_molecule_test/` 和 `tmp/test_smallmolecule/` 已逐路径确认完全一致。
 
 ## Completed
 
@@ -17,6 +17,8 @@ Stage3 专用小分子子集的 Stage1-only、density_blob_only 与 strongest �
 - 生成两张 Stage1-only 图及两个模型各两张 Stage1+Stage2 图。
 - manifest、density_blob_only 与 strongest 三项实际 A800 门禁均 PASS；模型代码均从各自训练 release 快照加载。
 - 本地 `compileall`、4 项契约测试和差异空白检查通过；科学逻辑、注释表达和代码布局三项独立审查已经完成。
+- 主工作树原有的七个 staged 注释文件已通过三方应用进入学习线；六个 Python 文件去除 Docstring 后的可执行 AST 与应用前完全一致。最终完整测试为 `30 passed`。
+- `Learn/CUMULATIVE` 已普通 fast-forward 到本轮学习端点。三个临时 worktree 已在确认干净后移除，当前只保留 `C:/Users/15919/Desktop/Matcher` 主工作树。
 
 ## Decisions
 
@@ -26,15 +28,9 @@ Stage3 专用小分子子集的 Stage1-only、density_blob_only 与 strongest �
 - `9rd8/source_blob_index=0` 继续服从唯一最大覆盖 occurrence，判为非 Stage3 前景并免费跳过。
 - 正式评测逻辑只位于 `ops/small_molecule_test/`，没有进入 `matcher/` 训练主线。
 
-## Open Questions
-
-- 主工作树 `C:/Users/15919/Desktop/Matcher` 的 `Learn/CUMULATIVE@d275bc6` 仍保存用户已暂存的注释、Docstring 和 557 行计划书。学习分支已经逐字采用该计划书版本，但不得在未处理其余 staged 用户资产时直接移动 `Learn/CUMULATIVE`。需要由后续 Git 收口明确决定这些 staged 注释如何进入累计学习历史。
-
 ## Next Actions
 
-1. 在不覆盖主工作树 staged 用户资产的前提下，把 `Learn/final-train-control` 与 `Learn/test-smallmolecule` 线性纳入 `Learn/CUMULATIVE`。
-2. 推进前再次比较实现线和学习线的本轮运行路径，并重跑 `python -m unittest tmp.test_smallmolecule.test_contract -v`。
-3. 保留 `codex/test-smallmolecule` 作为真实实现历史；累计学习线稳定后再安全移除两个临时工作树。
+本轮没有遗留的科学实现、服务器运行或 Git 工作树动作。后续 Stage3 对接应直接消费两份 `docking_handoff_candidates.jsonl`，并按其中的 blob 世界坐标中心、目标 occurrence 与预测 SMILES 建立 docking 输入。
 
 ## Files To Reopen
 

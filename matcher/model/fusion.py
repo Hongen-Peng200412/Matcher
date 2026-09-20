@@ -186,16 +186,13 @@ def normalize_candidate_sampling_features(features: torch.Tensor) -> torch.Tenso
     return torch.cat(
         (
             features[:, 0:1],
-            features[:, 1:2]
-            / (LOCAL_CONTEXT_HALF_EXTENT_VOXELS * math.sqrt(3.0)),
+            features[:, 1:2] / (LOCAL_CONTEXT_HALF_EXTENT_VOXELS * math.sqrt(3.0)),
             features[:, 2:3] / LOCAL_CONTEXT_HALF_EXTENT_VOXELS,
             features[:, 3:4],
         ),
         dim=1,
     )
 
-
-# ================================================================================================
 
 
 class TokenProjector(nn.Module):
@@ -256,25 +253,6 @@ class TokenProjector(nn.Module):
 
 
 class CandidateCrossAttention(nn.Module):
-    """
-    以候选摘要查询一种模态.
-
-    构造参数:
-    - model_dim: 正整数 D_m; 候选查询、token 和输出的共同宽度.
-    - head_count: 正整数 K; 注意力头数, 必须整除 D_m.
-    - dropout: 数值; 归一化注意力权重的丢弃概率, 本类直接构造时依赖 Dropout 检查范围.
-    - zero_output: 布尔语义值; 为真时把输出投影权重与偏置初始化为零, 本类不要求运行时类型必须是精确 bool.
-
-    前向输入:
-    - candidate_query: 浮点张量, (B,D_m); 每个候选一个查询向量.
-    - tokens: 浮点张量, (B,N,D_m); 同一种模态的投影 token.
-    - mask: bool 张量, (B,N); True token 参与 softmax, False token 在偏置相加后仍被排除.
-
-    前向输出:
-    - increment: 浮点张量, (B,D_m); 每个候选从该模态读取的增量, 没有有效 token 的候选严格为零.
-
-    训练模式下 Dropout 作用于已归一化的注意力权重, 因此丢弃后不重新归一化. zero_output 只决定初始化状态, 不在后续前向中持续强制输出为零.
-    """
     def __init__(
         self,
         model_dim: int,
@@ -283,23 +261,23 @@ class CandidateCrossAttention(nn.Module):
         zero_output: bool,
     ) -> None:
         """
-        建立单查询多头注意力的查询、键、值和输出投影.
+        以候选摘要查询一种模态.
 
-        输入参数:
-        - model_dim: 正整数 D_m; 必须能被 head_count 整除.
-        - head_count: 正整数 K; 每头宽度为 D_m/K.
-        - dropout: 数值; 注意力权重 Dropout 概率.
-        - zero_output: 布尔语义值; 为真时仅把 self.output 的初始参数清零.
+        构造参数:
+            - model_dim: 正整数 D_m; 候选查询、token 和输出的共同宽度.
+            - head_count: 正整数 K; 注意力头数, 必须整除 D_m.
+            - dropout: 数值; 归一化注意力权重的丢弃概率, 本类直接构造时依赖 Dropout 检查范围.
+            - zero_output: 布尔语义值; 为真时把输出投影权重与偏置初始化为零, 本类不要求运行时类型必须是精确 bool.
 
-        实例状态:
-        - self.model_dim: 整数 D_m; 前向形状门禁使用.
-        - self.head_count: 整数 K; 前向偏置形状和改排使用.
-        - self.head_dim: 整数 D_m/K; 内容分数除以其平方根.
-        - self.query: Linear; 把每个候选查询投影到 K 个头.
-        - self.key: 无偏置 Linear; 逐 token 产生 K 个键.
-        - self.value: 无偏置 Linear; 逐 token 产生 K 个值.
-        - self.output: Linear; 把 K 个头连接回 D_m, 可能按 zero_output 零初始化.
-        - self.dropout: Dropout; 只作用于归一化权重.
+        前向输入:
+            - candidate_query: 浮点张量, (B,D_m); 每个候选一个查询向量.
+            - tokens: 浮点张量, (B,N,D_m); 同一种模态的投影 token.
+            - mask: bool 张量, (B,N); True token 参与 softmax, False token 在偏置相加后仍被排除.
+
+        前向输出:
+            - increment: 浮点张量, (B,D_m); 每个候选从该模态读取的增量, 没有有效 token 的候选严格为零.
+
+        训练模式下 Dropout 作用于已归一化的注意力权重, 因此丢弃后不重新归一化. zero_output 只决定初始化状态, 不在后续前向中持续强制输出为零.
         """
         super().__init__()
         if head_count <= 0 or model_dim <= 0 or model_dim % head_count != 0:
@@ -380,31 +358,15 @@ class CandidateCrossAttention(nn.Module):
         return increment * has_token.to(dtype=increment.dtype)
 
 
+
+
+# ================================================================================================
+
+
+
+
+
 class MeanMaxAggregator(nn.Module):
-    """
-    对四模态取掩码均值/最大值, 并按配置拼接模态统计与采样统计.
-
-    构造参数:
-    - model_dim: 整数 D_m; 候选摘要、四种模态 token 与输出的共同宽度, 本类不单独检查正值.
-    - dropout: 数值; 融合 MLP 的丢弃概率, 直接构造时依赖 Dropout 检查.
-    - include_manual: 布尔语义值; 为真时拼接 12 项 A/P/V/PP 固化统计, 本类不要求运行时类型必须是精确 bool.
-    - include_sampling: 布尔语义值; 为真时拼接四项裁剪几何统计, 本类不要求运行时类型必须是精确 bool.
-
-    前向输入:
-    - candidate_summary: 浮点张量, (B,D_m); RAUNet 特征的空间均值/最大值投影摘要.
-    - modalities: 四键映射; 键必须至少含 a、p、v、pp, 额外键不读取.
-    - modalities.a: 二元组; 浮点 (B,N_A,D_m) token 与 bool (B,N_A) 有效掩码.
-    - modalities.p: 二元组; 浮点 (B,N_P,D_m) token 与 bool (B,N_P) 有效掩码.
-    - modalities.v: 二元组; 浮点 (B,N_V,D_m) token 与 bool (B,N_V) 有效掩码.
-    - modalities.pp: 二元组; 浮点 (B,N_PP,D_m) token 与 bool (B,N_PP) 有效掩码.
-    - manual_features: 浮点张量或 None; include_manual 为真时必须是与候选轴对齐的 (B,12), 否则必须为 None.
-    - sampling_features: 浮点张量或 None; include_sampling 为真时必须是与候选轴对齐的 (B,4), 否则必须为 None.
-
-    前向输出:
-    - candidate_embedding: 浮点张量, (B,D_m); 候选摘要、可选采样统计和 A/P/V/PP 各自有效 token 均值/最大值及可选三项手工统计的融合表示.
-
-    某种模态没有有效 token 时, 该模态的均值和最大值都是零; 对应手工统计若启用, 仍按输入值拼接.
-    """
     def __init__(
         self,
         model_dim: int,
@@ -413,18 +375,28 @@ class MeanMaxAggregator(nn.Module):
         include_sampling: bool,
     ) -> None:
         """
-        建立固定输入宽度的 mean/max 融合 MLP.
+        对四模态取掩码均值/最大值, 并按配置拼接模态统计与采样统计.
 
-        输入参数:
-        - model_dim: 整数 D_m; 基础输入含一个候选摘要和四种模态各两个 D_m 摘要, 共 9D_m.
-        - dropout: 数值; 第一隐藏层 GELU 后的丢弃概率.
-        - include_manual: 布尔语义值; 为真时在 9D_m 后增加 12 维.
-        - include_sampling: 布尔语义值; 为真时在候选摘要后增加 4 维.
+        构造参数:
+        - model_dim: 整数 D_m; 候选摘要、四种模态 token 与输出的共同宽度, 本类不单独检查正值.
+        - dropout: 数值; 融合 MLP 的丢弃概率, 直接构造时依赖 Dropout 检查.
+        - include_manual: 布尔语义值; 为真时拼接 12 项 A/P/V/PP 固化统计, 本类不要求运行时类型必须是精确 bool.
+        - include_sampling: 布尔语义值; 为真时拼接四项裁剪几何统计, 本类不要求运行时类型必须是精确 bool.
 
-        实例状态:
-        - self.include_manual: 布尔语义值; 前向决定 manual_features 的存在性与三元组拼接.
-        - self.include_sampling: 布尔语义值; 前向决定 sampling_features 的存在性与拼接.
-        - self.fusion: Sequential; 把固定融合宽度投影为 D_m, 并在输出使用 LayerNorm.
+        前向输入:
+        - candidate_summary: 浮点张量, (B,D_m); RAUNet 特征的空间均值/最大值投影摘要.
+        - modalities: 四键映射; 键必须至少含 a、p、v、pp, 额外键不读取.
+        - modalities.a: 二元组; 浮点 (B,N_A,D_m) token 与 bool (B,N_A) 有效掩码.
+        - modalities.p: 二元组; 浮点 (B,N_P,D_m) token 与 bool (B,N_P) 有效掩码.
+        - modalities.v: 二元组; 浮点 (B,N_V,D_m) token 与 bool (B,N_V) 有效掩码.
+        - modalities.pp: 二元组; 浮点 (B,N_PP,D_m) token 与 bool (B,N_PP) 有效掩码.
+        - manual_features: 浮点张量或 None; include_manual 为真时必须是与候选轴对齐的 (B,12), 否则必须为 None.
+        - sampling_features: 浮点张量或 None; include_sampling 为真时必须是与候选轴对齐的 (B,4), 否则必须为 None.
+
+        前向输出:
+        - candidate_embedding: 浮点张量, (B,D_m); 候选摘要、可选采样统计和 A/P/V/PP 各自有效 token 均值/最大值及可选三项手工统计的融合表示.
+
+        某种模态没有有效 token 时, 该模态的均值和最大值都是零; 对应手工统计若启用, 仍按输入值拼接.
         """
         super().__init__()
         self.include_manual = include_manual
@@ -487,6 +459,7 @@ class MeanMaxAggregator(nn.Module):
             grouped_manual = manual_features.reshape(candidate_summary.shape[0], 4, 3)
         elif manual_features is not None:
             raise ValueError("未启用手动特征时 manual_features 必须为 None。")
+
         for modality_index, name in enumerate(("a", "p", "v", "pp")):
             # 浮点 (B,N_m,D_m) 与 bool (B,N_m), 当前固定模态的投影 token 和有效掩码.
             tokens, mask = modalities[name]
@@ -500,31 +473,6 @@ class MeanMaxAggregator(nn.Module):
 
 
 class CandidateConditionedAggregator(nn.Module):
-    """
-    用候选摘要分别查询四模态, 并按配置拼接模态统计与采样统计.
-
-    构造参数:
-    - model_dim: 整数 D_m; 候选查询、四模态 token 和输出的共同宽度.
-    - head_count: 正整数 K; 每个独立模态分支的注意力头数, 必须整除 D_m.
-    - dropout: 数值; 注意力权重和融合 MLP 的丢弃概率.
-    - include_manual: 布尔语义值; 为真时拼接 12 项模态手工统计.
-    - include_sampling: 布尔语义值; 为真时拼接四项候选裁剪统计.
-
-    前向输入:
-    - candidate_summary: 浮点张量, (B,D_m); 四个模态分支共用的候选查询.
-    - modalities: 四键映射; 键必须至少含 a、p、v、pp, 额外键不读取.
-    - modalities.a: 二元组; 浮点 (B,N_A,D_m) token 与 bool (B,N_A) 有效掩码.
-    - modalities.p: 二元组; 浮点 (B,N_P,D_m) token 与 bool (B,N_P) 有效掩码.
-    - modalities.v: 二元组; 浮点 (B,N_V,D_m) token 与 bool (B,N_V) 有效掩码.
-    - modalities.pp: 二元组; 浮点 (B,N_PP,D_m) token 与 bool (B,N_PP) 有效掩码.
-    - manual_features: 浮点张量或 None; include_manual 为真时必须是 (B,12), 否则必须为 None.
-    - sampling_features: 浮点张量或 None; include_sampling 为真时必须是 (B,4), 否则必须为 None.
-
-    前向输出:
-    - candidate_embedding: 浮点张量, (B,D_m); 候选摘要、四个模态注意力增量和配置启用统计的融合表示.
-
-    每种模态没有有效 token 时对应注意力增量为零. PP 分支输出投影固定零初始化, 所以初始 PP 增量为零; A/P/V 分支沿用常规初始化.
-    """
     def __init__(
         self,
         model_dim: int,
@@ -534,20 +482,35 @@ class CandidateConditionedAggregator(nn.Module):
         include_sampling: bool,
     ) -> None:
         """
-        建立四个候选查询分支和最终融合 MLP.
+        用候选摘要分别查询四模态, 并按配置拼接模态统计与采样统计.
 
-        输入参数:
-        - model_dim: 整数 D_m; 候选查询、模态 token、分支增量和最终输出宽度.
-        - head_count: 正整数 K; 传给每个 CandidateCrossAttention 分支.
-        - dropout: 数值; 传给注意力权重和融合 MLP.
-        - include_manual: 布尔语义值; 决定融合宽度是否增加 12.
-        - include_sampling: 布尔语义值; 决定融合宽度是否增加 4.
+        构造参数:
+            - model_dim: 整数 D_m; 候选查询、四模态 token 和输出的共同宽度.
+            - head_count: 正整数 K; 每个独立模态分支的注意力头数, 必须整除 D_m.
+            - dropout: 数值; 注意力权重和融合 MLP 的丢弃概率.
+            - include_manual: 布尔语义值; 为真时拼接 12 项模态手工统计.
+            - include_sampling: 布尔语义值; 为真时拼接四项候选裁剪统计.
+
+        前向输入:
+            - candidate_summary: 浮点张量, (B,D_m); 四个模态分支共用的候选查询.
+            - modalities: 四键映射; 键必须至少含 a、p、v、pp, 额外键不读取.
+            - modalities.a: 二元组; 浮点 (B,N_A,D_m) token 与 bool (B,N_A) 有效掩码.
+            - modalities.p: 二元组; 浮点 (B,N_P,D_m) token 与 bool (B,N_P) 有效掩码.
+            - modalities.v: 二元组; 浮点 (B,N_V,D_m) token 与 bool (B,N_V) 有效掩码.
+            - modalities.pp: 二元组; 浮点 (B,N_PP,D_m) token 与 bool (B,N_PP) 有效掩码.
+            - manual_features: 浮点张量或 None; include_manual 为真时必须是 (B,12), 否则必须为 None.
+            - sampling_features: 浮点张量或 None; include_sampling 为真时必须是 (B,4), 否则必须为 None.
+
+        前向输出:
+            - candidate_embedding: 浮点张量, (B,D_m); 候选摘要、四个模态注意力增量和配置启用统计的融合表示.
 
         实例状态:
-        - self.include_manual: 布尔语义值; 控制 manual_features 存在性和拼接.
-        - self.include_sampling: 布尔语义值; 控制 sampling_features 存在性和拼接.
-        - self.branches: ModuleDict; a、p、v 使用常规输出投影初始化, pp 的输出投影权重与偏置初始化为零.
-        - self.fusion: Sequential; 把 5D_m 加可选统计的拼接向量映射到 D_m. 本聚合器只使用 token 内容产生注意力分数, 不读取额外的候选实体偏置.
+            - self.include_manual: 布尔语义值; 控制 manual_features 存在性和拼接.
+            - self.include_sampling: 布尔语义值; 控制 sampling_features 存在性和拼接.
+            - self.branches: ModuleDict; a、p、v 使用常规输出投影初始化, pp 的输出投影权重与偏置初始化为零.
+            - self.fusion: Sequential; 把 5D_m 加可选统计的拼接向量映射到 D_m. 本聚合器只使用 token 内容产生注意力分数, 不读取额外的候选实体偏置.
+
+        每种模态没有有效 token 时对应注意力增量为零. PP 分支输出投影固定零初始化, 所以初始 PP 增量为零; A/P/V 分支沿用常规初始化.
         """
         super().__init__()
         self.include_manual = include_manual
@@ -610,6 +573,7 @@ class CandidateConditionedAggregator(nn.Module):
             grouped_manual = manual_features.reshape(candidate_summary.shape[0], 4, 3)
         elif manual_features is not None:
             raise ValueError("未启用手动特征时 manual_features 必须为 None。")
+
         # list[Tensor], 待沿最后一维拼接的 (B,F_part) 张量; 首项固定为候选摘要.
         summaries = [candidate_summary]
         if self.include_sampling:
@@ -633,29 +597,6 @@ class CandidateConditionedAggregator(nn.Module):
 
 
 class MeanMaxCandidateConditionedResidualAggregator(nn.Module):
-    """
-    把两种完整候选摘要拼接为零输出残差, 并保留 mean/max 主路径.
-
-    - model_dim: 候选摘要宽度 D_m.
-    - head_count: 候选条件注意力的头数 K.
-    - dropout: 两个既有聚合器和残差多层感知机的丢弃概率.
-    - include_manual: 是否让两个既有聚合器分别使用 12 项手动统计.
-    - include_sampling: 是否让两个既有聚合器分别使用 4 项采样统计.
-    - candidate_summary: 浮点 (B,D_m) U-Net 候选查询.
-    - modalities: 含 a、p、v、pp 四个键; 每个值是投影 token 与有效性掩码组成的二元组.
-    - modalities[a]: 浮点 (B,N_A,D_m) 原子 token 与 bool (B,N_A) 掩码.
-    - modalities[p]: 浮点 (B,N_P,D_m) P 模态 token 与 bool (B,N_P) 掩码.
-    - modalities[v]: 浮点 (B,N_V,D_m) 体素 token 与 bool (B,N_V) 掩码.
-    - modalities[pp]: 浮点 (B,N_PP,D_m) 概率图 token 与 bool (B,N_PP) 掩码.
-    - manual_features: 与 include_manual 一致的可选浮点 (B,12) 统计.
-    - sampling_features: 与 include_sampling 一致的可选浮点 (B,4) 统计.
-    - self.mean_max: MeanMaxAggregator; 生成保留为主路径的 D_m 维 mean/max 摘要.
-    - self.conditioned: CandidateConditionedAggregator; 独立生成 D_m 维条件注意力摘要.
-    - self.residual: Sequential; 把两个 D_m 维摘要拼成的 2D_m 维向量映射为 D_m 维学习残差, 末层权重与偏置初始化为零.
-    - 返回值: 浮点 (B,D_m) 候选表示. 残差末层为零时逐值等于 mean/max 输出.
-
-    mean/max 与条件注意力分支分别读取同一手动统计与采样统计. 两个 D_m 维输出只在残差入口拼接一次, 不会第三次追加原始统计.
-    """
     def __init__(
         self,
         model_dim: int,
@@ -665,17 +606,34 @@ class MeanMaxCandidateConditionedResidualAggregator(nn.Module):
         include_sampling: bool,
     ) -> None:
         """
-        建立两个完整摘要分支和零输出残差分支.
+        把两种完整候选摘要拼接为零输出残差, 并保留 mean/max 主路径.
 
-        - model_dim: 正整数 D_m; 候选摘要、两个分支输出和最终残差的共同宽度.
-        - head_count: 正整数 K; 条件注意力分支的注意力头数, 必须整除 D_m.
-        - dropout: 范围为 [0,1) 的浮点数; 传给两个完整聚合器和残差多层感知机.
-        - include_manual: bool; 是否让两个完整聚合器分别读取同一份 12 项手动统计.
-        - include_sampling: bool; 是否让两个完整聚合器分别读取同一份 4 项采样统计.
-        - self.mean_max: MeanMaxAggregator; 产生保留为主路径的浮点 (B,D_m) 摘要.
-        - self.conditioned: CandidateConditionedAggregator; 产生浮点 (B,D_m) 条件注意力摘要.
-        - self.residual: Sequential; 把固定顺序的浮点 (B,2D_m) 拼接摘要映射成浮点 (B,D_m) 残差, 末层权重和偏置均初始化为零.
-        - 返回值: None; 子模块写入当前实例. 条件注意力与残差分支在域分离的 CPU 随机数上下文中初始化, 退出上下文后恢复外层 CPU 随机状态.
+        构造参数:
+            - model_dim: 候选摘要宽度 D_m.
+            - head_count: 候选条件注意力的头数 K.
+            - dropout: 两个既有聚合器和残差多层感知机的丢弃概率.
+            - include_manual: 是否让两个既有聚合器分别使用 12 项手动统计.
+            - include_sampling: 是否让两个既有聚合器分别使用 4 项采样统计.
+
+        前向输入:
+            - candidate_summary: 浮点 (B,D_m) U-Net 候选查询.
+            - modalities: 含 a、p、v、pp 四个键; 每个值是投影 token 与有效性掩码组成的二元组.
+            - modalities[a]: 浮点 (B,N_A,D_m) 原子 token 与 bool (B,N_A) 掩码.
+            - modalities[p]: 浮点 (B,N_P,D_m) P 模态 token 与 bool (B,N_P) 掩码.
+            - modalities[v]: 浮点 (B,N_V,D_m) 体素 token 与 bool (B,N_V) 掩码.
+            - modalities[pp]: 浮点 (B,N_PP,D_m) 概率图 token 与 bool (B,N_PP) 掩码.
+            - manual_features: 与 include_manual 一致的可选浮点 (B,12) 统计.
+            - sampling_features: 与 include_sampling 一致的可选浮点 (B,4) 统计.
+
+        - 返回值:
+            - mean_max_summary + residual_increment: 浮点 (B,D_m) 候选表示. 残差末层为零时逐值等于 mean/max 输出.
+
+        构造参数:
+            - self.mean_max: MeanMaxAggregator; 生成保留为主路径的 D_m 维 mean/max 摘要.
+            - self.conditioned: CandidateConditionedAggregator; 独立生成 D_m 维条件注意力摘要.
+            - self.residual: Sequential; 把两个 D_m 维摘要拼成的 2D_m 维向量映射为 D_m 维学习残差, 末层权重与偏置初始化为零.
+
+        mean/max 与条件注意力分支分别读取同一手动统计与采样统计. 两个 D_m 维输出只在残差入口拼接一次, 不会第三次追加原始统计.
         """
         super().__init__()
         self.mean_max = MeanMaxAggregator(
@@ -720,15 +678,18 @@ class MeanMaxCandidateConditionedResidualAggregator(nn.Module):
         """
         计算两个完整摘要, 并把零初始化残差加到 mean/max 表示.
 
-        - candidate_summary: 浮点 (B,D_m) U-Net 候选查询.
-        - modalities: 含 a、p、v、pp 四个键; 每个值是投影 token 与有效性掩码组成的二元组.
-        - modalities[a]: 浮点 (B,N_A,D_m) 原子 token 与 bool (B,N_A) 掩码.
-        - modalities[p]: 浮点 (B,N_P,D_m) P 模态 token 与 bool (B,N_P) 掩码.
-        - modalities[v]: 浮点 (B,N_V,D_m) 体素 token 与 bool (B,N_V) 掩码.
-        - modalities[pp]: 浮点 (B,N_PP,D_m) 概率图 token 与 bool (B,N_PP) 掩码.
-        - manual_features: 可选浮点 (B,12) 手动统计.
-        - sampling_features: 可选浮点 (B,4) 采样统计.
-        - 返回值: 浮点 (B,D_m) mean/max 主表示与学习残差之和.
+        输入:
+            - candidate_summary: 浮点 (B,D_m) U-Net 候选查询.
+            - modalities: 含 a、p、v、pp 四个键; 每个值是投影 token 与有效性掩码组成的二元组.
+            - modalities[a]: 浮点 (B,N_A,D_m) 原子 token 与 bool (B,N_A) 掩码.
+            - modalities[p]: 浮点 (B,N_P,D_m) P 模态 token 与 bool (B,N_P) 掩码.
+            - modalities[v]: 浮点 (B,N_V,D_m) 体素 token 与 bool (B,N_V) 掩码.
+            - modalities[pp]: 浮点 (B,N_PP,D_m) 概率图 token 与 bool (B,N_PP) 掩码.
+            - manual_features: 可选浮点 (B,12) 手动统计.
+            - sampling_features: 可选浮点 (B,4) 采样统计.
+
+        - 返回值:
+            ean_max_summary + residual_increment: 浮点 (B,D_m) mean/max 主表示与学习残差之和.
         """
         # 浮点 (B,D_m); 保留为最终输出主路径的 mean/max 候选摘要.
         mean_max_summary = self.mean_max(

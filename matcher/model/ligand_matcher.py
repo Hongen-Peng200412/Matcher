@@ -1,19 +1,20 @@
 """组合候选编码、配体身份编码与 PDB 内闭集身份打分.
 
 候选分支先把一个 PDB 中的局部体素与 A、P、V、PP 四类 token 编码为单个候选表示.
-身份分支把精确 SMILES 的语言向量、化学图和同 PDB 身份清单分别编码; 身份字符串只
-负责数据侧分组与诊断, 不参与本模块的数值前向. 打分器随后分别计算语言
-基线、配体图增量与身份清单增量, 并只在最终 identity_logits 中屏蔽补零身份槽.
+身份分支把精确 SMILES 的语言向量、化学图和同 PDB 身份清单分别编码;
+身份字符串只负责数据侧分组与诊断, 不参与本模块的数值前向.
+打分器随后分别计算语言基线、配体图增量与身份清单增量, 并只在最终 identity_logits 中屏蔽补零身份槽.
 
 形状符号如下.
 
 - B: 当前候选批次大小.
 - I: 当前批次补齐后的最大身份数.
 - D_m: 统一的模型表示宽度.
+- K: 多头注意力的头数.
+
 - N: 当前批次全部 SMILES 图连接后的原子数.
 - E: 当前批次全部 SMILES 图连接后的有向边数.
 - G: 当前批次连接后的 SMILES 图数.
-- K: 多头注意力的头数.
 - F_e: SMILES 有向边特征宽度; 正式数据契约固定为 9.
 
 本模块只输出候选前景 logit 和闭集 SMILES 分数; 身份监督由训练损失直接计算.
@@ -91,8 +92,7 @@ def _restore_scientific_zero_initialization(model: "ClosedSetMatcher") -> None:
     - model: 已完成域分离默认初始化的 ClosedSetMatcher.
     - return: None. 只修改 strongest/trunk_only 聚合器中的 PP 输出投影和残差末层.
 
-    域分离初始化会调用叶 Linear 的默认 reset_parameters. 本函数随后恢复 fusion 模块声明的
-    两处科学零初值, 保证新增条件分支在第一个更新前不改变 mean/max 主路径.
+    域分离初始化会调用叶 Linear 的默认 reset_parameters. 本函数随后恢复 fusion 模块声明的两处科学零初值, 保证新增条件分支在第一个更新前不改变 mean/max 主路径.
     """
     aggregator = model.candidate_encoder.aggregator
     if not isinstance(aggregator, MeanMaxCandidateConditionedResidualAggregator):
@@ -107,6 +107,9 @@ def _restore_scientific_zero_initialization(model: "ClosedSetMatcher") -> None:
     nn.init.zeros_(pp_attention.output.bias)
     nn.init.zeros_(final.weight)
     nn.init.zeros_(final.bias)
+
+
+
 
 
 class IdentityRepresentations(TypedDict):
@@ -130,8 +133,7 @@ class IdentityScoreComponents(TypedDict):
     - graph_increment: 浮点张量, (B, I); 配体图分支原始分数乘 graph_gate 后的增量, 补零槽尚未屏蔽.
     - inventory_increment: 浮点张量, (B, I); 身份清单分支分数先按样本的多身份条件归零、再乘 inventory_gate 后的增量, 补零槽尚未屏蔽.
 
-    三个字段的 dtype 由当前数值上下文决定, 设备与本次模型前向一致. 调用方只能在
-    identity_mask 为 True 的槽位读取组件; 补零身份表示为零并不保证配对网络的输出为零.
+    三个字段的 dtype 由当前数值上下文决定, 设备与本次模型前向一致. 调用方只能在 identity_mask 为 True 的槽位读取组件; 补零身份表示为零并不保证配对网络的输出为零.
     """
     native: torch.Tensor
     graph_increment: torch.Tensor
@@ -161,6 +163,7 @@ class FullMatcherOutput(CandidateEncoderOutput):
     - ligand_area_logits: 浮点张量或 None; 有 U-Net 时为 (B,48,48,48), pocket_only 为 None.
     - binding_area_logits: 浮点张量或 None; 有 U-Net 时为 (B,48,48,48), pocket_only 为 None.
     - voxel_features: 浮点张量或 None; 有 U-Net 时为 (B,C_v,48,48,48), pocket_only 为 None.
+
     - identity_logits: 浮点张量, (B, I); 三个身份分数组件之和, 补零槽为相应 dtype 的最小有限值.
     - identity_score_native: 浮点张量, (B, I); 语言基线分数, 补零槽尚未屏蔽且不得读取.
     - identity_score_graph_increment: 浮点张量, (B, I); 已乘 graph_gate 的配体图增量, 补零槽尚未屏蔽且不得读取.
@@ -175,33 +178,30 @@ class FullMatcherOutput(CandidateEncoderOutput):
     identity_score_inventory_increment: torch.Tensor
 
 
+
+
+
+
+# ===========================================================================================================================================
+# ===========================================================================================================================================
 class GraphMessageLayer(nn.Module):
-    """
-    沿有向化学键汇聚消息并更新每个 SMILES 原子 token.
-
-    每条边的消息是源原子投影与边特征投影之和; 同一目标原子的消息按入度取平均,
-    再经过逐通道门控、残差和前馈网络. 正式数据把每条化学键展开为正反两个方向.
-
-    - model_dim: 正整数, 统一的原子 token 宽度 D_m; 本类不单独检查正值.
-    - edge_dim: 正整数, 有向边特征宽度 F_e; 正式 SMILES 图契约为 9.
-    - dropout: 浮点丢弃率; 有效范围由 torch.nn.Dropout 构造过程检查.
-    """
     def __init__(self, model_dim: int, edge_dim: int, dropout: float) -> None:
         """
-        建立消息投影、逐通道门、两个残差归一化块和共享丢弃层.
+        沿有向化学键汇聚消息并更新每个 SMILES 原子 token.
+        每条边的消息是源原子投影与边特征投影之和; 同一目标原子的消息按入度取平均, 再经过逐通道门控、残差和前馈网络. 正式数据把每条化学键展开为正反两个方向.
 
-        - model_dim: 原子 token 的输入、消息和输出宽度 D_m.
-        - edge_dim: 输入有向边特征的最后一轴宽度 F_e.
-        - dropout: 消息残差和前馈残差共用的丢弃概率.
+        构造参数:
+            - model_dim: 正整数, 统一的原子 token 宽度 D_m; 本类不单独检查正值.
+            - edge_dim: 正整数, 有向边特征宽度 F_e; 正式 SMILES 图契约为 9.
+            - dropout: 浮点丢弃率; 有效范围由 torch.nn.Dropout 构造过程检查.
 
-        - self.node_message: 无偏置 Linear; 把源原子 token 从 D_m 投影到 D_m.
-        - self.edge_message: 无偏置 Linear; 把 F_e 维边特征投影到 D_m.
-        - self.gate: Linear; 把原子 token 与平均入边消息的 2D_m 拼接映射成 D_m 个门值.
-        - self.message_output: Linear; 把激活后的平均入边消息投影为 D_m 维更新, 包含偏置.
-        - self.message_norm: LayerNorm; 归一化消息残差和.
-        - self.feed_forward: Sequential; D_m 到 3D_m 再回到 D_m 的 SiLU、Dropout 前馈网络.
-        - self.feed_forward_norm: LayerNorm; 归一化前馈残差和.
-        - self.dropout: Dropout; 共用于消息更新和前馈更新进入各自残差前的丢弃.
+        forward 输入:
+            - nodes: 浮点张量, (N, D_m); 连接后全部图的原子 token. 本函数不单独检查二维形状或 D_m.
+            - edge_index: 整数张量, (2, E); 第 0 行是源原子下标, 第 1 行是目标原子下标.
+            - edge_features: 浮点张量, (E, F_e); 与 edge_index 的有向边轴逐项对齐.
+
+        forward 输出:
+            - 点特征 (N, D_m); 保留原子轴顺序, dtype 由输入与当前数值上下文决定.
         """
         super().__init__()
         self.node_message = nn.Linear(model_dim, model_dim, bias=False)
@@ -231,10 +231,6 @@ class GraphMessageLayer(nn.Module):
         - edge_index: 整数张量, (2, E); 第 0 行是源原子下标, 第 1 行是目标原子下标.
         - edge_features: 浮点张量, (E, F_e); 与 edge_index 的有向边轴逐项对齐.
         - return: 浮点张量, (N, D_m); 保留原子轴顺序, dtype 由输入与当前数值上下文决定.
-
-        本函数只显式检查 edge_index 的两轴形状与 E 对齐; 节点下标范围、F_e 和 D_m
-        由张量索引或线性层在消费时约束. E=0 时汇聚消息为零, 但 message_output 含偏置,
-        后续门控与前馈网络仍可能产生非零更新, 因此空边图并不使整层成为恒等映射.
         """
         if edge_index.shape != (2, edge_features.shape[0]):
             raise ValueError("graph_edge_index 必须是与边特征对齐的 (2,E)。")
@@ -262,29 +258,27 @@ class GraphMessageLayer(nn.Module):
 
 
 class LigandGraphEncoder(nn.Module):
-    """
-    把连接后的 SMILES 图字段编码为保留原子轴的图 token.
-
-    元素和电荷分别查表, 四种环大小标志经无偏置线性层投影; 三项相加并
-    归一化后, 依次经过若干 GraphMessageLayer. 本类不在图内或图间做 mean/max 池化.
-
-    - model_dim: 正整数, 输出原子 token 宽度 D_m; 本类不单独检查正值.
-    - layer_count: 整数, 顺序执行的图消息层数; 正式配置要求为正, 直接传入零或负整数会产生空层列表.
-    - dropout: 浮点丢弃率, 传给每个 GraphMessageLayer.
-    """
     def __init__(self, model_dim: int, layer_count: int, dropout: float) -> None:
         """
-        建立两张离散嵌入表、环标志投影和图消息层列表.
+        把连接后的 SMILES 图字段编码为保留原子轴的图 token.
 
-        - model_dim: 所有离散嵌入、连续投影和输出 token 的宽度 D_m.
-        - layer_count: GraphMessageLayer 的数量.
-        - dropout: 每个图消息层使用的丢弃概率.
+        元素和电荷分别查表, 四种环大小标志经无偏置线性层投影; 依次经过若干 GraphMessageLayer. 本类不在图内或图间做 mean/max 池化.
 
-        - self.element: Embedding; 128 个原子序数编码到 D_m.
-        - self.charge: Embedding; 平移后的 33 个形式电荷编码到 D_m.
-        - self.atom_ring: 无偏置 Linear; 四种环大小标志投影到 D_m.
-        - self.input_norm: LayerNorm; 归一化两项嵌入与环投影的逐原子和.
-        - self.layers: ModuleList; 按构造顺序保存 layer_count 个 GraphMessageLayer.
+        构造参数:
+            - model_dim: 正整数, 输出原子 token 宽度 D_m; 本类不单独检查正值.
+            - layer_count: 整数, 顺序执行的图消息层数; 正式配置要求为正, 直接传入零或负整数会产生空层列表.
+            - dropout: 浮点丢弃率, 传给每个 GraphMessageLayer.
+
+        输入:
+            - batch: CandidateBatch; 本函数消费下列连接图字段.
+            - batch.graph_element: 整数张量, (N,); 原子序数, 显式要求属于 [0, 128).
+            - batch.graph_charge: 整数张量, (N,); 形式电荷, 显式要求属于 [-16, 16].
+            - batch.graph_atom_in_ring: 浮点张量, (N, 4); 依次标记 3、4、5、6 元环.
+            - batch.graph_edge_index: 整数张量, (2, E); 连接后有向边端点, 由每层 GraphMessageLayer 消费.
+            - batch.graph_edge_features: 浮点张量, (E, 9); 五类键型与四类环标志.
+
+        输出:
+            - return: 点特征, (N, D_m); 保留连接后的原子顺序, 不进行图级池化.
         """
         super().__init__()
         self.element = nn.Embedding(128, model_dim)
@@ -307,9 +301,6 @@ class LigandGraphEncoder(nn.Module):
         - batch.graph_edge_index: 整数张量, (2, E); 连接后有向边端点, 由每层 GraphMessageLayer 消费.
         - batch.graph_edge_features: 浮点张量, (E, 9); 五类键型与四类环标志.
         - return: 浮点张量, (N, D_m); 保留连接后的原子顺序, 不进行图级池化.
-
-        本函数显式检查三类离散编码的取值范围, 但不独立核验所有字段的 dtype、维数和
-        轴间对齐; 正式 CandidateBatch 由 Dataset 与 collate 契约提供这些条件.
         """
         # 整数 (N,); 当前批次连接后的原子序数, 原子轴与另外三项节点字段一致.
         element = batch["graph_element"]
@@ -334,35 +325,36 @@ class LigandGraphEncoder(nn.Module):
         return nodes
 
 
+
+
+
+
+
+
+
+# ===========================================================================================================================================
+# ===========================================================================================================================================
+# see me：这没有加残差, 返回的就是 attention 真值(相当于增量)
 class GraphIdentityAttention(nn.Module):
-    """
-    以每个精确 SMILES 的语言表示查询同一化学图的原子 token.
-
-    一个图产生一个 query, 每个原子产生 key 和 value. softmax 仅在同一图的原子轴内、
-    分头归一化; 得到的图向量写回对应样本的身份槽. 正式 IdentityEncoder 先保证每个有效
-    身份恰好对应一张图, 因此图到身份槽的映射没有重复.
-
-    - model_dim: 正整数, query、key、value 与输出宽度 D_m.
-    - head_count: 正整数, 注意力头数 K; 必须整除 model_dim.
-    - dropout: 浮点丢弃率; 作用于已归一化的原子注意力权重, 丢弃后不再次归一化.
-    """
     def __init__(self, model_dim: int, head_count: int, dropout: float) -> None:
         """
-        建立图级 query、原子级 key/value、输出投影和归一化层.
+        以每个精确 SMILES 的语言表示查询同一化学图的原子 token.
+        一个图产生一个 query, 每个原子产生 key 和 value. softmax 仅在同一图的原子轴内、分头归一化; 得到的图向量写回对应样本的身份槽.
 
-        - model_dim: 正整数, 统一模型宽度 D_m.
-        - head_count: 正整数, 注意力头数 K; 要求 model_dim 能被它整除.
-        - dropout: 原子注意力权重的丢弃概率.
+        构造参数:
+            - model_dim: 正整数, query、key、value 与输出宽度 D_m.
+            - head_count: 正整数, 注意力头数 K; 必须整除 model_dim.
+            - dropout: 浮点丢弃率; 作用于已归一化的原子注意力权重, 丢弃后不再次归一化.
 
-        - self.model_dim: 正整数 D_m; 前向核验原子 token 宽度并恢复连接头的图表示.
-        - self.head_count: 正整数 K; 图内注意力头数.
-        - self.head_dim: 正整数 D_m/K; 每头 query、key 和 value 宽度.
-        - self.query: Linear; 把每张图对应的 native 身份表示投影成分头 query.
-        - self.key: 无偏置 Linear; 把每个原子 token 投影成分头 key.
-        - self.value: 无偏置 Linear; 把每个原子 token 投影成分头 value.
-        - self.output: Linear; 把连接后的 K 头图上下文投影回 D_m.
-        - self.norm: LayerNorm; 归一化每张图的 D_m 维输出.
-        - self.dropout: Dropout; 作用于图内已经归一化的原子注意力权重.
+        forward 输入:
+            - native: 浮点张量, (B, I, D_m); 语言分支的身份表示, 补零槽为零.
+            - nodes: 浮点张量, (N, D_m); 全部 SMILES 图连接后的原子 token.
+            - node_graph_index: 整数张量, (N,); 每个原子所属的连接图下标, 取值应属于 [0, G).
+            - graph_to_sample: 整数张量, (G,); 每张图所属的样本下标, 取值应属于 [0, B).
+            - graph_to_identity: 整数张量, (G,); 每张图在所属样本中的身份槽, 取值应属于 [0, I).
+
+        forward 输出:
+            - SMILES更新后的表征: (B, I, D_m); 补零槽为零.
         """
         super().__init__()
         if head_count <= 0 or model_dim <= 0 or model_dim % head_count != 0:
@@ -388,17 +380,15 @@ class GraphIdentityAttention(nn.Module):
         """
         在每张图内部对原子注意力归一化并写回对应身份槽.
 
-        - native: 浮点张量, (B, I, D_m); 语言分支的身份表示, 补零槽为零.
-        - nodes: 浮点张量, (N, D_m); 全部 SMILES 图连接后的原子 token.
-        - node_graph_index: 整数张量, (N,); 每个原子所属的连接图下标, 取值应属于 [0, G).
-        - graph_to_sample: 整数张量, (G,); 每张图所属的样本下标, 取值应属于 [0, B).
-        - graph_to_identity: 整数张量, (G,); 每张图在所属样本中的身份槽, 取值应属于 [0, I).
-        - return: 浮点张量, (B, I, D_m); 有图槽保存图注意力表示, 其余槽为零.
+        forward 输入:
+            - native: 浮点张量, (B, I, D_m); 语言分支的身份表示, 补零槽为零.
+            - nodes: 浮点张量, (N, D_m); 全部 SMILES 图连接后的原子 token.
+            - node_graph_index: 整数张量, (N,); 每个原子所属的连接图下标, 取值应属于 [0, G).
+            - graph_to_sample: 整数张量, (G,); 每张图所属的样本下标, 取值应属于 [0, B).
+            - graph_to_identity: 整数张量, (G,); 每张图在所属样本中的身份槽, 取值应属于 [0, I).
 
-        G=0 时函数立即返回与 native 同形的零张量, 且不会执行其后的形状、dtype 或范围
-        检查. G>0 时显式检查主要维数与索引范围, 但不预先检查一图至少一原子, 直至归一化
-        分母出现零才失败; 也不检查多个图是否写入同一身份槽. 正式 IdentityEncoder 的
-        occupancy 门禁负责保证每个有效槽恰好一张图, 并由正式图数据保证每张图非空.
+        forward 输出:
+            - SMILES更新后的表征: (B, I, D_m); 补零槽为零.
         """
         # Python 整数 G; 以图到样本映射的长度定义本次连接图数量.
         graph_count = int(graph_to_sample.shape[0])
@@ -416,6 +406,7 @@ class GraphIdentityAttention(nn.Module):
             raise ValueError("graph_node_graph_index 必须与原子 token 轴对齐。")
         if torch.any(node_graph_index < 0) or torch.any(node_graph_index >= graph_count):
             raise ValueError("graph_node_graph_index 超出图轴 [0,G)。")
+
         # 浮点 (G, D_m); 按图到样本、身份槽映射选出每张图对应的语言 query.
         graph_query = native[graph_to_sample, graph_to_identity]
         # 浮点 (G, K, D_m/K); 每张图的分头 query.
@@ -426,6 +417,7 @@ class GraphIdentityAttention(nn.Module):
         value = self.value(nodes).reshape(nodes.shape[0], self.head_count, self.head_dim)
         # 浮点 (N, K); 每个原子与所属图 query 的缩放点积分数.
         score = (query[node_graph_index] * key).sum(dim=-1) / math.sqrt(self.head_dim)
+
         # 整数 (N, K); 把每个原子的图下标广播到各注意力头, 供分组规约使用.
         scatter_index = node_graph_index[:, None].expand_as(score)
         # 浮点 (G, K); 每图每头的最大原子分数, 用于稳定 softmax.
@@ -440,6 +432,7 @@ class GraphIdentityAttention(nn.Module):
             raise ValueError("每张 SMILES 图必须至少含一个原子 token。")
         # 浮点 (N, K); 图内归一化后执行 dropout, 丢弃后不重新把每图权重和缩放回 1.
         weight = self.dropout(unnormalized / denominator[node_graph_index])
+
         # 浮点 (N, K, D_m/K); 每个原子的分头 value 乘同位置注意力权重.
         weighted_value = weight[..., None] * value
         # 浮点 (G, K, D_m/K); 按图累加加权原子值, 继承 weighted_value 的 dtype.
@@ -453,34 +446,24 @@ class GraphIdentityAttention(nn.Module):
         return result
 
 
+# see me：这没有加残差, 返回的就是 attention 真值(相当于增量)
 class SelfExcludingInventoryAttention(nn.Module):
-    """
-    让每个有效身份查询同一 PDB 内除自身以外的其它身份.
-
-    query 与 key 轴都对应批内身份槽 I. 注意力同时屏蔽补零槽和对角线, 所以单身份
-    样本没有可用 key, 并得到严格零清单表示; 多个身份的样本只读取其它有效身份.
-
-    - model_dim: 正整数, 输入、query、key、value 和输出宽度 D_m.
-    - head_count: 正整数, 注意力头数 K; 必须整除 model_dim.
-    - dropout: 浮点丢弃率; 作用于归一化权重, 丢弃后不再次归一化.
-    """
     def __init__(self, model_dim: int, head_count: int, dropout: float) -> None:
         """
-        建立身份清单的 query、key、value、输出投影与归一化层.
+        让每个有效身份查询同一 PDB 内除自身以外的其它身份.
+        query 与 key 轴都对应批内身份槽 I. 注意力同时屏蔽补零槽和对角线, 所以单身份样本没有可用 key, 并得到严格零清单表示; 多个身份的样本只读取其它有效身份.
 
-        - model_dim: 正整数, 统一模型宽度 D_m.
-        - head_count: 正整数, 注意力头数 K; 要求 model_dim 能被它整除.
-        - dropout: 身份间注意力权重的丢弃概率.
+        构造参数:
+            - model_dim: 正整数, 输入、query、key、value 和输出宽度 D_m.
+            - head_count: 正整数, 注意力头数 K; 必须整除 model_dim.
+            - dropout: 浮点丢弃率; 作用于归一化权重, 丢弃后不再次归一化.
 
-        - self.model_dim: 正整数 D_m; 恢复连接头的身份清单表示.
-        - self.head_count: 正整数 K; 身份清单注意力头数.
-        - self.head_dim: 正整数 D_m/K; 每头 query、key 和 value 宽度.
-        - self.query: Linear; 逐身份投影分头 query.
-        - self.key: 无偏置 Linear; 逐身份投影分头 key.
-        - self.value: 无偏置 Linear; 逐身份投影分头 value.
-        - self.output: Linear; 把连接后的 K 头清单上下文投影回 D_m.
-        - self.norm: LayerNorm; 归一化每个身份槽的 D_m 维输出.
-        - self.dropout: Dropout; 作用于已经归一化的身份间注意力权重.
+        forward 输入:
+            - identities: 浮点张量, (B, I, D_m); 通常是语言分支的 native 表示.
+            - identity_mask: bool 张量, (B, I); True 表示真实身份槽, False 表示补零槽.
+
+        forward 输出:
+            - SMILES更新后的表征, (B, I, D_m); 有效且存在其它身份的槽保存上下文, 其余槽严格为零.
         """
         super().__init__()
         if head_count <= 0 or model_dim <= 0 or model_dim % head_count != 0:
@@ -497,16 +480,15 @@ class SelfExcludingInventoryAttention(nn.Module):
 
     def forward(self, identities: torch.Tensor, identity_mask: torch.Tensor) -> torch.Tensor:
         """
-        沿其它身份轴归一化注意力并返回自排除清单上下文.
+        让每个有效身份查询同一 PDB 内除自身以外的其它身份.
+        query 与 key 轴都对应批内身份槽 I. 注意力同时屏蔽补零槽和对角线, 所以单身份样本没有可用 key, 并得到严格零清单表示; 多个身份的样本只读取其它有效身份.
 
-        - identities: 浮点张量, (B, I, D_m); 通常是语言分支的 native 表示.
-        - identity_mask: bool 张量, (B, I); True 表示真实身份槽, False 表示补零槽.
-        - return: 浮点张量, (B, I, D_m); 有效且存在其它身份的槽保存上下文, 其余槽严格为零.
+        forward 输入:
+            - identities: 浮点张量, (B, I, D_m); 通常是语言分支的 native 表示.
+            - identity_mask: bool 张量, (B, I); True 表示真实身份槽, False 表示补零槽.
 
-        本函数显式检查 identities 的三维前缀与 identity_mask 对齐, 并要求掩码为 bool,
-        但不单独检查最后一轴等于构造时 model_dim; 线性层会在消费时约束该宽度. I=0
-        在这些检查后原样返回空身份张量. softmax 作用于最后一个 key 身份轴; 对无有效 key
-        的 query, 先通过显式掩码与再归一化得到零权重, 避免全屏蔽 softmax 的伪概率.
+        forward 输出:
+            - SMILES更新后的表征, (B, I, D_m); 有效且存在其它身份的槽保存上下文, 其余槽严格为零.
         """
         if identities.ndim != 3 or identities.shape[:2] != identity_mask.shape:
             raise ValueError("identities 必须为 (B,I,D_m)，identity_mask 必须为 (B,I)。")
@@ -516,6 +498,7 @@ class SelfExcludingInventoryAttention(nn.Module):
         batch_size, identity_count, _ = identities.shape
         if identity_count == 0:
             return identities
+
         # 浮点 (B, K, I, D_m/K); 每个身份的分头 query.
         query = self._heads(self.query(identities))
         # 浮点 (B, K, I, D_m/K); 每个身份的分头 key.
@@ -524,19 +507,22 @@ class SelfExcludingInventoryAttention(nn.Module):
         value = self._heads(self.value(identities))
         # 浮点 (B, K, I, I); 倒数第二轴为 query 身份, 最后一轴为 key 身份.
         score = torch.matmul(query, key.transpose(-2, -1)) / math.sqrt(self.head_dim)
+
         # bool (I, I); 对角线 False, 阻止身份读取自身, 其余位置 True.
         off_diagonal = ~torch.eye(identity_count, device=identities.device, dtype=torch.bool)
-        # bool (B, 1, I, I); 同时要求 query、key 都有效, 头轴为 1 并在运算中广播到 K.
+        # bool (B, 1, I, I); 同时要求 query、key 都有效.
         valid = identity_mask[:, None, :, None] & identity_mask[:, None, None, :]
         valid = valid & off_diagonal[None, None, :, :]
+
         score = score.masked_fill(~valid, torch.finfo(score.dtype).min)
         # 浮点 (B, K, I, I); 屏蔽后沿 key 轴重新归一化, 无可用 key 的 query 保持全零.
         weight = torch.softmax(score, dim=-1) * valid.to(dtype=score.dtype)
-        weight = weight / weight.sum(dim=-1, keepdim=True).clamp_min(1e-12)
+        weight = weight / weight.sum(dim=-1, keepdim=True).clamp_min(1e-12)   # see me: / weight.sum(dim=-1, keepdim=True) 实际上似乎无必要
         # 浮点 (B, K, I, D_m/K); dropout 作用于权重后读取其它身份 value, 不做二次归一化.
         context = torch.matmul(self.dropout(weight), value)
         # 浮点 (B, I, D_m); 恢复身份轴在前、拼接 K 个注意力头.
         context = context.transpose(1, 2).reshape(batch_size, identity_count, self.model_dim)
+
         # bool (B, I, 1); 标记每个 query 是否至少存在一个其它有效身份.
         has_other = valid.any(dim=-1).transpose(1, 2)
         # 浮点 (B, I, D_m); 输出投影含偏置, 故在投影后显式按 has_other 归零.
@@ -550,7 +536,7 @@ class SelfExcludingInventoryAttention(nn.Module):
         - values: 浮点张量, (B, I, D_m); 最后一轴必须可重排为 K 个 D_m/K 通道.
         - return: 浮点张量, (B, K, I, D_m/K); 仅重排形状和轴, 不复制语义.
         """
-        # Python 整数 B、I; 用于先重排为 (B, I, K, D_m/K), 再交换 I 与 K.
+        # (B, I, D_m) ————> (B, I, K, D_m/K) ————> (B, K, I, D_m/K)
         batch_size, identity_count, _ = values.shape
         return values.reshape(
             batch_size,
@@ -560,26 +546,39 @@ class SelfExcludingInventoryAttention(nn.Module):
         ).transpose(1, 2)
 
 
+
+# -------- 综合 ---------
 class IdentityEncoder(nn.Module):
-    """
-    为每个 PDB 内精确 SMILES 身份生成语言、配体图和自排除清单表示.
-
-    语言向量先投影为 native. 图分支保留 SMILES 图原子轴, 用 native 查询自身图;
-    清单分支让 native 查询同一 PDB 的其它 native. 图 occupancy 门禁要求每个有效身份槽
-    恰好一张图且补零槽无图, 但本类不读取 identity_smiles 或其它身份字符串.
-
-    - config: MatcherModelConfig; 读取 model_dim、graph_layers、attention_heads 和 dropout 构造三个分支.
-    """
     def __init__(self, config: MatcherModelConfig) -> None:
         """
-        建立语言投影、原子图编码、图查询与身份清单查询模块.
+        为每个 PDB 内精确 SMILES 身份生成语言、配体图和自排除清单表示.
+        语言向量投影为 native, graph 分支用 native 查询自身图, inventory 分支让 native 查询同一 PDB 的其它 native. [两者这没有加残差, 返回的就是 attention 真值(相当于增量)]
 
-        - config: MatcherModelConfig; 本构造函数直接读取其中的模型宽度、图层数、注意力头数和丢弃率, 不重新执行 dataclass 的 __post_init__.
+        输入与构造:
+            - config: MatcherModelConfig; 读取 model_dim、graph_layers、attention_heads 和 dropout 构造三个分支.
+            - self.language: Sequential; 把每个 768 维语言向量归一化、投影并激活成 D_m 维 native 表示.
+            - self.graph_encoder: LigandGraphEncoder; 把连接后的 SMILES 图字段编码为逐原子 token.
+            - self.graph_attention: GraphIdentityAttention; 让 native 表示查询同一身份的原子 token.
+            - self.inventory_attention: SelfExcludingInventoryAttention; 让 native 表示查询同 PDB 的其它身份.
 
-        - self.language: Sequential; 把每个 768 维语言向量归一化、投影并激活成 D_m 维 native 表示.
-        - self.graph_encoder: LigandGraphEncoder; 把连接后的 SMILES 图字段编码为逐原子 token.
-        - self.graph_attention: GraphIdentityAttention; 让 native 表示查询同一身份的原子 token.
-        - self.inventory_attention: SelfExcludingInventoryAttention; 让 native 表示查询同 PDB 的其它身份.
+        forward 输入:
+            - batch: CandidateBatch; 本函数直接或通过图子模块消费下列字段.
+            - batch.language_embeddings: 浮点张量, (B, I, 768); 按身份槽补齐的语言模型向量.
+            - batch.identity_mask: bool 张量, (B, I); True 是真实精确 SMILES 身份, False 是补零槽.
+            - batch.graph_element: 整数张量, (N,); 连接后的原子序数.
+            - batch.graph_charge: 整数张量, (N,); 连接后的形式电荷.
+            - batch.graph_atom_in_ring: 浮点张量, (N, 4); 四种环大小标志.
+            - batch.graph_edge_index: 整数张量, (2, E); 连接后的有向边端点.
+            - batch.graph_edge_features: 浮点张量, (E, 9); 五类键型与四类环标志.
+            - batch.graph_node_graph_index: 整数张量, (N,); 每个原子所属的图下标.
+            - batch.graph_to_sample: 整数张量, (G,); 每张图所属的样本下标.
+            - batch.graph_to_identity: 整数张量, (G,); 每张图在所属样本中的身份槽.
+
+        forward 输出:
+            - return: IdentityRepresentations; 三种字段均与 (B, I, D_m) 身份轴对齐.
+            - return.native: 浮点张量, (B, I, D_m); 语言投影表示, 补零槽严格为零.
+            - return.graph: 浮点张量, (B, I, D_m); 自身配体图注意力表示, 补零槽严格为零.
+            - return.inventory: 浮点张量, (B, I, D_m); 自排除身份清单表示, 无其它身份或补零时严格为零.
         """
         super().__init__()
         self.language = nn.Sequential(
@@ -610,26 +609,24 @@ class IdentityEncoder(nn.Module):
 
     def forward(self, batch: CandidateBatch) -> IdentityRepresentations:
         """
-        编码精确 SMILES 身份并核验有效身份槽与化学图的一一对应关系.
+        forward 输入:
+            - batch: CandidateBatch; 本函数直接或通过图子模块消费下列字段.
+            - batch.language_embeddings: 浮点张量, (B, I, 768); 按身份槽补齐的语言模型向量.
+            - batch.identity_mask: bool 张量, (B, I); True 是真实精确 SMILES 身份, False 是补零槽.
+            - batch.graph_element: 整数张量, (N,); 连接后的原子序数.
+            - batch.graph_charge: 整数张量, (N,); 连接后的形式电荷.
+            - batch.graph_atom_in_ring: 浮点张量, (N, 4); 四种环大小标志.
+            - batch.graph_edge_index: 整数张量, (2, E); 连接后的有向边端点.
+            - batch.graph_edge_features: 浮点张量, (E, 9); 五类键型与四类环标志.
+            - batch.graph_node_graph_index: 整数张量, (N,); 每个原子所属的图下标.
+            - batch.graph_to_sample: 整数张量, (G,); 每张图所属的样本下标.
+            - batch.graph_to_identity: 整数张量, (G,); 每张图在所属样本中的身份槽.
 
-        - batch: CandidateBatch; 本函数直接或通过图子模块消费下列字段.
-        - batch.language_embeddings: 浮点张量, (B, I, 768); 按身份槽补齐的语言模型向量.
-        - batch.identity_mask: bool 张量, (B, I); True 是真实精确 SMILES 身份, False 是补零槽.
-        - batch.graph_element: 整数张量, (N,); 连接后的原子序数.
-        - batch.graph_charge: 整数张量, (N,); 连接后的形式电荷.
-        - batch.graph_atom_in_ring: 浮点张量, (N, 4); 四种环大小标志.
-        - batch.graph_edge_index: 整数张量, (2, E); 连接后的有向边端点.
-        - batch.graph_edge_features: 浮点张量, (E, 9); 五类键型与四类环标志.
-        - batch.graph_node_graph_index: 整数张量, (N,); 每个原子所属的图下标.
-        - batch.graph_to_sample: 整数张量, (G,); 每张图所属的样本下标.
-        - batch.graph_to_identity: 整数张量, (G,); 每张图在所属样本中的身份槽.
-        - return: IdentityRepresentations; 三种字段均与 (B, I, D_m) 身份轴对齐.
-        - return.native: 浮点张量, (B, I, D_m); 语言投影表示, 补零槽严格为零.
-        - return.graph: 浮点张量, (B, I, D_m); 自身配体图注意力表示, 补零槽严格为零.
-        - return.inventory: 浮点张量, (B, I, D_m); 自排除身份清单表示, 无其它身份或补零时严格为零.
-
-        本函数不消费 batch.identity_smiles 或候选 metadata 中的字符串; 这些字段只服务于
-        数据分组、监督定位和评估诊断.
+        forward 输出:
+            - return: IdentityRepresentations; 三种字段均与 (B, I, D_m) 身份轴对齐.
+            - return.native: 浮点张量, (B, I, D_m); 语言投影表示, 补零槽严格为零.
+            - return.graph: 浮点张量, (B, I, D_m); 自身配体图注意力表示, 补零槽严格为零.
+            - return.inventory: 浮点张量, (B, I, D_m); 自排除身份清单表示, 无其它身份或补零时严格为零.
         """
         # bool (B, I); 决定语言补零槽、图 occupancy 目标和清单注意力的有效身份范围.
         identity_mask = batch["identity_mask"]
@@ -646,6 +643,8 @@ class IdentityEncoder(nn.Module):
             }
         if self.graph_attention is None or self.inventory_attention is None:
             raise RuntimeError("身份增量模块未完整建立。")
+
+        # 仅用于检验
         # Python 整数 G; 以图到样本映射长度定义连接后的 SMILES 图数.
         graph_count = int(batch["graph_to_sample"].shape[0])
         # 整数 (B, I); 累计每个样本、身份槽实际关联的图数, 用于一图一身份门禁.
@@ -662,6 +661,7 @@ class IdentityEncoder(nn.Module):
             occupancy.index_put_((sample, identity), torch.ones_like(sample), accumulate=True)
         if not torch.equal(occupancy, identity_mask.to(dtype=occupancy.dtype)):
             raise ValueError("每个有效身份必须恰好对应一张配体图，补零身份不得含图。")
+
         # 浮点 (N, D_m); 连接图的逐原子表示, 不做图级 mean/max 池化.
         graph_nodes = self.graph_encoder(batch)
         # 浮点 (B, I, D_m); 每个 native 身份查询自身图原子 token 后的图表示.
@@ -677,19 +677,16 @@ class IdentityEncoder(nn.Module):
         return {"native": native, "graph": graph, "inventory": inventory}
 
 
+
+
+
+
+
+
+
+# ===========================================================================================================================================
+# ===========================================================================================================================================
 class PairScorer(nn.Module):
-    """
-    计算一条候选与身份表示分支的余弦基线与可学习残差.
-
-    候选和身份先分别投影并归一化, 得到缩放余弦分数; 残差网络拼接候选、身份、逐元素
-    乘积和绝对差. 配置启用时还会拼接 12 维候选模态统计与 4 维候选裁剪统计.
-    本类不接收类别概率、identity_mask, 也不屏蔽补零身份槽.
-
-    - model_dim: 正整数, 候选与身份表示宽度 D_m; 本类不单独检查.
-    - dropout: 浮点丢弃率; 用于残差兼容性网络.
-    - use_manual_features: bool; 是否要求并拼接 12 维模态统计.
-    - use_sampling_features: bool; 是否要求并拼接 4 维裁剪采样统计.
-    """
     def __init__(
         self,
         model_dim: int,
@@ -698,19 +695,24 @@ class PairScorer(nn.Module):
         use_sampling_features: bool,
     ) -> None:
         """
-        建立余弦投影、可学习尺度和候选与身份兼容性网络.
+        PairScorer 是一个“候选(candidate)—身份(identity)配对打分头”：给定一个候选表示和该候选所属 PDB 的全部身份表示，输出每个身份的匹配分数。
+        candidate 和 identity 先分别投影并归一化, 得到缩放余弦分数;
+        配置启用时还会拼接 12 维人工特征与 4 维裁剪统计特征.
 
-        - model_dim: 候选表示和单类身份表示的宽度 D_m.
-        - dropout: 兼容性残差网络中间层的丢弃概率.
-        - use_manual_features: 是否把 12 维已归一化模态统计加入残差输入.
-        - use_sampling_features: 是否把 4 维已归一化裁剪统计加入残差输入.
+        构造参数:
+            - model_dim: 候选表示和单类身份表示的宽度 D_m.
+            - dropout: 兼容性残差网络中间层的丢弃概率.
+            - use_manual_features: 是否把 12 维已归一化模态统计加入残差输入.
+            - use_sampling_features: 是否把 4 维已归一化裁剪统计加入残差输入.
 
-        - self.use_manual_features: 布尔语义值; 前向控制 12 维模态统计的存在性.
-        - self.use_sampling_features: 布尔语义值; 前向控制 4 维裁剪统计的存在性.
-        - self.candidate: 无偏置 Linear; 把候选表示从 D_m 投影到余弦空间 D_m.
-        - self.identity: 无偏置 Linear; 把每个身份表示从 D_m 投影到另一余弦空间 D_m.
-        - self.log_scale: 标量 Parameter; 保存初值 log(10) 的余弦尺度自然对数.
-        - self.compatibility: Sequential; 把四组配对表示与可选统计映射成单个残差分数.
+        forward 输入:
+            - candidate: 浮点张量, (B, D_m); 候选编码器输出的候选级表示.
+            - identities: 浮点张量, (B, I, D_m); 当前分支的 native、graph 或 inventory 身份表示.
+            - normalized_manual_features: None 或浮点张量, (B, 12); 按正式顺序归一化的 A、P、V、PP 计数、概率均值和概率最大值.
+            - normalized_sampling_features: None 或浮点张量, (B, 4); 已固定尺度归一化的裁剪采样统计.
+
+        forward 输出:
+            - return: 浮点张量, (B, I); 缩放余弦分数与兼容性残差之和, 补零槽尚未屏蔽.
         """
         super().__init__()
         self.use_manual_features = use_manual_features
@@ -743,15 +745,14 @@ class PairScorer(nn.Module):
         """
         对批内每个候选与其 PDB 内每个身份槽计算配对分数.
 
-        - candidate: 浮点张量, (B, D_m); 候选编码器输出的候选级表示.
-        - identities: 浮点张量, (B, I, D_m); 当前分支的 native、graph 或 inventory 身份表示.
-        - normalized_manual_features: None 或浮点张量, (B, 12); 按正式顺序归一化的 A、P、V、PP 计数、概率均值和概率最大值.
-        - normalized_sampling_features: None 或浮点张量, (B, 4); 已固定尺度归一化的裁剪采样统计.
-        - return: 浮点张量, (B, I); 缩放余弦分数与兼容性残差之和, 补零槽尚未屏蔽.
+        forward 输入:
+            - candidate: 浮点张量, (B, D_m); 候选编码器输出的候选级表示.
+            - identities: 浮点张量, (B, I, D_m); 当前分支的 native、graph 或 inventory 身份表示.
+            - normalized_manual_features: None 或浮点张量, (B, 12); 按正式顺序归一化的 A、P、V、PP 计数、概率均值和概率最大值.
+            - normalized_sampling_features: None 或浮点张量, (B, 4); 已固定尺度归一化的裁剪采样统计.
 
-        两组可选输入是否必须存在由构造开关决定; 关闭开关时传入非 None 会失败. 函数不
-        显式检查 candidate、identities 的全部维数或 B、D_m 对齐, 相关不相容形状由投影、
-        expand 或拼接操作暴露. 零身份表示也可能因兼容性网络偏置产生非零分数.
+        forward 输出:
+            - return: 浮点张量, (B, I); 缩放余弦分数与兼容性残差之和, 补零槽尚未屏蔽.
         """
         # 浮点 (B, D_m); 候选经无偏置投影后沿最后一轴做 L2 归一化.
         candidate_projected = F.normalize(self.candidate(candidate), dim=-1)
@@ -759,6 +760,7 @@ class PairScorer(nn.Module):
         identity_projected = F.normalize(self.identity(identities), dim=-1)
         # 浮点 (B, I); 沿模型通道轴计算候选与各身份的余弦点积.
         cosine = torch.einsum("bd,bid->bi", candidate_projected, identity_projected)
+
         # 浮点 (B, I, D_m); 候选表示仅广播到身份轴, 不物理改变身份语义.
         candidate_expanded = candidate[:, None, :].expand_as(identities)
         # 浮点张量列表; 前四项均为 (B, I, D_m), 依次是候选、身份、乘积和绝对差.
@@ -808,24 +810,39 @@ class PairScorer(nn.Module):
         return cosine * self.log_scale.exp().clamp_max(100.0) + residual
 
 
-class IdentityScorer(nn.Module):
-    """
-    计算语言基线, 以及正式变体启用时的图和身份清单增量.
 
-    trunk_only 只实例化语言基线. 其余三个变体实例化两条增量分支, 并以固定零值初始化
-    两个可训练门. 身份类别不进入打分器; 五种前景类别只留在真值和结果分层中.
-    """
+
+# ——————————————————————————>>>>>>>>>>>>>
+class IdentityScorer(nn.Module):
     def __init__(self, config: MatcherModelConfig) -> None:
         """
-        按具名模型变体建立实际参与前向的身份打分模块.
+        给定候选(candidate), 以及对应的身份表示(identities), 通过三路结果的综合(naive, graph, inventory)计算身份打分.
 
-        - config: MatcherModelConfig; 提供模型宽度、丢弃率、统计开关和身份增量开关.
+        构造参数:
+            - self.native: PairScorer; 精确 SMILES 语言表示的未门控基线.
+            - self.graph: PairScorer 或 None; SMILES 化学图增量, trunk_only 不实例化.
+            - self.inventory: PairScorer 或 None; 同 PDB 其它身份摘要增量, trunk_only 不实例化.
+            - self.graph_gate: 标量 Parameter 或 None; 图增量的零初始化可训练门.
+            - self.inventory_gate: 标量 Parameter 或 None; 身份清单增量的零初始化可训练门.
 
-        - self.native: PairScorer; 精确 SMILES 语言表示的未门控基线.
-        - self.graph: PairScorer 或 None; SMILES 化学图增量, trunk_only 不实例化.
-        - self.inventory: PairScorer 或 None; 同 PDB 其它身份摘要增量, trunk_only 不实例化.
-        - self.graph_gate: 标量 Parameter 或 None; 图增量的零初始化可训练门.
-        - self.inventory_gate: 标量 Parameter 或 None; 身份清单增量的零初始化可训练门.
+        forward 输入:
+            - candidate: 浮点张量, (B, D_m); 候选编码器产生的候选级表示.
+            - identities: IdentityRepresentations; 三种表示应具有相同 (B, I, D_m) 形状.
+            - identities.native: 浮点张量, (B, I, D_m); 语言投影表示.
+            - identities.graph: 浮点张量, (B, I, D_m); 自身 SMILES 图表示.
+            - identities.inventory: 浮点张量, (B, I, D_m); 自排除身份清单表示.
+            - identity_mask: bool 张量, (B, I); True 为真实身份槽, False 为补零槽.
+
+            - candidate_manual_features: 浮点张量, (B, 12); A、P、V、PP 模态统计, 仅在启用手动特征时归一化.
+            - candidate_sampling_features: 浮点张量, (B, 4); 裁剪采样统计, 仅在启用采样特征时归一化.
+
+        forward 输出:
+            - return: IdentityScoreComponents; 三个字段均为与身份槽对齐的未屏蔽 (B, I) 分数.
+            - return.native: 浮点张量, (B, I); 语言分支基线.
+            - return.graph_increment: 浮点张量, (B, I); 图分支原始分数乘 graph_gate.
+            - return.inventory_increment: 浮点张量, (B, I); 清单分支先按多身份条件归零、再乘 inventory_gate.
+
+            - return.logits: 浮点张量, (B, I); 三个组件之和, 补零槽替换为 dtype 最小有限值.
         """
         super().__init__()
         self.use_manual_features = config.use_manual_features
@@ -867,24 +884,24 @@ class IdentityScorer(nn.Module):
         candidate_sampling_features: torch.Tensor,
     ) -> IdentityScoreComponents:
         """
-        计算三个未屏蔽分数组件, 并应用图门、清单有效条件和清单门.
+        forward 输入:
+            - candidate: 浮点张量, (B, D_m); 候选编码器产生的候选级表示.
+            - identities: IdentityRepresentations; 三种表示应具有相同 (B, I, D_m) 形状.
+            - identities.native: 浮点张量, (B, I, D_m); 语言投影表示.
+            - identities.graph: 浮点张量, (B, I, D_m); 自身 SMILES 图表示.
+            - identities.inventory: 浮点张量, (B, I, D_m); 自排除身份清单表示.
+            - identity_mask: bool 张量, (B, I); True 为真实身份槽, False 为补零槽.
 
-        - candidate: 浮点张量, (B, D_m); 候选编码器产生的候选级表示.
-        - identities: IdentityRepresentations; 三种表示应具有相同 (B, I, D_m) 形状.
-        - identities.native: 浮点张量, (B, I, D_m); 语言投影表示.
-        - identities.graph: 浮点张量, (B, I, D_m); 自身 SMILES 图表示.
-        - identities.inventory: 浮点张量, (B, I, D_m); 自排除身份清单表示.
-        - identity_mask: bool 张量, (B, I); True 为真实身份槽, False 为补零槽.
-        - candidate_manual_features: 浮点张量, (B, 12); A、P、V、PP 模态统计, 仅在启用手动特征时归一化.
-        - candidate_sampling_features: 浮点张量, (B, 4); 裁剪采样统计, 仅在启用采样特征时归一化.
-        - return: IdentityScoreComponents; 三个字段均为与身份槽对齐的未屏蔽 (B, I) 分数.
-        - return.native: 浮点张量, (B, I); 语言分支基线.
-        - return.graph_increment: 浮点张量, (B, I); 图分支原始分数乘 graph_gate.
-        - return.inventory_increment: 浮点张量, (B, I); 清单分支先按多身份条件归零、再乘 inventory_gate.
+            - candidate_manual_features: 浮点张量, (B, 12); A、P、V、PP 模态统计, 仅在启用手动特征时归一化.
+            - candidate_sampling_features: 浮点张量, (B, 4); 裁剪采样统计, 仅在启用采样特征时归一化.
 
-        I=0 时在基础形状检查后直接返回三个同一空张量, 不继续检查类别或可选特征.
-        I>0 时只在相应开关开启时读取附加特征. 三个返回组件的补零槽均未屏蔽, 可能因
-        PairScorer 偏置而非零; 调用方必须用 identity_mask 限定可读槽位.
+        forward 输出:
+            - return: IdentityScoreComponents; 三个字段均为与身份槽对齐的未屏蔽 (B, I) 分数.
+            - return.native: 浮点张量, (B, I); 语言分支基线.
+            - return.graph_increment: 浮点张量, (B, I); 图分支原始分数乘 graph_gate.
+            - return.inventory_increment: 浮点张量, (B, I); 清单分支先按多身份条件归零、再乘 inventory_gate.
+
+            - return.logits: 浮点张量, (B, I); 三个组件之和, 补零槽替换为 dtype 最小有限值.
         """
         if candidate.shape[0] != identity_mask.shape[0]:
             raise ValueError("候选和身份掩码的批次轴不一致。")
@@ -903,6 +920,7 @@ class IdentityScorer(nn.Module):
                 "graph_increment": empty,
                 "inventory_increment": empty,
             }
+
         # None 或浮点 (B, 12); 仅在 use_manual_features=True 时填入已归一化模态统计.
         normalized_manual: torch.Tensor | None = None
         # None 或浮点 (B, 4); 仅在 use_sampling_features=True 时填入已归一化裁剪统计.
@@ -933,17 +951,11 @@ class IdentityScorer(nn.Module):
             }
         if self.graph_gate is None or self.inventory_gate is None:
             raise RuntimeError("身份增量模块和门参数必须同时存在。")
-        graph_increment = self.graph_gate * self.graph(
-            candidate, identities["graph"], normalized_manual, normalized_sampling
-        )
-        inventory_increment = self.inventory(
-            candidate, identities["inventory"], normalized_manual, normalized_sampling
-        )
+        graph_increment = self.graph_gate * self.graph(candidate, identities["graph"], normalized_manual, normalized_sampling)
+        inventory_increment = self.inventory(candidate, identities["inventory"], normalized_manual, normalized_sampling)
         # bool (B, 1); 每个样本是否至少有两个有效身份, 沿身份轴广播到所有槽.
         has_other_identity = identity_mask.sum(dim=1, keepdim=True) > 1
-        inventory_increment = inventory_increment * has_other_identity.to(
-            dtype=inventory_increment.dtype
-        )
+        inventory_increment = inventory_increment * has_other_identity.to(dtype=inventory_increment.dtype)
         # 浮点 (B, I); 先保证零/单身份样本严格为零, 再乘未夹紧的可训练 inventory_gate.
         inventory_increment = self.inventory_gate * inventory_increment
         return {
@@ -960,24 +972,6 @@ class IdentityScorer(nn.Module):
         candidate_manual_features: torch.Tensor,
         candidate_sampling_features: torch.Tensor,
     ) -> IdentityScorerOutput:
-        """
-        计算三个分数组件, 并在它们的和上屏蔽补零身份槽.
-
-        - candidate: 浮点张量, (B, D_m); 候选级表示.
-        - identities: IdentityRepresentations; 三种表示均应为 (B, I, D_m).
-        - identities.native: 浮点张量, (B, I, D_m); 语言投影表示.
-        - identities.graph: 浮点张量, (B, I, D_m); 自身配体图表示.
-        - identities.inventory: 浮点张量, (B, I, D_m); 自排除身份清单表示.
-        - identity_mask: bool 张量, (B, I); 最终分数的有效身份掩码.
-        - candidate_manual_features: 浮点张量, (B, 12); 候选模态统计, 关闭手动特征时不参与计算.
-        - candidate_sampling_features: 浮点张量, (B, 4); 候选裁剪统计, 关闭采样特征时不参与计算.
-        - return: IdentityScorerOutput; 包含已屏蔽总分与同次未屏蔽组件.
-        - return.logits: 浮点张量, (B, I); 三个组件之和, 补零槽替换为 dtype 最小有限值.
-        - return.components: IdentityScoreComponents; 未屏蔽的三个组件.
-        - return.components.native: 浮点张量, (B, I); 语言基线.
-        - return.components.graph_increment: 浮点张量, (B, I); 已乘 graph_gate 的图增量.
-        - return.components.inventory_increment: 浮点张量, (B, I); 已应用多身份条件并乘 inventory_gate 的清单增量.
-        """
         # IdentityScoreComponents; 同一次调用得到的三个 (B, I) 未屏蔽组件.
         components = self.score_components(
             candidate,
@@ -998,16 +992,7 @@ class IdentityScorer(nn.Module):
     ) -> torch.Tensor:
         """
         合并三个分数组件并把补零身份槽替换为最小有限值.
-
-        - components: IdentityScoreComponents; 三个字段应为同形 (B, I) 浮点张量.
-        - components.native: 浮点张量, (B, I); 语言基线分数.
-        - components.graph_increment: 浮点张量, (B, I); 已乘图门的增量.
-        - components.inventory_increment: 浮点张量, (B, I); 已应用多身份条件并乘清单门的增量.
-        - identity_mask: bool 张量, (B, I); True 保留组件之和, False 写入当前 logits dtype 的最小有限值.
         - return: 浮点张量, (B, I); 供闭集身份分类直接消费的已屏蔽分数.
-
-        本函数不独立检查四个输入的形状或 identity_mask 的 dtype; 正式 forward 在前序边界
-        提供同形掩码. 屏蔽值是有限数而非负无穷, 避免后续数值路径引入无穷值.
         """
         # 浮点 (B, I); 语言基线与两个已门控增量逐槽相加, 补零槽此时仍可能非零.
         logits = (
@@ -1018,26 +1003,68 @@ class IdentityScorer(nn.Module):
         return logits.masked_fill(~identity_mask, torch.finfo(logits.dtype).min)
 
 
+
+
+
+
+
+
+
+
+
+# ===========================================================================================================================================
+# ===========================================================================================================================================
+# ----------- 总函数 -----------
 class ClosedSetMatcher(nn.Module):
-    """
-    组合候选编码器、精确 SMILES 身份编码器和 PDB 内闭集身份打分器.
-
-    数据集已经为每个候选建立所属 PDB 的身份轴; 本模型不跨 PDB 合并身份, 也不根据
-    identity_smiles 重新分组. 候选前景二分类、两个体素区域头和身份打分共享
-    CandidateEncoder 的候选表示与体素特征.
-
-    - config: MatcherModelConfig; 冻结候选主干、融合方式、身份图编码和三分支打分结构.
-    """
     def __init__(self, config: MatcherModelConfig) -> None:
         """
-        按同一配置建立候选编码、身份编码和身份打分三个子模块.
+        总类:
+            - 候选(candidate)编码器 CandidateEncoder
+            - SMILES 身份(identity)编码器 IdentityEncoder
+            - PDB 内身份打分器 IdentityScorer.
 
-        - config: MatcherModelConfig; 通常已在实例化时通过 dataclass 门禁, 本构造函数直接保存并传给子模块, 不重新执行 __post_init__.
+        构造参数:
+            - self.candidate_encoder: CandidateEncoder; 生成候选表示、前景 logit、两个区域 logits 和体素特征.
+            - self.identity_encoder: IdentityEncoder; 生成 native、graph 和 inventory 三种身份表示.
+            - self.identity_scorer: IdentityScorer; 计算三个身份分数组件及已屏蔽 identity_logits.
 
-        - self.config: MatcherModelConfig; 保留完整冻结配置供外部记录和子模块结构追溯.
-        - self.candidate_encoder: CandidateEncoder; 生成候选表示、前景 logit、两个区域 logits 和体素特征.
-        - self.identity_encoder: IdentityEncoder; 生成 native、graph 和 inventory 三种身份表示.
-        - self.identity_scorer: IdentityScorer; 计算三个身份分数组件及已屏蔽 identity_logits.
+        forward 输入:
+            - batch: CandidateBatch; 候选、身份和打分子模块消费下列数值字段.
+            - batch.voxel_input: 浮点张量, (B,C,48,48,48). strongest/trunk_only 的 C=106, density_blob_only 的 C=1, pocket_only 的 C=0.
+            - batch.a_tokens: 浮点张量, (B, N_A, 230); A 模态 token.
+            - batch.a_mask: bool 张量, (B, N_A); A token 有效掩码.
+            - batch.p_tokens: 浮点张量, (B, N_P, 116); P 模态 token.
+            - batch.p_mask: bool 张量, (B, N_P); P token 有效掩码.
+            - batch.v_tokens: 浮点张量, (B, N_V, 68); V 模态 token.
+            - batch.v_mask: bool 张量, (B, N_V); V token 与位置下标的有效掩码.
+            - batch.v_index_zyx: 整数张量, (B, N_V, 3); V token 在候选体素中的 Z/Y/X 下标.
+            - batch.pp_tokens: 浮点张量, (B, N_PP, 4); PP 模态 token.
+            - batch.pp_mask: bool 张量, (B, N_PP); PP token 与位置下标的有效掩码.
+            - batch.pp_index_zyx: 整数张量, (B, N_PP, 3); PP token 在候选体素中的 Z/Y/X 下标.
+            - batch.candidate_manual_features: 浮点张量, (B, 12); A、P、V、PP 模态统计.
+            - batch.candidate_sampling_features: 浮点张量, (B, 4); 裁剪边界、中心偏移和 V 保留率统计.
+            - batch.language_embeddings: 浮点张量, (B, I, 768); 按精确 SMILES 身份槽补齐的语言向量.
+            - batch.identity_mask: bool 张量, (B, I); 真实身份与补零身份槽掩码.
+            - batch.graph_element: 整数张量, (N,); 连接后的原子序数.
+            - batch.graph_charge: 整数张量, (N,); 连接后的形式电荷.
+            - batch.graph_atom_in_ring: 浮点张量, (N, 4); 3、4、5、6 元环标志.
+            - batch.graph_edge_index: 整数张量, (2, E); 有向化学键端点.
+            - batch.graph_edge_features: 浮点张量, (E, 9); 五类键型和四类环标志.
+            - batch.graph_node_graph_index: 整数张量, (N,); 每个原子所属的连接图下标.
+            - batch.graph_to_sample: 整数张量, (G,); 每张图所属的样本下标.
+            - batch.graph_to_identity: 整数张量, (G,); 每张图在所属样本中的身份槽.
+
+        forward 输出:
+            - return: FullMatcherOutput; 合并以下五个候选字段和四个身份字段.
+            - return.candidate_embedding: 浮点张量, (B, D_m); 候选级融合表示.
+            - return.foreground_logit: 浮点张量, (B,); 候选是真实前景的二分类 logit.
+            - return.ligand_area_logits: strongest/density_blob_only/trunk_only 为浮点张量 (B,48,48,48), pocket_only 为 None.
+            - return.binding_area_logits: strongest/density_blob_only/trunk_only 为浮点张量 (B,48,48,48), pocket_only 为 None.
+            - return.voxel_features: strongest/density_blob_only/trunk_only 为浮点张量 (B,C_v,48,48,48), pocket_only 为 None.
+            - return.identity_logits: 浮点张量, (B, I); 三个组件之和, 补零槽为 dtype 最小有限值.
+            - return.identity_score_native: 浮点张量, (B, I); 未屏蔽语言基线.
+            - return.identity_score_graph_increment: 浮点张量, (B, I); 未屏蔽且已乘图门的增量.
+            - return.identity_score_inventory_increment: 浮点张量, (B, I); 未屏蔽且已应用多身份条件、已乘清单门的增量.
         """
         super().__init__()
         caller_rng_state = torch.random.get_rng_state()
@@ -1058,21 +1085,7 @@ class ClosedSetMatcher(nn.Module):
         output: FullMatcherOutput,
     ) -> IdentityScoreComponents:
         """
-        在评估模式下读取正式前向已保存的三个身份分数组件.
-
-        - batch: CandidateBatch; 本方法只读取 batch.identity_mask 的 (B, I) 形状作为期望形状.
-        - output: FullMatcherOutput; 必须含下列三个由同次正式前向保存的字段.
-        - output.identity_score_native: 浮点张量, (B, I); 未屏蔽语言基线.
-        - output.identity_score_graph_increment: 浮点张量, (B, I); 未屏蔽且已乘图门的增量.
-        - output.identity_score_inventory_increment: 浮点张量, (B, I); 未屏蔽且已应用多身份条件、已乘清单门的增量.
-        - return: IdentityScoreComponents; 新字典引用 output 中原有三个张量, 不重新执行模型前向.
-        - return.native: 浮点张量, (B, I); 与 output.identity_score_native 是同一张量对象.
-        - return.graph_increment: 浮点张量, (B, I); 与 output.identity_score_graph_increment 是同一张量对象.
-        - return.inventory_increment: 浮点张量, (B, I); 与 output.identity_score_inventory_increment 是同一张量对象.
-
-        本方法要求 self.training=False, 并只核验三个张量的形状; 不检查 batch 与 output
-        是否确由同一次前向产生, 也不复核三个组件之和与 identity_logits 的关系. 组件补零
-        槽尚未屏蔽, 调用方必须用 batch.identity_mask 限定诊断范围.
+        在评估模式下, 根据 FullMatcherOutput 和 batch.identity_mask 简单读取 IdentityScoreComponents.
         """
         if self.training:
             raise RuntimeError("身份分数贡献诊断只允许在 eval 模式下读取。")
@@ -1097,45 +1110,7 @@ class ClosedSetMatcher(nn.Module):
 
     def forward(self, batch: CandidateBatch) -> FullMatcherOutput:
         """
-        编码候选及其 PDB 内身份, 并返回候选预测与闭集身份分数.
-
-        - batch: CandidateBatch; 候选、身份和打分子模块消费下列数值字段.
-        - batch.voxel_input: 浮点张量, (B,C,48,48,48). strongest/trunk_only 的 C=106, density_blob_only 的 C=1, pocket_only 的 C=0.
-        - batch.a_tokens: 浮点张量, (B, N_A, 230); A 模态 token.
-        - batch.a_mask: bool 张量, (B, N_A); A token 有效掩码.
-        - batch.p_tokens: 浮点张量, (B, N_P, 116); P 模态 token.
-        - batch.p_mask: bool 张量, (B, N_P); P token 有效掩码.
-        - batch.v_tokens: 浮点张量, (B, N_V, 68); V 模态 token.
-        - batch.v_mask: bool 张量, (B, N_V); V token 与位置下标的有效掩码.
-        - batch.v_index_zyx: 整数张量, (B, N_V, 3); V token 在候选体素中的 Z/Y/X 下标.
-        - batch.pp_tokens: 浮点张量, (B, N_PP, 4); PP 模态 token.
-        - batch.pp_mask: bool 张量, (B, N_PP); PP token 与位置下标的有效掩码.
-        - batch.pp_index_zyx: 整数张量, (B, N_PP, 3); PP token 在候选体素中的 Z/Y/X 下标.
-        - batch.candidate_manual_features: 浮点张量, (B, 12); A、P、V、PP 模态统计.
-        - batch.candidate_sampling_features: 浮点张量, (B, 4); 裁剪边界、中心偏移和 V 保留率统计.
-        - batch.language_embeddings: 浮点张量, (B, I, 768); 按精确 SMILES 身份槽补齐的语言向量.
-        - batch.identity_mask: bool 张量, (B, I); 真实身份与补零身份槽掩码.
-        - batch.graph_element: 整数张量, (N,); 连接后的原子序数.
-        - batch.graph_charge: 整数张量, (N,); 连接后的形式电荷.
-        - batch.graph_atom_in_ring: 浮点张量, (N, 4); 3、4、5、6 元环标志.
-        - batch.graph_edge_index: 整数张量, (2, E); 有向化学键端点.
-        - batch.graph_edge_features: 浮点张量, (E, 9); 五类键型和四类环标志.
-        - batch.graph_node_graph_index: 整数张量, (N,); 每个原子所属的连接图下标.
-        - batch.graph_to_sample: 整数张量, (G,); 每张图所属的样本下标.
-        - batch.graph_to_identity: 整数张量, (G,); 每张图在所属样本中的身份槽.
-        - return: FullMatcherOutput; 合并以下五个候选字段和四个身份字段.
-        - return.candidate_embedding: 浮点张量, (B, D_m); 候选级融合表示.
-        - return.foreground_logit: 浮点张量, (B,); 候选是真实前景的二分类 logit.
-        - return.ligand_area_logits: strongest/density_blob_only/trunk_only 为浮点张量 (B,48,48,48), pocket_only 为 None.
-        - return.binding_area_logits: strongest/density_blob_only/trunk_only 为浮点张量 (B,48,48,48), pocket_only 为 None.
-        - return.voxel_features: strongest/density_blob_only/trunk_only 为浮点张量 (B,C_v,48,48,48), pocket_only 为 None.
-        - return.identity_logits: 浮点张量, (B, I); 三个组件之和, 补零槽为 dtype 最小有限值.
-        - return.identity_score_native: 浮点张量, (B, I); 未屏蔽语言基线.
-        - return.identity_score_graph_increment: 浮点张量, (B, I); 未屏蔽且已乘图门的增量.
-        - return.identity_score_inventory_increment: 浮点张量, (B, I); 未屏蔽且已应用多身份条件、已乘清单门的增量.
-
-        candidate_manual_features 与 candidate_sampling_features 在此始终按键读取并传给
-        IdentityScorer; 关闭相应开关只表示数值不参与打分, 不允许完整模型批次省略这两个键.
+        candidate_manual_features 与 candidate_sampling_features 在此始终按键读取并传给 IdentityScorer; 关闭相应开关只表示数值不参与打分, 不允许完整模型批次省略这两个键.
         identity_smiles 及 metadata 不参与数值前向.
         """
         # CandidateEncoderOutput; 包含候选表示、前景分数、两个体素区域分数和共享体素特征.
@@ -1156,10 +1131,6 @@ class ClosedSetMatcher(nn.Module):
         output = dict(candidate_output)
         output["identity_logits"] = identity_scores["logits"]
         output["identity_score_native"] = identity_score_components["native"]
-        output["identity_score_graph_increment"] = identity_score_components[
-            "graph_increment"
-        ]
-        output["identity_score_inventory_increment"] = identity_score_components[
-            "inventory_increment"
-        ]
+        output["identity_score_graph_increment"] = identity_score_components["graph_increment"]
+        output["identity_score_inventory_increment"] = identity_score_components["inventory_increment"]
         return cast(FullMatcherOutput, output)

@@ -477,9 +477,7 @@ class CandidateDataset(Dataset[CandidateItem]):
             payload = self._load_pdb(pdb_id)
             self.pdb_cache.put(pdb_id, payload)
         centered = cast(dict[str, np.ndarray], payload["centered"])
-        position = cast(dict[int, int], payload["position_by_centered_index"])[
-            int(record["centered_box_index"])
-        ]
+        position = cast(dict[int, int], payload["position_by_centered_index"])[int(record["centered_box_index"])]
         arrays = self._build_candidate_arrays(centered, payload, position)
         identities = self.identities_by_pdb.get(pdb_id, [])
         identity_smiles = [str(identity["smiles"]) for identity in identities]
@@ -517,12 +515,8 @@ class CandidateDataset(Dataset[CandidateItem]):
             candidate_manual_features=arrays["candidate_manual_features"],
             candidate_sampling_features=arrays["candidate_sampling_features"],
             identity_smiles=identity_smiles,
-            language_embeddings=np.stack([embeddings[smiles] for smiles in identity_smiles])
-            if identity_smiles
-            else np.empty((0, LANGUAGE_EMBEDDING_DIM), dtype=np.float32),
-            smiles_graphs=[]
-            if self.variant == "trunk_only"
-            else [self.graph_store.get(smiles) for smiles in identity_smiles],
+            language_embeddings=np.stack([embeddings[smiles] for smiles in identity_smiles]) if identity_smiles else np.empty((0, LANGUAGE_EMBEDDING_DIM), dtype=np.float32),
+            smiles_graphs=[] if self.variant == "trunk_only" else [self.graph_store.get(smiles) for smiles in identity_smiles],
             identity_target=identity_target,
         )
 
@@ -647,7 +641,8 @@ class CandidateDataset(Dataset[CandidateItem]):
 
         - pdb_id: manifest 中的小写 PDB 标识.
         - return.centered: dict[str, np.ndarray]. 当前变体允许读取的 F2_centered 字段.
-        - return.position_by_centered_index: dict[int, int]. 稳定 centered_box_index 到数组第一轴位置的映射.
+        - return.position_by_centered_index: dict[int, int]. 稳定 centered_box_index 到数组第一轴位置的映射.  # NOTE: 这是冗余字段！: position_by_centered_index 为恒等映射, centered_blob_index 恒等于 position
+
         - return.receptor_coords: float32 数组, (N_atom,3). 非 pocket_only 使用的受体世界 XYZ 坐标.
         - return.receptor_features: float32 数组, (N_atom,50). strongest/trunk_only 使用的 49 维 L0 与 backbone 标志.
         - return.binding_atom: bool 数组, (N_atom,). 非 pocket_only 的结合区域监督.

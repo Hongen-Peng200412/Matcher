@@ -193,6 +193,7 @@ def collate_candidates(items: list[CandidateItem]) -> CandidateBatch:
     language = torch.zeros((len(items), identity_count, LANGUAGE_EMBEDDING_DIM), dtype=torch.float32)
     # bool 张量, (B, I_max); True 表示对应 language 的真实身份槽.
     identity_mask = torch.zeros((len(items), identity_count), dtype=torch.bool)
+
     # 下列两个整数列表逐图对齐, 分别保存每张图所属样本和该样本内身份槽.
     graph_to_sample: list[int] = []
     graph_to_identity: list[int] = []
@@ -207,6 +208,7 @@ def collate_candidates(items: list[CandidateItem]) -> CandidateBatch:
     node_offset = 0
     # int, 当前图在 G 轴上的下标; 写入每个节点的 graph_node_graph_index.
     graph_index = 0
+
     for sample_index, item in enumerate(items):
         smiles_count = len(item["identity_smiles"])
         if item["language_embeddings"].shape != (smiles_count, LANGUAGE_EMBEDDING_DIM):
@@ -218,6 +220,7 @@ def collate_candidates(items: list[CandidateItem]) -> CandidateBatch:
         if smiles_count:
             language[sample_index, :smiles_count] = torch.from_numpy(item["language_embeddings"])
             identity_mask[sample_index, :smiles_count] = True
+
         for identity_index, graph in enumerate(item["smiles_graphs"]):
             node_count = len(graph.element)
             if node_count <= 0 or graph.atom_in_ring.shape != (node_count, 4):
@@ -258,9 +261,7 @@ def collate_candidates(items: list[CandidateItem]) -> CandidateBatch:
     batch: dict[str, Any] = {
         "metadata": [item["metadata"] for item in items],
         "voxel_input": torch.from_numpy(np.stack([item["voxel_input"] for item in items])),
-        "foreground_target": torch.tensor(
-            [item["foreground_target"] for item in items], dtype=torch.bool
-        ),
+        "foreground_target": torch.tensor([item["foreground_target"] for item in items], dtype=torch.bool),
         "ligand_area_target": torch.from_numpy(np.stack([item["ligand_area_target"] for item in items])),
         "binding_area_target": torch.from_numpy(np.stack([item["binding_area_target"] for item in items])),
         "full_candidate_voxel_count": torch.tensor([item["full_candidate_voxel_count"] for item in items], dtype=torch.long),

@@ -756,6 +756,13 @@ class RaUnetBackbone(nn.Module):
         self.gate0 = AttentionGate3d(enc0 * 4, dec1, dec0)
         self.decode0 = _res2_stack(dec0, scale=4)
 
+        # NOTE: 注意，还需要仔细核验一遍，确保和stage1的网络相同; 另外， stage1 的网络实际上没有启动末尾的多尺度卷积：因为已经证明了：加了多尺度卷积反而有害
+        # TODO: 我一次性向你说明未来的最小改动。
+        # TODO: 模型层面：加上一个是否移除多尺度卷积的开关，默认全模型统一移除; blob 模型改为只使用blob自身的特征,也就是说Unet的调制也省了; strongest 模型中, 控制前期 p,pp,a 这三个模态的影响: 建议加上一个0.01的可学习门控或零初始化。
+        # TODO: 参数层面: 假阳性过滤权重降为0.3, 辅助损失(ligand-area/binding-area)各自降为0.05; patience 从2提升为3(第4次得分不增再下降学习率)。
+        # TODO: 优化 strongest 的 I/O： 你可以阅读 codex://threads/01a0b7ac-7941-7c91-9651-dcfb0638d572 的分析，参考它的方案进行优化。可以尝试在GPU上进行构造密度通道，但要注意最新的代码库必须保证"不同时出现两种逻辑"，且，你要保证代码的极简。
+        # TODO: 本轮实验全部收口后，你先整理当前的 git, 然后快进Learn分支——————当前本工作树的工作区改动都是注释性的，不影响代码逻辑，直接融入到对应Learn分支的提交就好。等到目前的 strongest 测试收口完成并收口后，即可收口实验日志和handoff、整理git、之后使用空闲的： 378587      h100      F-5 penghong  R 3-11:07:52      1 hnode02 按照 strongest 的新逻辑重新训练测评 strongest；同时等待 379565      h200       P1 penghong PD       0:00      1 (Resources) 的排队，它排完队之后就在上面训练测评 blob only 模型。
+
         # 正整数, 三个最高分辨率卷积分支各自的宽度; 至少 32, 否则取 dec0 的向下取整一半.
         branch_channels = max(32, dec0 // 2)
         self.multiscale3 = nn.Conv3d(dec0, branch_channels, kernel_size=3, padding=1)
