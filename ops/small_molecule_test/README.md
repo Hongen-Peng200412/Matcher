@@ -14,6 +14,8 @@
 
 `artifacts.py` 只提供 YAML、JSON、JSONL 和 SHA-256 文件操作。`MANIFEST_README.md` 是正式 manifest 目录随产物发布的字段说明。
 
+`test_smallmolecule.yaml` 的 `models` 键是稳定实验标识；每条记录的 `variant` 是 checkpoint 内必须精确匹配的模型结构变体。两者显式分离后，`strongest-1` 可以绑定 `strongest`，`blob_only-0` 可以绑定 `blob_only`，而历史实验目录不需要改名。
+
 ## 科学契约
 
 - PDB 分母固定为 PocketXMol Stage3 测试清单中的 77 个 PDB。

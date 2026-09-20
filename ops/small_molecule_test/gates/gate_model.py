@@ -12,7 +12,7 @@ def gate_model(config_path: Path, model_name: str) -> None:
 
     输入参数:
         - config_path: Path, 正式评测使用的 test_smallmolecule YAML.
-        - model_name: str, density_blob_only 或 strongest.
+        - model_name: str, 配置 models 下的稳定实验标识.
 
     返回值:
         - None: 一个真实 Stage3 候选成功产生两档身份答案后打印摘要.
@@ -26,12 +26,13 @@ def gate_model(config_path: Path, model_name: str) -> None:
     if "A800" not in gpu_name:
         raise RuntimeError(f"门禁要求 A800, 实际为 {gpu_name}.")
     model_record = config["models"][model_name]
+    expected_variant = str(model_record["variant"])
     checkpoint_path = Path(model_record["checkpoint"])
     model, _, model_config, source = load_matcher_from_training_release(
         checkpoint_path, torch.device("cuda")
     )
-    if model_config.variant != model_name:
-        raise RuntimeError("checkpoint 变体与门禁模型名称不一致.")
+    if model_config.variant != expected_variant:
+        raise RuntimeError("checkpoint 变体与配置声明不一致.")
     manifest_path = Path(config["outputs"]["manifest_root"]) / "manifest.json"
     manifest = read_json(manifest_path)
     root = manifest_path.parent
@@ -78,7 +79,7 @@ def main() -> int:
     """解析配置与模型名称并执行一次真实 GPU 门禁."""
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=Path, required=True)
-    parser.add_argument("--model", choices=("density_blob_only", "strongest"), required=True)
+    parser.add_argument("--model", required=True)
     arguments = parser.parse_args()
     gate_model(arguments.config, arguments.model)
     return 0

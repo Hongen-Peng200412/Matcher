@@ -1,4 +1,4 @@
-# training：四变体共用训练、选模与 checkpoint
+# training：具名变体共用训练、选模与 checkpoint
 
 本目录把一份严格 YAML 配置执行为单卡从零训练，使用完整 validation 选择 BEST，并以原子替换发布 checkpoint。正式入口是 `python -m matcher.training.experiment --config <YAML>`。
 
@@ -19,13 +19,13 @@ total = foreground_weight × foreground_bce
       + identity_weight × smiles_identity_ce
 ```
 
-`smiles_identity_ce` 只在 `foreground_target & (identity_target >= 0)` 上计算，不乘前景预测概率，也不依赖前景是否预测正确。每个 epoch 的优化器更新按顺序划为三个连续区段；同一训练 DataLoader 只遍历一次，每个区段后遍历一次完整 validation 并计算：
+`smiles_identity_ce` 只在 `foreground_target & (identity_target >= 0)` 上计算，不乘前景预测概率，也不依赖前景是否预测正确。每个 epoch 的唯一物理批次计划先确定，再按顺序划为三个连续区段。每个区段使用一套非持久训练 worker；训练遍历结束并关闭这些 worker 后，才用另一套非持久 worker 遍历一次完整 validation。三个连续区段依次连接后与原 epoch 批次计划逐批相同。
 
 ```text
-selection = (foreground PRAUC + 真实前景候选上的 SMILES 匹配准确率) / 2
+selection = (0.3 × foreground PRAUC + 真实前景且身份受支持候选上的 SMILES 匹配准确率) / 1.3
 ```
 
-`selection` 相对当前 BEST 至少提高 `0.001` 才更新 BEST 并清零坏检查数。连续两次未改善只累计状态，第三次未改善触发平台动作：前两次平台分别把当前学习率乘以 `0.8`，第三次平台不再降低学习率并直接早停。累计降低次数不因后续改善而清零。训练最多执行 15 个 epoch、45 次完整 validation。
+`selection` 相对当前 BEST 至少提高 `0.001` 才更新 BEST 并清零坏检查数。第二轮活动配置允许连续三次未改善，第四次未改善触发平台动作：前两次平台分别把当前学习率乘以 `0.8`，第三次平台不再降低学习率并直接早停。累计降低次数不因后续改善而清零。训练最多执行 15 个 epoch、45 次完整 validation。
 
 每次完整 validation 都保存独立 checkpoint 并覆盖 `LAST.pt`；有效改善时另行覆盖 `BEST.pt`。训练结束后直接复用当时保留的 BEST validation 预测选择 F1 最大、并列时较高的前景阈值，再写回 BEST；不会额外遍历 validation，F1 也不参与选模。
 
@@ -70,6 +70,7 @@ selection = (foreground PRAUC + 真实前景候选上的 SMILES 匹配准确率)
 | `worker_provenance.gpu_total_memory_bytes` | `int` | 当前 GPU 的总显存字节数。 |
 | `worker_provenance.cuda_visible_devices` | `str|null` | Slurm 注入的可见 GPU 编号；未设置时为 `null`。 |
 | `worker_provenance.num_workers` | `int >= 0` | 配置中的 DataLoader 工作进程数。 |
+| `worker_provenance.loader_lifecycle` | `str` | 固定为 `"stage_exclusive_nonpersistent"`，表示训练与 validation 工作进程不并存且不跨遍历保留。 |
 
 ## `resolved_config.json` 与 `manifest.snapshot.json`
 

@@ -47,10 +47,10 @@ class CandidateItem(TypedDict):
 
     - metadata: CandidateMetadata. 保存当前候选来源、两种排序分数、几何真值和身份支持状态.
 
-    - voxel_input: float16 数组, (C,48,48,48). strongest/trunk_only 的 C=106, density_blob_only 的 C=1, pocket_only 的 C=0.
-    - a_tokens: float32 数组. strongest/trunk_only 为 (N_A,230), 依次连接 L0[0:50]、L1[50:114]、L2[114:178]、L3[178:226]、概率[226]、归一化相对 XYZ[227:230]. pocket_only 为原始 L0 的 (N_A,50). density_blob_only 为 (0,230).
+    - voxel_input: float16 数组, (C,48,48,48). strongest/trunk_only 的 C=106, density_blob_only 的 C=1, blob_only/pocket_only 的 C=0.
+    - a_tokens: float32 数组. strongest/trunk_only 为 (N_A,230), 依次连接 L0[0:50]、L1[50:114]、L2[114:178]、L3[178:226]、概率[226]、归一化相对 XYZ[227:230]. pocket_only 为原始 L0 的 (N_A,50). blob_only/density_blob_only 为 (0,230).
     - p_tokens: float32 数组, (N_P,116). strongest/trunk_only 依次连接 L2[0:64]、L3[64:112]、概率[112]、归一化相对 XYZ[113:116]. 其它变体为 (0,116).
-    - v_tokens: float32 数组, (N_V,68). 非 pocket_only 依次连接 64 维体素特征[0:64]、概率[64]、归一化相对 XYZ[65:68]. pocket_only 为 (0,68).
+    - v_tokens: float32 数组, (N_V,68). strongest/blob_only/density_blob_only/trunk_only 依次连接 64 维体素特征[0:64]、概率[64]、归一化相对 XYZ[65:68]. pocket_only 为 (0,68).
     - v_index_zyx: int64 数组, (N_V,3). 每个 V token 在 supplied 48 立方体中的 Z、Y、X 整数索引, 与 v_tokens 第一轴对齐.
     - pp_tokens: float32 数组, (N_PP,4). strongest/trunk_only 依次保存概率[0]和归一化相对 XYZ[1:4]. 其它变体为 (0,4).
     - pp_index_zyx: int64 数组, (N_PP,3). 每个 PP token 在 supplied 48 立方体中的 Z、Y、X 整数索引, 与 pp_tokens 第一轴对齐.
@@ -65,7 +65,7 @@ class CandidateItem(TypedDict):
 
     - identity_smiles: list[str], 长度 I. 当前 PDB 内同时具有合法图和 SMI-TED 向量的精确 PreparedLigand.smiles, 按字符串升序且不重复.
     - language_embeddings: float32 数组, (I,768). 与 identity_smiles 逐槽对齐的 SMI-TED 表示.
-    - smiles_graphs: list[SmilesGraph]. strongest/density_blob_only/pocket_only 的长度为 I 并逐槽对齐, trunk_only 固定为空列表.
+    - smiles_graphs: list[SmilesGraph]. strongest/blob_only/density_blob_only/pocket_only 的长度为 I 并逐槽对齐, trunk_only 固定为空列表.
     - smiles_graphs[].element: int64 数组, (N_i,). 第 i 个身份按 RDKit 重原子顺序保存的原子序数.
     - smiles_graphs[].charge: int64 数组, (N_i,). 与 element 逐原子对齐的形式电荷.
     - smiles_graphs[].atom_in_ring: float32 数组, (N_i,4). 四列依次为 3、4、5、6 元环标志.
@@ -98,7 +98,7 @@ class CandidateBatch(TypedDict):
     保存补齐后的物理批次和按需连接的 SMILES 图.
 
     - metadata: list[CandidateMetadata], 长度 B. 与全部批次张量第一轴逐候选对齐.
-    - voxel_input: 浮点张量, (B, C, 48, 48, 48). C 的四变体规则与 CandidateItem 相同.
+    - voxel_input: 浮点张量, (B, C, 48, 48, 48). C 的变体规则与 CandidateItem 相同.
     - foreground_target: bool 张量, (B,). True 表示几何真前景, 与身份资产是否可用无关.
     - ligand_area_target: bool 张量, (B, 48, 48, 48). True 表示真实配体占据体素.
     - binding_area_target: bool 张量, (B, 48, 48, 48). True 表示结合受体原子占据体素.

@@ -1,4 +1,4 @@
-"""把 Stage1 centered 候选物化为四个正式 Matcher 变体的单一 SMILES 样本.
+"""把 Stage1 centered 候选物化为具名 Matcher 变体的单一 SMILES 样本.
 
 主要入口是 load_manifest_dataset. CandidateDataset 读取 manifest 冻结的候选和 PDB 内身份
 轴, 再按变体解压 centered、受体、区域监督和语言向量. 每次 __getitem__ 返回一个未补齐
@@ -330,25 +330,29 @@ def _centered_fields(variant: ModelVariant) -> tuple[str, ...]:
     """
     返回一个模型变体允许从 F2_centered.npz 解压的字段集合.
 
-    - variant: 四个正式模型变体之一.
+    - variant: 正式模型变体之一.
     - return: 去重前已按读取用途排列的字段名元组; 禁用模态字段不在其中.
     """
     common = ("centered_box_index",)
     if variant == "pocket_only":
         return common + ("A_offsets", "A_feat_L0")
-    spatial = (
+    blob_fields = (
         "crop_start_local_zyx",
-        "box_origin_world",
-        "voxel_size_world",
-        "experimental_density_48",
         "voxel_offsets",
         "voxel_index_local_zyx",
         "voxel_final",
         "centered_probability",
-        "box_start_zyx",
         "source_voxel_count",
         "crop_clipped_axis_mask",
         "crop_center_offset_zyx",
+    )
+    if variant == "blob_only":
+        return common + blob_fields
+    spatial = blob_fields + (
+        "box_origin_world",
+        "voxel_size_world",
+        "experimental_density_48",
+        "box_start_zyx",
     )
     if variant == "density_blob_only":
         return common + spatial
@@ -397,7 +401,7 @@ class CandidateDataset(Dataset[CandidateItem]):
         - split: manifest.splits 中的划分键.
         - selected_only: True 时只保留 Stage1 已选候选.
         - mode: train/validation 跳过不受支持真前景; test 保留原候选.
-        - variant: 四个正式模型变体之一, 决定实际解压字段和样本张量.
+        - variant: 正式模型变体之一, 决定实际解压字段和样本张量.
         - pp_top_k: strongest/trunk_only 的 PP token 上限.
         - cache_gib_per_worker: 当前 Dataset 副本的 PDB 载荷缓存预算.
         """
@@ -456,7 +460,7 @@ class CandidateDataset(Dataset[CandidateItem]):
         """
         初始化当前 DataLoader 工作进程的全局图包.
 
-        - return: None; strongest、density_blob_only 和 pocket_only 完整打开一次 NPZ, trunk_only 不读取图包.
+        - return: None; 除 trunk_only 外的变体完整打开一次 NPZ 图包, trunk_only 不读取图包.
 
         SmilesGraphStore 会忽略同一进程中的重复调用, 因此训练样本不会反复打开或解压图文件.
         """
@@ -529,7 +533,7 @@ class CandidateDataset(Dataset[CandidateItem]):
         - centered: 当前 PDB 按 variant 解压的 centered 字段.
         - payload: 当前 PDB 的 centered、受体、区域真值和语言向量载荷.
         - position: 当前候选在 centered 第一轴的位置.
-        - return.voxel_input: float16 数组, (C,48,48,48). C 按变体为 106、1 或 0.
+        - return.voxel_input: float16 数组, (C,48,48,48). C 按变体为 106、1 或 0; blob_only 为 0.
         - return.a_tokens: float32 数组, (N_A,230)、(N_A,50) 或禁用时 (0,230).
         - return.p_tokens: float32 数组, (N_P,116) 或禁用时 (0,116).
         - return.v_tokens: float32 数组, (N_V,68) 或禁用时 (0,68).
@@ -564,12 +568,48 @@ class CandidateDataset(Dataset[CandidateItem]):
             }
         # int64 (3,), supplied 48 crop 在完整 centered 框内的 Z、Y、X 起点.
         crop_start = np.asarray(centered["crop_start_local_zyx"][position], dtype=np.int64)
+        # float32 (N_V,68) 与 int64 (N_V,3), supplied crop 内 V token 及其 Z、Y、X 下标.
+        v_tokens, v_index = _build_v_tokens(centered, position, crop_start)
+        # int 标量, 当前 source blob 在完整 F2 框中的体素数, 作为 V 保留率分母.
+        full_count = int(centered["source_voxel_count"][position])
+        if full_count <= 0:
+            raise ValueError("source_voxel_count 必须是正整数。")
+        # float32 (4,), 依次为边界裁剪标志、中心 L2 偏移、中心 Linf 偏移和 V 保留率.
+        sampling = np.asarray(
+            (
+                float(np.any(centered["crop_clipped_axis_mask"][position])),
+                float(np.linalg.norm(centered["crop_center_offset_zyx"][position])),
+                float(np.max(np.abs(centered["crop_center_offset_zyx"][position]))),
+                len(v_tokens) / full_count,
+            ),
+            dtype=np.float32,
+        )
+        if self.variant == "blob_only":
+            # float32 (12,), A/P/PP 三组为零, 仅 V 组保存 count、概率均值和概率最大值.
+            manual = _manual_features(
+                np.empty((0, A_TOKEN_DIM), dtype=np.float32),
+                empty_p,
+                v_tokens,
+                empty_pp,
+            )
+            return {
+                "voxel_input": np.empty((0, LOCAL_BOX_SIZE, LOCAL_BOX_SIZE, LOCAL_BOX_SIZE), dtype=np.float16),
+                "a_tokens": np.empty((0, A_TOKEN_DIM), dtype=np.float32),
+                "p_tokens": empty_p,
+                "v_tokens": v_tokens,
+                "v_index_zyx": v_index,
+                "pp_tokens": empty_pp,
+                "pp_index_zyx": empty_v_index.copy(),
+                "ligand_area_target": zeros_target,
+                "binding_area_target": zeros_target.copy(),
+                "full_candidate_voxel_count": full_count,
+                "candidate_manual_features": manual,
+                "candidate_sampling_features": sampling,
+            }
         # float32 (3,), 完整 centered 框在世界坐标中的 X、Y、Z 原点.
         box_origin = np.asarray(centered["box_origin_world"][position], dtype=np.float32)
         # float32 (3,), 完整 centered 框沿世界 X、Y、Z 轴的体素边长.
         voxel_size = np.asarray(centered["voxel_size_world"][position], dtype=np.float32)
-        # float32 (N_V,68) 与 int64 (N_V,3), supplied crop 内 V token 及其 Z、Y、X 下标.
-        v_tokens, v_index = _build_v_tokens(centered, position, crop_start)
         if self.variant == "density_blob_only":
             # float16 (1,48,48,48), 只含 exp_clipnorm_nopost 的单实验密度输入.
             voxel_input = build_experimental_density_channel(centered["experimental_density_48"][position]).astype(np.float16)
@@ -606,20 +646,6 @@ class CandidateDataset(Dataset[CandidateItem]):
         )
         # float32 (12,), 按 A、P、V、PP 分组且每组为 count、概率均值、概率最大值.
         manual = _manual_features(a_tokens, p_tokens, v_tokens, pp_tokens)
-        # int 标量, 当前 source blob 在完整 F2 框中的体素数, 作为 V 保留率分母.
-        full_count = int(centered["source_voxel_count"][position])
-        if full_count <= 0:
-            raise ValueError("source_voxel_count 必须是正整数。")
-        # float32 (4,), 依次为边界裁剪标志、中心 L2 偏移、中心 Linf 偏移和 V 保留率.
-        sampling = np.asarray(
-            (
-                float(np.any(centered["crop_clipped_axis_mask"][position])),
-                float(np.linalg.norm(centered["crop_center_offset_zyx"][position])),
-                float(np.max(np.abs(centered["crop_center_offset_zyx"][position]))),
-                len(v_tokens) / full_count,
-            ),
-            dtype=np.float32,
-        )
         return {
             "voxel_input": voxel_input,
             "a_tokens": a_tokens,
@@ -643,10 +669,10 @@ class CandidateDataset(Dataset[CandidateItem]):
         - return.centered: dict[str, np.ndarray]. 当前变体允许读取的 F2_centered 字段.
         - return.position_by_centered_index: dict[int, int]. 稳定 centered_box_index 到数组第一轴位置的映射.  # NOTE: 这是冗余字段！: position_by_centered_index 为恒等映射, centered_blob_index 恒等于 position
 
-        - return.receptor_coords: float32 数组, (N_atom,3). 非 pocket_only 使用的受体世界 XYZ 坐标.
+        - return.receptor_coords: float32 数组, (N_atom,3). 使用区域监督或受体体素的变体读取; blob_only 与 pocket_only 不读取.
         - return.receptor_features: float32 数组, (N_atom,50). strongest/trunk_only 使用的 49 维 L0 与 backbone 标志.
-        - return.binding_atom: bool 数组, (N_atom,). 非 pocket_only 的结合区域监督.
-        - return.occurrence_masks: list[np.ndarray]. 非 pocket_only 的全局 Z、Y、X 稀疏 occurrence 体素.
+        - return.binding_atom: bool 数组, (N_atom,). 使用区域监督的变体读取; blob_only 与 pocket_only 不读取.
+        - return.occurrence_masks: list[np.ndarray]. 使用区域监督的变体读取; blob_only 与 pocket_only 不读取.
         - return.embedding_by_smiles: dict[str, np.ndarray]. 每个受支持精确 SMILES 到有限 float32 (768,) SMI-TED 向量的映射.
 
         返回映射可以进入字节预算缓存, 但不含全局 SMILES 图包副本.
@@ -661,7 +687,7 @@ class CandidateDataset(Dataset[CandidateItem]):
             "centered": centered,
             "position_by_centered_index": positions,
         }
-        if self.variant != "pocket_only":
+        if self.variant not in ("blob_only", "pocket_only"):
             receptor_path = self.data_root / "parse" / pdb_id / "receptor_tokens.npz"
             receptor_fields = ("coords",) if self.variant == "density_blob_only" else ("coords", "feat", "is_backbone")
             receptor = _load_npz_fields(receptor_path, receptor_fields)
@@ -715,7 +741,7 @@ def load_manifest_dataset(
     - split: manifest 中的 train、validation 或测试划分名.
     - selected_only: True 时只保留 Stage1 candidate_selected=True 的候选.
     - mode: train/validation 会跳过缺少受支持身份的真前景; test 保留候选及原始排名.
-    - variant: 四个具名模型变体之一, 同时约束实际文件读取和模型输入字段.
+    - variant: 具名模型变体之一, 同时约束实际文件读取和模型输入字段.
     - pp_top_k: strongest/trunk_only 的 PP token 上限.
     - cache_gib_per_worker: 每个 Dataset 副本的 PDB 数组最近使用缓存预算.
     - return: 与模型变体同源的 CandidateDataset.

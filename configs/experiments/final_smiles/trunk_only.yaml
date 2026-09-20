@@ -10,7 +10,7 @@ data:  # mapping, manifest、划分、批量和 DataLoader 读取参数
   selected_only: true  # bool, true 表示训练只保留 candidate_selected=true; validation 始终由 engine 固定为已选候选
   batch_size: 32  # int>0, 单个物理批次的候选数
   accumulation_steps: 1  # int>0, 每次参数更新累计的物理批次数; 与 batch_size 相乘得到名义 global batch
-  num_workers: 8  # int>=0, 每个 DataLoader 的持久工作进程数; 0 表示主进程读取
+  num_workers: 8  # int>=0, 当前训练或 validation 遍历的工作进程数; 0 表示主进程读取
   prefetch_factor: 2  # int>0, num_workers>0 时每个工作进程预取的物理批次数
   pp_top_k: 2048  # int>0, 每个候选按 Stage1 概率稳定保留的 PP token 上限
   cache_gib_per_worker: 8.0  # float>=0, 每个 Dataset worker 的 PDB 载荷最近使用缓存预算; 0 表示不缓存

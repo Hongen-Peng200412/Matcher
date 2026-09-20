@@ -1,7 +1,7 @@
 """按可复现顺序采样候选, 并补齐 token、身份和 SMILES 图字段.
 
-DataLoader 使用 spawn 和持久工作进程. 每个工作进程启动后完整载入一次全局图包,
-后续 epoch 复用同一 Dataset 副本及其 PDB 最近使用缓存.
+DataLoader 使用 spawn 且不保留跨迭代工作进程. 每个完整训练区段或 validation 遍历结束后
+工作进程退出, 使训练与 validation 工作进程不并存.
 """
 
 from __future__ import annotations
@@ -290,16 +290,16 @@ def collate_candidates(items: list[CandidateItem]) -> CandidateBatch:
 
 def build_candidate_loader(
     dataset: CandidateDataset,
-    sampler: ShuffledBatchSampler,
+    sampler: ShuffledBatchSampler | list[list[int]],
     num_workers: int,
     prefetch_factor: int,
     worker_generator_seed: int,
 ) -> DataLoader[CandidateBatch]:
     """
-    构造候选 DataLoader; 始终启用页锁定内存, num_workers>0 时启用 spawn 和持久工作进程.
+    构造候选 DataLoader; 始终启用页锁定内存, num_workers>0 时使用 spawn 且不跨遍历保留工作进程.
 
     - dataset: 单一 SMILES 身份 CandidateDataset.
-    - sampler: 唯一决定候选顺序和物理批次.
+    - sampler: ShuffledBatchSampler 或已经冻结顺序的物理批次下标列表; 唯一决定候选顺序和物理批次.
     - num_workers: 非负工作进程数; 为零时在主进程读取.
     - prefetch_factor: 工作进程预取批次数; 只在 num_workers>0 时传给 PyTorch.
     - worker_generator_seed: DataLoader 工作进程播种使用的独立种子.
@@ -321,7 +321,7 @@ def build_candidate_loader(
     if num_workers > 0:
         keyword.update(
             {
-                "persistent_workers": True,
+                "persistent_workers": False,
                 "prefetch_factor": prefetch_factor,
                 "multiprocessing_context": "spawn",
                 "worker_init_fn": initialize_candidate_worker,

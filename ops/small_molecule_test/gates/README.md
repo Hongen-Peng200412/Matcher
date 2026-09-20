@@ -16,5 +16,5 @@ python -m ops.small_molecule_test.gates.gate_model \
   --model density_blob_only
 ```
 
-第二条命令的模型名也可为 `strongest`。正式命令仍只调用
+第二条命令的模型名也可为配置 `models` 下的其它稳定实验标识；门禁使用该记录的 `variant` 核对 checkpoint 结构。正式命令仍只调用
 `训练与运行/sh/small_molecule_test/` 中的短 shell，不得混用。

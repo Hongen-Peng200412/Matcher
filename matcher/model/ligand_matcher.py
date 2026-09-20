@@ -30,7 +30,6 @@ from torch import nn
 from torch.nn import functional as F
 
 from ..data.schema import (
-    CANDIDATE_MANUAL_FEATURE_DIM,
     CANDIDATE_SAMPLING_FEATURE_DIM,
     LANGUAGE_EMBEDDING_DIM,
 )
@@ -40,7 +39,6 @@ from .config import MatcherModelConfig
 from .fusion import (
     CandidateCrossAttention,
     MeanMaxCandidateConditionedResidualAggregator,
-    normalize_candidate_manual_features,
     normalize_candidate_sampling_features,
 )
 
@@ -68,10 +66,10 @@ def _reset_named_leaf_modules(model: nn.Module, base_seed: int) -> None:
     按叶模块完整路径重新执行 PyTorch 默认参数初始化.
 
     - model: 已完成子模块注册的 ClosedSetMatcher.
-    - base_seed: 当前实验种子, 同一 seed 的四个变体共享该值.
+    - base_seed: 当前实验种子，同一 seed 的各变体共享该值.
     - return: None. 仅重置具有 reset_parameters 的叶模块, 不推进调用方全局随机状态.
 
-    可选分支是否存在不会改变其它叶模块的子流. 因此同名同形参数在四个消融变体中逐值
+    可选分支是否存在不会改变其它叶模块的子流。因此同名同形参数在各消融变体中逐值
     相同, 模型构造也不会让后续 dropout 随机流因变体结构不同而错位.
     """
     for module_name, module in model.named_modules():
@@ -691,7 +689,7 @@ class PairScorer(nn.Module):
         self,
         model_dim: int,
         dropout: float,
-        use_manual_features: bool,
+        manual_feature_dim: int,
         use_sampling_features: bool,
     ) -> None:
         """
@@ -702,20 +700,22 @@ class PairScorer(nn.Module):
         构造参数:
             - model_dim: 候选表示和单类身份表示的宽度 D_m.
             - dropout: 兼容性残差网络中间层的丢弃概率.
-            - use_manual_features: 是否把 12 维已归一化模态统计加入残差输入.
+            - manual_feature_dim: 已归一化模态统计宽度; 0 表示不把手动统计加入残差输入.
             - use_sampling_features: 是否把 4 维已归一化裁剪统计加入残差输入.
 
         forward 输入:
             - candidate: 浮点张量, (B, D_m); 候选编码器输出的候选级表示.
             - identities: 浮点张量, (B, I, D_m); 当前分支的 native、graph 或 inventory 身份表示.
-            - normalized_manual_features: None 或浮点张量, (B, 12); 按正式顺序归一化的 A、P、V、PP 计数、概率均值和概率最大值.
+            - normalized_manual_features: None 或浮点张量, (B,D_h); D_h 由 manual_feature_dim 固定.
             - normalized_sampling_features: None 或浮点张量, (B, 4); 已固定尺度归一化的裁剪采样统计.
 
         forward 输出:
             - return: 浮点张量, (B, I); 缩放余弦分数与兼容性残差之和, 补零槽尚未屏蔽.
         """
         super().__init__()
-        self.use_manual_features = use_manual_features
+        if manual_feature_dim < 0:
+            raise ValueError("身份打分的手动特征宽度不得为负数。")
+        self.manual_feature_dim = manual_feature_dim
         self.use_sampling_features = use_sampling_features
         self.candidate = nn.Linear(model_dim, model_dim, bias=False)
         self.identity = nn.Linear(model_dim, model_dim, bias=False)
@@ -724,7 +724,7 @@ class PairScorer(nn.Module):
         # Python 整数; 残差网络输入宽度, 基础四组各 D_m, 并按开关追加 12 维和 4 维.
         compatibility_dim = (
             model_dim * 4
-            + (CANDIDATE_MANUAL_FEATURE_DIM if use_manual_features else 0)
+            + manual_feature_dim
             + (CANDIDATE_SAMPLING_FEATURE_DIM if use_sampling_features else 0)
         )
         self.compatibility = nn.Sequential(
@@ -748,7 +748,7 @@ class PairScorer(nn.Module):
         forward 输入:
             - candidate: 浮点张量, (B, D_m); 候选编码器输出的候选级表示.
             - identities: 浮点张量, (B, I, D_m); 当前分支的 native、graph 或 inventory 身份表示.
-            - normalized_manual_features: None 或浮点张量, (B, 12); 按正式顺序归一化的 A、P、V、PP 计数、概率均值和概率最大值.
+            - normalized_manual_features: None 或浮点张量, (B,D_h); D_h 由构造时 manual_feature_dim 固定.
             - normalized_sampling_features: None 或浮点张量, (B, 4); 已固定尺度归一化的裁剪采样统计.
 
         forward 输出:
@@ -770,15 +770,15 @@ class PairScorer(nn.Module):
             candidate_expanded * identities,
             torch.abs(candidate_expanded - identities),
         ]
-        if self.use_manual_features:
+        if self.manual_feature_dim > 0:
             if normalized_manual_features is None:
                 raise ValueError("启用手动特征的身份打分必须提供候选统计。")
             if normalized_manual_features.shape != (
                 candidate.shape[0],
-                CANDIDATE_MANUAL_FEATURE_DIM,
+                self.manual_feature_dim,
             ):
                 raise ValueError("身份打分的候选手动特征形状错误。")
-            # 追加浮点 (B,I,12); 同一候选统计广播到当前 PDB 的全部身份槽.
+            # 追加浮点 (B,I,D_h); 同一候选统计广播到当前 PDB 的全部身份槽.
             compatibility_parts.append(
                 normalized_manual_features[:, None, :].expand(
                     -1,
@@ -833,7 +833,7 @@ class IdentityScorer(nn.Module):
             - identities.inventory: 浮点张量, (B, I, D_m); 自排除身份清单表示.
             - identity_mask: bool 张量, (B, I); True 为真实身份槽, False 为补零槽.
 
-            - candidate_manual_features: 浮点张量, (B, 12); A、P、V、PP 模态统计, 仅在启用手动特征时归一化.
+            - normalized_candidate_manual_features: 浮点张量, (B, 12); 候选编码器已归一化并按当前变体门控的 A、P、V、PP 模态统计.
             - candidate_sampling_features: 浮点张量, (B, 4); 裁剪采样统计, 仅在启用采样特征时归一化.
 
         forward 输出:
@@ -845,25 +845,25 @@ class IdentityScorer(nn.Module):
             - return.logits: 浮点张量, (B, I); 三个组件之和, 补零槽替换为 dtype 最小有限值.
         """
         super().__init__()
-        self.use_manual_features = config.use_manual_features
+        self.manual_feature_dim = config.identity_manual_feature_dim
         self.use_sampling_features = config.use_sampling_features
         self.native = PairScorer(
             config.model_dim,
             config.dropout,
-            config.use_manual_features,
+            self.manual_feature_dim,
             config.use_sampling_features,
         )
         if config.uses_identity_increments:
             self.graph: PairScorer | None = PairScorer(
                 config.model_dim,
                 config.dropout,
-                config.use_manual_features,
+                self.manual_feature_dim,
                 config.use_sampling_features,
             )
             self.inventory: PairScorer | None = PairScorer(
                 config.model_dim,
                 config.dropout,
-                config.use_manual_features,
+                self.manual_feature_dim,
                 config.use_sampling_features,
             )
             # 两个增量门正式固定为零初值, 不由 YAML 改写.
@@ -880,7 +880,7 @@ class IdentityScorer(nn.Module):
         candidate: torch.Tensor,
         identities: IdentityRepresentations,
         identity_mask: torch.Tensor,
-        candidate_manual_features: torch.Tensor,
+        normalized_candidate_manual_features: torch.Tensor,
         candidate_sampling_features: torch.Tensor,
     ) -> IdentityScoreComponents:
         """
@@ -892,7 +892,7 @@ class IdentityScorer(nn.Module):
             - identities.inventory: 浮点张量, (B, I, D_m); 自排除身份清单表示.
             - identity_mask: bool 张量, (B, I); True 为真实身份槽, False 为补零槽.
 
-            - candidate_manual_features: 浮点张量, (B, 12); A、P、V、PP 模态统计, 仅在启用手动特征时归一化.
+            - normalized_candidate_manual_features: 浮点张量, (B, 12); CandidateEncoder 已归一化并应用当前变体模态门的 A、P、V、PP 统计.
             - candidate_sampling_features: 浮点张量, (B, 4); 裁剪采样统计, 仅在启用采样特征时归一化.
 
         forward 输出:
@@ -921,15 +921,13 @@ class IdentityScorer(nn.Module):
                 "inventory_increment": empty,
             }
 
-        # None 或浮点 (B, 12); 仅在 use_manual_features=True 时填入已归一化模态统计.
+        # None 或浮点 (B,D_h); 仅在当前变体的 D_h 大于零时填入已归一化模态统计.
         normalized_manual: torch.Tensor | None = None
         # None 或浮点 (B, 4); 仅在 use_sampling_features=True 时填入已归一化裁剪统计.
         normalized_sampling: torch.Tensor | None = None
-        if self.use_manual_features:
-            # 浮点 (B, 12); 仅四个 token 计数做 log1p, 其余概率统计保持原尺度.
-            normalized_manual = normalize_candidate_manual_features(
-                candidate_manual_features
-            )
+        if self.manual_feature_dim > 0:
+            # 浮点 (B,D_h); blob_only 的 D_h=3，其余启用完整模态统计的变体为 12.
+            normalized_manual = normalized_candidate_manual_features
         if self.use_sampling_features:
             # 浮点 (B, 4); L2 除以 24*sqrt(3), Linf 除以 24, 边界标志和保留率保持原值.
             normalized_sampling = normalize_candidate_sampling_features(
@@ -969,7 +967,7 @@ class IdentityScorer(nn.Module):
         candidate: torch.Tensor,
         identities: IdentityRepresentations,
         identity_mask: torch.Tensor,
-        candidate_manual_features: torch.Tensor,
+        normalized_candidate_manual_features: torch.Tensor,
         candidate_sampling_features: torch.Tensor,
     ) -> IdentityScorerOutput:
         # IdentityScoreComponents; 同一次调用得到的三个 (B, I) 未屏蔽组件.
@@ -977,7 +975,7 @@ class IdentityScorer(nn.Module):
             candidate,
             identities,
             identity_mask,
-            candidate_manual_features,
+            normalized_candidate_manual_features,
             candidate_sampling_features,
         )
         return {
@@ -1058,9 +1056,9 @@ class ClosedSetMatcher(nn.Module):
             - return: FullMatcherOutput; 合并以下五个候选字段和四个身份字段.
             - return.candidate_embedding: 浮点张量, (B, D_m); 候选级融合表示.
             - return.foreground_logit: 浮点张量, (B,); 候选是真实前景的二分类 logit.
-            - return.ligand_area_logits: strongest/density_blob_only/trunk_only 为浮点张量 (B,48,48,48), pocket_only 为 None.
-            - return.binding_area_logits: strongest/density_blob_only/trunk_only 为浮点张量 (B,48,48,48), pocket_only 为 None.
-            - return.voxel_features: strongest/density_blob_only/trunk_only 为浮点张量 (B,C_v,48,48,48), pocket_only 为 None.
+            - return.ligand_area_logits: strongest/density_blob_only/trunk_only 为浮点张量 (B,48,48,48), blob_only/pocket_only 为 None.
+            - return.binding_area_logits: strongest/density_blob_only/trunk_only 为浮点张量 (B,48,48,48), blob_only/pocket_only 为 None.
+            - return.voxel_features: strongest/density_blob_only/trunk_only 为浮点张量 (B,C_v,48,48,48), blob_only/pocket_only 为 None.
             - return.identity_logits: 浮点张量, (B, I); 三个组件之和, 补零槽为 dtype 最小有限值.
             - return.identity_score_native: 浮点张量, (B, I); 未屏蔽语言基线.
             - return.identity_score_graph_increment: 浮点张量, (B, I); 未屏蔽且已乘图门的增量.
@@ -1110,7 +1108,8 @@ class ClosedSetMatcher(nn.Module):
 
     def forward(self, batch: CandidateBatch) -> FullMatcherOutput:
         """
-        candidate_manual_features 与 candidate_sampling_features 在此始终按键读取并传给 IdentityScorer; 关闭相应开关只表示数值不参与打分, 不允许完整模型批次省略这两个键.
+        candidate_manual_features 与 candidate_sampling_features 在此始终按键读取。候选编码器负责
+        归一化 12 项模态统计并应用 strongest 的 A/P/PP 三门，身份打分器不得读取未门控统计。
         identity_smiles 及 metadata 不参与数值前向.
         """
         # CandidateEncoderOutput; 包含候选表示、前景分数、两个体素区域分数和共享体素特征.
@@ -1122,7 +1121,9 @@ class ClosedSetMatcher(nn.Module):
             candidate_output["candidate_embedding"],
             identities,
             batch["identity_mask"],
-            batch["candidate_manual_features"],
+            self.candidate_encoder.prepare_manual_features(
+                batch["candidate_manual_features"]
+            ),
             batch["candidate_sampling_features"],
         )
         # IdentityScoreComponents; 三个 (B, I) 组件直接从同次打分结果取出, 补零槽仍未屏蔽.

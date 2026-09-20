@@ -330,7 +330,7 @@ def _run_matcher_condition(
 
     - checkpoint_path: 阶段 E 产生的真实 BEST checkpoint; 必须含模型配置和 validation 拟合的前景阈值.
     - manifest_path / split: 当前受体条件的冻结测试清单及划分键.
-    - batch_size / num_workers: 冻结推理的物理批量和持久工作进程数.
+    - batch_size / num_workers: 冻结推理的物理批量和当前遍历的工作进程数.
     - pp_top_k / cache_gib_per_worker: Dataset 的 PP token 上限与每 worker 缓存预算.
     - return[0]: 在原 selected 候选口径上使用 checkpoint 前景阈值计算的二分类和 SMILES 指标.
     - return[1]: PDB 到全部 centered 候选预测记录列表的映射; 两种扩展排序共同复用.

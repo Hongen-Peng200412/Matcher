@@ -2,7 +2,7 @@
 
 外部训练、验证和测试代码应从本包导入下列名称, 避免依赖子模块内的实现辅助类.
 
-- MatcherModelConfig: 四个具名变体及其共同结构参数.
+- MatcherModelConfig: 具名变体及其共同结构参数.
 - CandidateEncoder: 只编码候选体素与 A、P、V、PP token 的候选预测模块.
 - CandidateEncoderOutput: CandidateEncoder 返回的五字段 TypedDict 契约.
 - ClosedSetMatcher: 组合前景二分类与 PDB 内精确 SMILES 闭集打分的完整模型.

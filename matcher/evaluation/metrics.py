@@ -184,11 +184,11 @@ def selection_score(foreground_prauc: float, smiles_accuracy: float | None) -> f
 
     - foreground_prauc: 有限浮点数; 完整 validation 的前景 average precision.
     - smiles_accuracy: 有限浮点数; 受支持真前景候选上的总体 SMILES 匹配准确率.
-    - return: 两项指标的算术平均; 任一项不可用时失败关闭.
+    - return: 权重 0.3 与 1.0 的规范化加权平均; 任一项不可用时失败关闭.
     """
     if not np.isfinite(foreground_prauc) or smiles_accuracy is None or not np.isfinite(smiles_accuracy):
         raise ValueError("selection 需要有限前景 PRAUC 和非空 SMILES 准确率。")
-    return (float(foreground_prauc) + float(smiles_accuracy)) / 2.0
+    return (0.3 * float(foreground_prauc) + float(smiles_accuracy)) / 1.3
 
 
 @dataclass

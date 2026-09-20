@@ -1,4 +1,4 @@
-"""解析四个正式 Matcher 变体共用的紧凑训练 YAML.
+"""解析 Matcher 具名变体共用的紧凑训练 YAML.
 
 主要入口是 load_smiles_experiment. 本模块把一个 YAML 严格转换为数据、模型、损失、优化和
 追踪 dataclass, 拒绝未知字段与非法值. 它只读取指定配置文件, 不创建运行目录或写产物.
@@ -27,7 +27,7 @@ class DataConfig:
     - selected_only: True 时训练只保留 candidate_selected=True; validation 始终由 engine 固定为已选候选.
     - batch_size: 每个物理批次的候选数.
     - accumulation_steps: 每次参数更新累计的物理批次数; 两者乘积是名义 global batch.
-    - num_workers / prefetch_factor: DataLoader 持久工作进程数和每进程预取批次数.
+    - num_workers / prefetch_factor: 当前训练或 validation 阶段的工作进程数和每进程预取批次数.
     - pp_top_k: strongest 与 trunk_only 每候选保留的 PP token 上限.
     - cache_gib_per_worker: 每个 Dataset 副本的 PDB 载荷最近使用缓存预算.
     """
@@ -75,7 +75,7 @@ class TrackingConfig:
 
     - mode: online、offline 或 disabled.
     - entity: W&B 实体名称; None 使用登录账户默认实体.
-    - project / group: 四项正式实验共同使用的 W&B 项目和分组.
+    - project / group: 当前实验使用的 W&B 项目和分组.
     - log_every_updates: 每多少次参数更新记录训练标量.
     """
     mode: str
@@ -140,7 +140,7 @@ def load_smiles_experiment(path: Path) -> SmilesExperimentConfig:
     """
     读取并核对当前版本训练 YAML.
 
-    - path: 四份正式 YAML 之一.
+    - path: 一份正式实验 YAML.
     - return: 字段集合、类型、有限性和跨字段边界均已核对的 SmilesExperimentConfig.
 
     加载器不迁移历史模型、损失或初始化开关; 活动 YAML 出现未知字段时立即失败.
@@ -225,8 +225,8 @@ def load_smiles_experiment(path: Path) -> SmilesExperimentConfig:
         raise TypeError("tracking.project 必须是非空字符串。")
     if not isinstance(config.tracking.group, str) or not config.tracking.group:
         raise TypeError("tracking.group 必须是非空字符串。")
-    if config.model.variant == "pocket_only" and (
+    if config.model.variant in ("blob_only", "pocket_only") and (
         config.loss_weights.ligand_area != 0 or config.loss_weights.binding_area != 0
     ):
-        raise ValueError("pocket_only 的两个区域辅助损失权重必须为 0。")
+        raise ValueError("没有区域辅助头的变体必须把两个区域损失权重设为 0。")
     return config

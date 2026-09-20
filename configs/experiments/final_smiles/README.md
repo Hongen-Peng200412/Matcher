@@ -1,10 +1,10 @@
-# final_smiles：四项正式训练配置
+# final_smiles：单一 SMILES 身份训练配置
 
-本目录只允许四个 YAML：`strongest`、`density_blob_only`、`pocket_only`、`trunk_only`。它们共享 manifest、seed 3409、AdamW、学习率 `1e-4`、物理 batch 32、梯度累积 1、BF16、裁剪 200、validation 选模和 W&B 分组。
+第二轮活动配置是 `strongest.yaml` 与 `blob_only.yaml`，稳定实验标识分别为 `strongest-1` 和 `blob_only-0`。`density_blob_only.yaml`、`pocket_only.yaml` 与 `trunk_only.yaml` 只保留历史模型的可恢复训练入口，不属于第二轮并行实验。
 
-唯一结构变量是 `model.variant`。`pocket_only` 不存在区域头，因此两个区域损失显式为 0；其余三项均为 0.10。禁止通过新增布尔开关从这些 YAML 组合第五种模型。
+两项活动实验共享完整第 1–6 片 train/validation manifest、seed 3409、AdamW、学习率 `1e-4`、物理 batch 32、梯度累积 1、BF16、裁剪 200 和同一停止规则。`strongest-1` 的候选侧使用完整输入，前景、配体区域、结合区域和身份损失权重依次为 `0.30/0.05/0.05/1.00`；`blob_only-0` 的候选侧只使用 V/blob token、V 三项统计和四项裁剪统计，没有 U-Net 或区域头，对应权重为 `0.30/0/0/1.00`。
 
-阶段 E 启动前必须把四份 YAML 的 `data.manifest_path` 冻结到同一份已经闭合的 train/validation manifest。本轮指定的 strongest 与 density_blob_only 都固定使用 `32×1`，不得在门禁失败后自动改变批量。
+H100 上的 `strongest-1` 使用 30 个活动 DataLoader worker，A800 上的 `blob_only-0` 使用 15 个。训练与 validation 的 worker 不并存：一个 epoch 的唯一批次计划先冻结，再连续切成三个区段；每个训练区段完全结束并关闭工作进程后才启动完整 validation。切换阶段不会重新采样、遗漏、重复或改变训练候选顺序。
 
-每个 epoch 的更新按顺序划为三个连续区段，每段后执行一次完整 validation。统一改善门槛是 `0.001`；连续第三次未改善触发平台动作，前两次平台把学习率乘以 `0.8`，第三次平台直接早停。训练最多 15 个 epoch、45 次完整 validation，并保留每次检查的 checkpoint。
+validation 选模分数固定为 `(0.3 × 前景 PRAUC + 真实前景且身份受支持候选上的 SMILES 匹配准确率) / 1.3`。统一有效改善门槛是 `0.001`；连续前三次未改善只累计计数，第四次触发平台动作。前两次平台把学习率乘以 `0.8`，第三次平台不再降低学习率而直接早停。训练最多 15 个 epoch、45 次完整 validation，并保留每次检查的 checkpoint。
 
