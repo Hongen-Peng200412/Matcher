@@ -6,11 +6,12 @@
 | --- | --- |
 | `train_strongest.sh` | 在 H100 上从头训练 strongest-1 |
 | `train_blob_only.sh` | 在 A800 上从头训练 blob_only-0 |
+| `evaluate_strongest_1.sh` | 用 strongest-1 冻结 BEST 生成正式 test_0、test_1 与三张图 |
 | `evaluate_blob_only.sh` | 用 blob_only-0 冻结 BEST 生成正式 test_0、test_1 与三张图 |
 | `train_density_blob_only.sh` | 从头训练 density_blob_only |
 | `train_pocket_only.sh` | 从头训练 pocket_only |
 | `train_trunk_only.sh` | 从头训练 trunk_only |
-| `evaluate_strongest.sh` | 用 strongest 冻结 BEST 生成正式 test_0、test_1 与三张图 |
+| `evaluate_strongest.sh` | 用第一轮 strongest-0 冻结 BEST 生成正式 test_0、test_1 与三张图 |
 | `evaluate_density_blob_only.sh` | 用 density_blob_only 冻结 BEST 生成正式 test_0、test_1 与三张图 |
 
 训练入口读取同一份冻结 train/validation manifest。第二轮冻结测试脚本要在训练自然停止后绑定各自真实 BEST，再读取同两份 test_0 manifest 和同一份 Stage1-only 预览元数据；测试不读取 calibration，也不重新拟合前景阈值。
