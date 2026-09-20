@@ -14,6 +14,7 @@ Stage1+Stage2 不使用 Matcher 前景头或 validation 冻结前景阈值，只
 | --- | --- | --- | --- |
 | `dense_blob_only-0` | Find_1 Stage1-only；真实受体/CryoAtom2；Gaussian/概率均值；全配体/small-molecule Stage1+Stage2 | [实验结果](../experiment-centric/dense_blob_only-0/实验结果.md) | [追溯与说明](../experiment-centric/dense_blob_only-0/追溯与说明.md) |
 | `strongest-0` | Find_1 Stage1-only；真实受体/CryoAtom2；Gaussian/概率均值；全配体/small-molecule Stage1+Stage2 | [实验结果](../experiment-centric/strongest-0/实验结果.md) | [追溯与说明](../experiment-centric/strongest-0/追溯与说明.md) |
+| `blob_only-0` | Find_1 Stage1-only；真实受体/CryoAtom2；Gaussian/概率均值；全配体/small-molecule Stage1+Stage2 | [实验结果](../experiment-centric/blob_only-0/实验结果.md) | [追溯与说明](../experiment-centric/blob_only-0/追溯与说明.md) |
 | `Emap2lig` | 单条 receptor-independent Stage1-only 曲线 | [实验结果](../experiment-centric/Emap2lig/实验结果.md) | [追溯与说明](../experiment-centric/Emap2lig/追溯与说明.md) |
 
 ## Stage1-only
@@ -97,10 +98,27 @@ Stage1+Stage2 不使用 Matcher 前景头或 validation 冻结前景阈值，只
 | 19 | 64/77 (0.831169) / 64/77 (0.831169) | 62/77 (0.805195) / 63/77 (0.818182) | 64/77 (0.831169) / 64/77 (0.831169) | 62/77 (0.805195) / 63/77 (0.818182) |
 | 20 | 64/77 (0.831169) / 64/77 (0.831169) | 62/77 (0.805195) / 63/77 (0.818182) | 64/77 (0.831169) / 64/77 (0.831169) | 62/77 (0.805195) / 63/77 (0.818182) |
 
+## blob_only-0：Stage1+Stage2
+
+全配体与 small-molecule 两种答案范围逐点相同，所以下表每个值同时代表两档。
+
+| k | 真实受体 Gaussian | CryoAtom2 Gaussian | 真实受体概率均值 | CryoAtom2 概率均值 |
+| ---: | ---: | ---: | ---: | ---: |
+| 1 | 59/77 (0.766234) | 45/77 (0.584416) | 59/77 (0.766234) | 50/77 (0.649351) |
+| 2 | 61/77 (0.792208) | 50/77 (0.649351) | 60/77 (0.779221) | 56/77 (0.727273) |
+| 3 | 62/77 (0.805195) | 57/77 (0.740260) | 62/77 (0.805195) | 61/77 (0.792208) |
+| 4 | 63/77 (0.818182) | 58/77 (0.753247) | 62/77 (0.805195) | 61/77 (0.792208) |
+| 5 | 63/77 (0.818182) | 59/77 (0.766234) | 62/77 (0.805195) | 61/77 (0.792208) |
+| 6 | 63/77 (0.818182) | 61/77 (0.792208) | 62/77 (0.805195) | 61/77 (0.792208) |
+| 7 | 63/77 (0.818182) | 61/77 (0.792208) | 63/77 (0.818182) | 61/77 (0.792208) |
+| 8 | 63/77 (0.818182) | 62/77 (0.805195) | 63/77 (0.818182) | 62/77 (0.805195) |
+| 9–20 | 64/77 (0.831169) | 62/77 (0.805195) | 64/77 (0.831169) | 62/77 (0.805195) |
+
 ## 结果解读
 
 - Find_1 Stage1-only 在真实受体条件下于 top-5 达到 69/77；CryoAtom2 条件下，Gaussian 于 top-6 达到 68/77，概率均值于 top-5 达到 68/77。
 - Emap2lig 的单条 Stage1-only 曲线于 top-6 达到 54/77，之后保持不变。它与 Find_1 的候选生成方式不同，不能解释为逐候选配对消融。
 - `dense_blob_only-0` 的全配体与 small-molecule 答案范围完全相同，最终达到真实受体 64/77、CryoAtom2 62/77。
 - `strongest-0` 在真实受体下两档答案范围相同，最终达到 64/77；在 CryoAtom2 下，small-molecule 屏蔽相对全配体范围稳定增加 1 个命中 PDB，最终为 63/77 对 62/77。
+- `blob_only-0` 的两档答案范围逐点相同，最终达到真实受体 64/77、CryoAtom2 62/77；其终点与 `dense_blob_only-0` 相同，但低 k 点位并非逐点一致。
 - 这些 Stage1+Stage2 数值只表示目标 SMILES 身份是否命中；没有用前景头再次筛候选，不能与完整测试集中的“前景判断+身份判断”曲线混为同一口径。
