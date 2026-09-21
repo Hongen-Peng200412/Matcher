@@ -1,8 +1,10 @@
-"""按四个具名变体把 Stage1 候选编码成候选表示和前景分数.
+"""按具名变体把 Stage1 候选编码成候选表示和前景分数。
 
-主要入口是 CandidateEncoder.forward.
-strongest/trunk_only 使用完整 106 通道体素与四类 token;  density_blob_only 使用单实验密度通道与 V token;  pocket_only 只使用原始 A/L0.
-本模块返回内存张量, 不读取清单、不计算损失且不写入磁盘.
+主要入口是 CandidateEncoder.forward。strongest/trunk_only 使用完整 106 通道体素与四类
+token；blob_only 只使用 V/blob token 和候选自身统计；density_only 只使用单实验密度通道；
+density_only_106 只使用 106 通道体素；density_blob_only 使用单实验密度通道与 V token；
+pocket_only 只使用原始 A/L0。本模块返回内存张量，不读取清单、
+不计算损失且不写入磁盘。
 """
 
 from __future__ import annotations
@@ -12,7 +14,13 @@ from typing import TypedDict
 import torch
 from torch import nn
 
-from ..data.schema import A_TOKEN_DIM, P_TOKEN_DIM, PP_TOKEN_DIM, V_TOKEN_DIM
+from ..data.schema import (
+    A_TOKEN_DIM,
+    CANDIDATE_SAMPLING_FEATURE_DIM,
+    P_TOKEN_DIM,
+    PP_TOKEN_DIM,
+    V_TOKEN_DIM,
+)
 from ..datasets.contracts import CandidateBatch
 from .config import MatcherModelConfig
 from .fusion import (
@@ -124,6 +132,84 @@ class PocketMeanMaxEncoder(nn.Module):
         return self.fusion(torch.cat((mean, maximum), dim=-1))
 
 
+class BlobMeanMaxEncoder(nn.Module):
+    """
+    只用 source blob 的 V token 与候选自身统计生成候选表示.
+
+    构造参数:
+        - model_dim: 正整数 D_m; V token 投影和候选输出宽度.
+        - dropout: 融合多层感知机的丢弃概率.
+
+    前向输入:
+        - tokens: 浮点张量, (B,N_V,68); 64 维 Stage1 V 特征、来源概率和相对 XYZ.
+        - mask: bool 张量, (B,N_V); True 表示当前批次补齐轴上的真实 V token.
+        - manual_features: 浮点张量, (B,3); V token 数、来源概率均值和最大值, 其中计数已经执行 log1p.
+        - sampling_features: 浮点张量, (B,4); 裁剪边界标志、两项中心偏移和 V 保留比例, 两项偏移已经归一化.
+
+    前向输出:
+        - candidate_embedding: 浮点张量, (B,D_m); V token 掩码均值、最大值和七项候选自身统计的融合表示.
+    """
+    def __init__(self, model_dim: int, dropout: float) -> None:
+        """
+        建立 V token 投影器与候选级融合层。
+
+        - model_dim: 正整数 D_m；逐 token 投影和最终候选表示的共同宽度。
+        - dropout: 浮点数；融合多层感知机的丢弃概率。
+        - return: None；建立 68→D_m 投影器和 (2D_m+7)→D_m 融合层。
+
+        实例状态:
+            - self.projector: TokenProjector；只投影 68 维 V/blob token。
+            - self.fusion: Sequential；融合掩码均值、最大值、V 三项统计和四项裁剪统计。
+        """
+        super().__init__()
+        self.projector = TokenProjector(V_TOKEN_DIM, model_dim, dropout)
+        fusion_width = model_dim * 2 + 3 + CANDIDATE_SAMPLING_FEATURE_DIM
+        self.fusion = nn.Sequential(
+            nn.LayerNorm(fusion_width),
+            nn.Linear(fusion_width, model_dim * 2),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(model_dim * 2, model_dim),
+            nn.LayerNorm(model_dim),
+        )
+
+    def forward(
+        self,
+        tokens: torch.Tensor,
+        mask: torch.Tensor,
+        manual_features: torch.Tensor,
+        sampling_features: torch.Tensor,
+    ) -> torch.Tensor:
+        """
+        把 V token 和候选自身统计融合为一个候选表示.
+
+        - tokens: 浮点张量, (B,N_V,68).
+        - mask: bool 张量, (B,N_V); False 位置不进入均值或最大值.
+        - manual_features: 浮点张量, (B,3); 只含 V 模态三项统计.
+        - sampling_features: 浮点张量, (B,4); 只描述当前 blob 与 supplied crop 的关系.
+        - return: 浮点张量, (B,D_m); 不读取 U-Net、A/P/PP 或受体字段.
+        """
+        projected = self.projector(tokens, mask)
+        if projected.shape[1] == 0:
+            mean = torch.zeros(
+                (projected.shape[0], projected.shape[2]),
+                dtype=projected.dtype,
+                device=projected.device,
+            )
+            maximum = mean
+        else:
+            weights = mask[..., None].to(dtype=projected.dtype)
+            mean = (projected * weights).sum(dim=1) / weights.sum(dim=1).clamp_min(1.0)
+            maximum = projected.masked_fill(
+                ~mask[..., None],
+                torch.finfo(projected.dtype).min,
+            ).amax(dim=1)
+            maximum = torch.where(mask.any(dim=1, keepdim=True), maximum, torch.zeros_like(maximum))
+        return self.fusion(
+            torch.cat((mean, maximum, manual_features, sampling_features), dim=-1)
+        )
+
+
 class CandidateEncoder(nn.Module):
     def __init__(self, config: MatcherModelConfig) -> None:
         """
@@ -143,17 +229,20 @@ class CandidateEncoder(nn.Module):
 
         变体路径:
             - `strongest` 与 `trunk_only`: 使用 106 通道体素、A/P/V/PP token、12 项模态统计和 4 项裁剪统计. 两者在本类中完全相同, `trunk_only` 的差异只发生在后续身份打分器.
+            - blob_only: 只使用 V/blob token、V 三项统计和 4 项裁剪统计，不实例化 RAUNet、体素调制器或区域头.
+            - `density_only`: 只使用单实验密度 RAUNet 的最高分辨率空间 mean/max 摘要，不实例化 token 投影器、体素调制器、候选模态聚合器或区域头.
+            - `density_only_106`: 只使用 56 通道密度 bank 与 50 通道受体特征网格的 RAUNet 空间 mean/max 摘要，其余结构边界与 density_only 相同.
             - `density_blob_only`: 使用单实验密度通道、V token、仅 V 组非零的 12 项模态统计和 4 项裁剪统计.
             - `pocket_only`: 只对 A token 的原始 L0 做掩码均值与最大值归约, 不实例化 RAUNet、体素调制器或区域辅助头.
 
         输入参数:
             - batch: CandidateBatch. B 轴由 `collate_candidates` 的输入候选顺序定义, 每种 token 的第二轴补齐到当前批内最大长度.
-            - batch.voxel_input: 浮点张量, (B,C_in,48,48,48). `strongest` 与 `trunk_only` 的 C_in=106, `density_blob_only` 的 C_in=1, `pocket_only` 不读取该字段.
-            - batch.a_tokens: 浮点张量. `strongest` 与 `trunk_only` 为 (B,N_A,230), `pocket_only` 为 (B,N_A,50), `density_blob_only` 不读取该字段.
+            - batch.voxel_input: 浮点张量, (B,C_in,48,48,48). strongest、density_only_106 与 trunk_only 的 C_in=106, density_only 与 density_blob_only 的 C_in=1, blob_only 与 pocket_only 不读取该字段.
+            - batch.a_tokens: 浮点张量. strongest 与 trunk_only 为 (B,N_A,230), pocket_only 为 (B,N_A,50), blob_only 与 density_blob_only 不读取该字段.
             - batch.a_mask: bool 张量, (B,N_A). True 表示 `a_tokens` 第二维的真实受体原子, False 表示批内补零槽.
             - batch.p_tokens: 浮点张量, (B,N_P,116). 只由 `strongest` 与 `trunk_only` 读取.
             - batch.p_mask: bool 张量, (B,N_P). True 表示 `p_tokens` 第二维的真实 Stage1 锚点.
-            - batch.v_tokens: 浮点张量, (B,N_V,68). 由三个非 `pocket_only` 变体读取.
+            - batch.v_tokens: 浮点张量, (B,N_V,68). strongest、blob_only、density_blob_only 与 trunk_only 读取；density_only 与 pocket_only 不读取.
             - batch.v_mask: bool 张量, (B,N_V). 同时遮盖 `v_tokens` 与 `v_index_zyx` 的第二维, False 表示批内补零槽.
             - batch.v_index_zyx: int64 张量, (B,N_V,3). 每个 V token 在 supplied 48 立方体中的 Z、Y、X 整数索引.
             - batch.pp_tokens: 浮点张量, (B,N_PP,4). 只由 `strongest` 与 `trunk_only` 读取.
@@ -166,21 +255,23 @@ class CandidateEncoder(nn.Module):
             - output: CandidateEncoderOutput. 五个字段与输入 B 轴逐候选对齐.
             - output.candidate_embedding: 浮点张量, (B,D_m). 后续闭集身份打分与前景二分类共用的候选表示.
             - output.foreground_logit: 浮点张量, (B,). 五类真实配体相对背景的未归一化二分类分数.
-            - output.ligand_area_logits: 浮点张量 (B,48,48,48) 或 None. 非 `pocket_only` 变体返回配体区域辅助 logit.
-            - output.binding_area_logits: 浮点张量 (B,48,48,48) 或 None. 非 `pocket_only` 变体返回结合受体区域辅助 logit.
-            - output.voxel_features: 浮点张量 (B,C_v,48,48,48) 或 None. 非 `pocket_only` 变体返回共享 RAUNet 特征.
+            - output.ligand_area_logits: 浮点张量 (B,48,48,48) 或 None. U-Net 变体返回配体区域辅助 logit.
+            - output.binding_area_logits: 浮点张量 (B,48,48,48) 或 None. U-Net 变体返回结合受体区域辅助 logit.
+            - output.voxel_features: 浮点张量 (B,C_v,48,48,48) 或 None. U-Net 变体返回共享 RAUNet 特征.
 
         实例状态:
             - self.config: MatcherModelConfig. 保留构造时的完整结构配置.
-            - self.voxel_backbone: RaUnetBackbone 或 None. 非 `pocket_only` 变体把 (B,C_in,48,48,48) 体素输入编码为 (B,C_v,48,48,48), 其中 `density_blob_only` 的 C_in=1, 其余两个体素变体的 C_in=106.
-            - self.candidate_summary: Sequential 或 None. 非 `pocket_only` 变体把 RAUNet 特征的空间均值与最大值拼接向量 (B,2C_v) 映射为 (B,D_m).
-            - self.token_projectors: ModuleDict. `density_blob_only` 只含 `v`, `strongest` 与 `trunk_only` 含 `a`、`p`、`v`、`pp`, `pocket_only` 为空.
+            - self.voxel_backbone: RaUnetBackbone 或 None. U-Net 变体把 (B,C_in,48,48,48) 体素输入编码为 (B,C_v,48,48,48), 其中 density_only 与 density_blob_only 的 C_in=1, density_only_106/strongest/trunk_only 的 C_in=106.
+            - self.candidate_summary: Sequential 或 None. U-Net 变体把 RAUNet 特征的空间均值与最大值拼接向量 (B,2C_v) 映射为 (B,D_m).
+            - self.token_projectors: ModuleDict. `density_blob_only` 只含 `v`, `strongest` 与 `trunk_only` 含 `a`、`p`、`v`、`pp`, `density_only`、`density_only_106` 与 `pocket_only` 为空.
             - self.voxel_modulators: ModuleDict. `density_blob_only` 只含 `v`, `strongest` 与 `trunk_only` 含 `v`、`pp`, 每项把 token 同位置的 C_v 维 RAUNet 特征映射到 D_m.
-            - self.aggregator: MeanMaxAggregator、MeanMaxCandidateConditionedResidualAggregator 或 None. 前者服务 `density_blob_only`, 后者服务 `strongest` 与 `trunk_only`.
+            - self.aggregator: MeanMaxAggregator、MeanMaxCandidateConditionedResidualAggregator 或 None. 前者服务 `density_blob_only`, 后者服务 `strongest` 与 `trunk_only`; density_only 与 density_only_106 不建立聚合器.
+            - self.blob_encoder: BlobMeanMaxEncoder 或 None. 只在 blob_only 中归约 V/blob token 与七项候选自身统计.
             - self.pocket_encoder: PocketMeanMaxEncoder 或 None. 只在 `pocket_only` 中归约 50 维 A-L0 token.
-            - self.ligand_area_head: VoxelBinaryHead 或 None. 非 `pocket_only` 变体从共享 RAUNet 特征产生配体区域 logit.
-            - self.binding_area_head: VoxelBinaryHead 或 None. 非 `pocket_only` 变体从共享 RAUNet 特征产生结合受体区域 logit.
-            - self.foreground_head: Sequential. 四个变体共用, 把 (B,D_m) 候选表示映射为 (B,1), `forward` 删除最后一个单例轴.
+            - self.ligand_area_head: VoxelBinaryHead 或 None. strongest、density_blob_only 与 trunk_only 从共享 RAUNet 特征产生配体区域 logit.
+            - self.binding_area_head: VoxelBinaryHead 或 None. strongest、density_blob_only 与 trunk_only 从共享 RAUNet 特征产生结合受体区域 logit.
+            - self.modality_gates: ParameterDict. strongest 独有的 A/P/PP 三个直接标量门，均精确初始化为 0.01；V 不加门.
+            - self.foreground_head: Sequential. 全部变体共用, 把 (B,D_m) 候选表示映射为 (B,1), forward 删除最后一个单例轴.
 
         本类不读取 SMILES 身份轴, 不计算闭集身份分数或训练损失, 也不对返回 logit 执行 sigmoid.
         """
@@ -195,16 +286,21 @@ class CandidateEncoder(nn.Module):
         # ModuleDict[str,Sequential], 把 V 或 PP 同位置采样的 C_v 维 RAUNet 特征映射到 D_m.
         self.voxel_modulators = nn.ModuleDict()
         self.aggregator: nn.Module | None = None
+        self.blob_encoder: BlobMeanMaxEncoder | None = None
         self.pocket_encoder: PocketMeanMaxEncoder | None = None
         self.ligand_area_head: VoxelBinaryHead | None = None
         self.binding_area_head: VoxelBinaryHead | None = None
+        # ParameterDict[str,Parameter], strongest 中 A/P/PP 对完整 token 与三项手工统计共用的直接乘数; V 不加门.
+        self.modality_gates = nn.ParameterDict()
 
-        if config.variant == "pocket_only":
+        if config.variant == "blob_only":
+            self.blob_encoder = BlobMeanMaxEncoder(config.model_dim, config.dropout)
+        elif config.variant == "pocket_only":
             # pocket_only 不读取 voxel_input 或其它 token, 只归约 (B,N_A,50) A-L0.
             self.pocket_encoder = PocketMeanMaxEncoder(config.model_dim, config.dropout)
         else:
             # int, RAUNet 输入通道数 C_in. 单密度消融为 1, strongest/trunk_only 为 56 个密度通道加 50 个受体通道.
-            input_channels = 1 if config.variant == "density_blob_only" else 106
+            input_channels = 1 if config.variant in ("density_only", "density_blob_only") else 106
             self.voxel_backbone = RaUnetBackbone(
                 input_channels=input_channels,
                 feature_channels=config.voxel_feature_channels,
@@ -220,53 +316,61 @@ class CandidateEncoder(nn.Module):
                 nn.GELU(),
                 nn.LayerNorm(config.model_dim),
             )
-            # dict[str,int], 当前变体实际读取的 token 名称及原始宽度. density_blob_only 不为禁用的 A/P/PP 建立投影参数.
-            input_dims = (
-                {"v": V_TOKEN_DIM}
-                if config.variant == "density_blob_only"
-                else {"a": A_TOKEN_DIM, "p": P_TOKEN_DIM, "v": V_TOKEN_DIM, "pp": PP_TOKEN_DIM}
-            )
-            self.token_projectors.update(
-                {
-                    name: TokenProjector(width, config.model_dim, config.dropout)
-                    for name, width in input_dims.items()
-                }
-            )
-            # tuple[str,...], 需要把同位置 RAUNet 特征加入 token 的模态. A/P 没有 supplied 48 立方体内的整数 ZYX 索引, 因而不做体素采样.
-            modulated_names = ("v",) if config.variant == "density_blob_only" else ("v", "pp")
-            self.voxel_modulators.update(
-                {
-                    name: nn.Sequential(
-                        nn.Linear(config.voxel_feature_channels, config.model_dim),
-                        nn.GELU(),
-                        nn.Linear(config.model_dim, config.model_dim),
+            if config.variant not in ("density_only", "density_only_106"):
+                # dict[str,int], 当前变体实际读取的 token 名称及原始宽度. density_blob_only 不为禁用的 A/P/PP 建立投影参数.
+                input_dims = (
+                    {"v": V_TOKEN_DIM}
+                    if config.variant == "density_blob_only"
+                    else {"a": A_TOKEN_DIM, "p": P_TOKEN_DIM, "v": V_TOKEN_DIM, "pp": PP_TOKEN_DIM}
+                )
+                self.token_projectors.update(
+                    {
+                        name: TokenProjector(width, config.model_dim, config.dropout)
+                        for name, width in input_dims.items()
+                    }
+                )
+                # tuple[str,...], 需要把同位置 RAUNet 特征加入 token 的模态. A/P 没有 supplied 48 立方体内的整数 ZYX 索引, 因而不做体素采样.
+                modulated_names = ("v",) if config.variant == "density_blob_only" else ("v", "pp")
+                self.voxel_modulators.update(
+                    {
+                        name: nn.Sequential(
+                            nn.Linear(config.voxel_feature_channels, config.model_dim),
+                            nn.GELU(),
+                            nn.Linear(config.model_dim, config.model_dim),
+                        )
+                        for name in modulated_names
+                    }
+                )
+
+                if config.variant == "density_blob_only":
+                    # density_blob_only 的 A/P/PP 在运行时保持空模态, MeanMaxAggregator 仍按固定四模态顺序接收它们的零摘要.
+                    self.aggregator = MeanMaxAggregator(
+                        config.model_dim,
+                        config.dropout,
+                        include_manual=True,
+                        include_sampling=True,
                     )
-                    for name in modulated_names
-                }
-            )
+                else:
+                    # strongest/trunk_only 使用同一候选侧聚合器, 把 mean/max 主表示与候选条件注意力表示送入零初始化残差分支.
+                    self.aggregator = MeanMaxCandidateConditionedResidualAggregator(
+                        config.model_dim,
+                        config.attention_heads,
+                        config.dropout,
+                        include_manual=True,
+                        include_sampling=True,
+                    )
+                # 两个区域头读取同一份 (B,C_v,48,48,48) RAUNet 特征, 各自输出一个无 sigmoid 的逐体素 logit 网格.
+                self.ligand_area_head = VoxelBinaryHead(config.voxel_feature_channels)
+                self.binding_area_head = VoxelBinaryHead(config.voxel_feature_channels)
+                if config.variant == "strongest":
+                    self.modality_gates.update(
+                        {
+                            name: nn.Parameter(torch.tensor(0.01, dtype=torch.float32))
+                            for name in ("a", "p", "pp")
+                        }
+                    )
 
-            if config.variant == "density_blob_only":
-                # density_blob_only 的 A/P/PP 在运行时保持空模态, MeanMaxAggregator 仍按固定四模态顺序接收它们的零摘要.
-                self.aggregator = MeanMaxAggregator(
-                    config.model_dim,
-                    config.dropout,
-                    include_manual=True,
-                    include_sampling=True,
-                )
-            else:
-                # strongest/trunk_only 使用同一候选侧聚合器, 把 mean/max 主表示与候选条件注意力表示送入零初始化残差分支.
-                self.aggregator = MeanMaxCandidateConditionedResidualAggregator(
-                    config.model_dim,
-                    config.attention_heads,
-                    config.dropout,
-                    include_manual=True,
-                    include_sampling=True,
-                )
-            # 两个区域头读取同一份 (B,C_v,48,48,48) RAUNet 特征, 各自输出一个无 sigmoid 的逐体素 logit 网格.
-            self.ligand_area_head = VoxelBinaryHead(config.voxel_feature_channels)
-            self.binding_area_head = VoxelBinaryHead(config.voxel_feature_channels)
-
-        # [B,D_m] -> [B,1], 四个变体共用的前景二分类头; 最后一维在 `forward` 返回前删除.
+        # [B,D_m] -> [B,1], 全部变体共用的前景二分类头; 最后一维在 forward 返回前删除.
         self.foreground_head = nn.Sequential(
             nn.Linear(config.model_dim, config.model_dim),
             nn.GELU(),
@@ -299,18 +403,48 @@ class CandidateEncoder(nn.Module):
             torch.empty((batch_size, 0), dtype=torch.bool, device=device),
         )
 
+    def prepare_manual_features(self, features: torch.Tensor) -> torch.Tensor:
+        """
+        归一化 12 项模态统计，并应用 strongest 的 A/P/PP 直接标量门。
+
+        - features: 浮点张量, (B,12)；A、P、V、PP 各占连续三项 count/mean/max。
+        - return: 浮点张量, (B,12)；计数已执行 log1p，strongest 的 A/P/PP 三组已分别乘对应门，V 组不加门。
+
+        候选聚合器与身份打分器都必须调用本方法，确保 A/P/PP 统计不能绕过同一组三门。
+        非 strongest 变体只执行公共归一化，不改变既有数值定义。
+        """
+        manual = normalize_candidate_manual_features(features)
+        if self.config.variant == "blob_only":
+            # 浮点张量, (B,3)；blob_only 的候选编码与身份打分均只消费 V 的 count、mean、max。
+            return manual[:, 6:9]
+        if self.config.variant != "strongest":
+            return manual
+        # 浮点张量, (4,), 按 A/P/V/PP 顺序控制四组三项统计；V 固定为 1。
+        gates = torch.stack(
+            (
+                self.modality_gates["a"],
+                self.modality_gates["p"],
+                manual.new_tensor(1.0),
+                self.modality_gates["pp"],
+            )
+        ).to(dtype=manual.dtype)
+        # [B,12] -> [B,4,3] -> [B,12]，每个门同时控制对应模态的 count、mean 和 max。
+        return (
+            manual.reshape(manual.shape[0], 4, 3) * gates[None, :, None]
+        ).reshape(manual.shape[0], 12)
+
     def forward(self, batch: CandidateBatch) -> CandidateEncoderOutput:
         """
         按 `config.variant` 消费 CandidateBatch 的候选字段, 并返回候选级与逐体素预测.
 
         输入参数:
             - batch: CandidateBatch. B 轴由 `collate_candidates` 的输入候选顺序定义, 每种 token 的第二轴补齐到当前批内最大长度.
-            - batch.voxel_input: 浮点张量, (B,C_in,48,48,48). `strongest` 与 `trunk_only` 的 C_in=106, `density_blob_only` 的 C_in=1, `pocket_only` 不读取该字段.
-            - batch.a_tokens: 浮点张量. `strongest` 与 `trunk_only` 为 (B,N_A,230), `pocket_only` 为 (B,N_A,50), `density_blob_only` 不读取该字段.
+            - batch.voxel_input: 浮点张量, (B,C_in,48,48,48). strongest、density_only_106 与 trunk_only 的 C_in=106, density_only 与 density_blob_only 的 C_in=1, blob_only 与 pocket_only 不读取该字段.
+            - batch.a_tokens: 浮点张量. strongest 与 trunk_only 为 (B,N_A,230), pocket_only 为 (B,N_A,50), blob_only 与 density_blob_only 不读取该字段.
             - batch.a_mask: bool 张量, (B,N_A). True 表示 `a_tokens` 第二维的真实受体原子, False 表示批内补零槽.
             - batch.p_tokens: 浮点张量, (B,N_P,116). 只由 `strongest` 与 `trunk_only` 读取.
             - batch.p_mask: bool 张量, (B,N_P). True 表示 `p_tokens` 第二维的真实 Stage1 锚点.
-            - batch.v_tokens: 浮点张量, (B,N_V,68). 由三个非 `pocket_only` 变体读取.
+            - batch.v_tokens: 浮点张量, (B,N_V,68). strongest、blob_only、density_blob_only 与 trunk_only 读取；density_only 与 pocket_only 不读取.
             - batch.v_mask: bool 张量, (B,N_V). 同时遮盖 `v_tokens` 与 `v_index_zyx` 的第二维, False 表示批内补零槽.
             - batch.v_index_zyx: int64 张量, (B,N_V,3). 每个 V token 在 supplied 48 立方体中的 Z、Y、X 整数索引.
             - batch.pp_tokens: 浮点张量, (B,N_PP,4). 只由 `strongest` 与 `trunk_only` 读取.
@@ -323,13 +457,31 @@ class CandidateEncoder(nn.Module):
             - output: CandidateEncoderOutput. 五个字段与输入 B 轴逐候选对齐.
             - output.candidate_embedding: 浮点张量, (B,D_m). 后续闭集身份打分与前景二分类共用的候选表示.
             - output.foreground_logit: 浮点张量, (B,). 五类真实配体相对背景的未归一化二分类分数.
-            - output.ligand_area_logits: 浮点张量 (B,48,48,48) 或 None. 非 `pocket_only` 变体返回配体区域辅助 logit.
-            - output.binding_area_logits: 浮点张量 (B,48,48,48) 或 None. 非 `pocket_only` 变体返回结合受体区域辅助 logit.
-            - output.voxel_features: 浮点张量 (B,C_v,48,48,48) 或 None. 非 `pocket_only` 变体返回共享 RAUNet 特征.
+            - output.ligand_area_logits: 浮点张量 (B,48,48,48) 或 None. U-Net 变体返回配体区域辅助 logit.
+            - output.binding_area_logits: 浮点张量 (B,48,48,48) 或 None. U-Net 变体返回结合受体区域辅助 logit.
+            - output.voxel_features: 浮点张量 (B,C_v,48,48,48) 或 None. U-Net 变体返回共享 RAUNet 特征.
 
-        `pocket_only` 不读取体素、P/V/PP 或候选统计. 其它三个变体始终使用归一化后的 12 项模态统计和 4 项裁剪统计. 本函数不消费 CandidateBatch 的身份字段或监督目标.
+        blob_only 只读取 V/blob 与七项候选自身统计；density_only 只读取单实验密度；
+        density_only_106 只读取 106 通道体素；pocket_only 只读取 A-L0。其余 U-Net 变体使用归一化后的 12 项模态统计和 4 项裁剪统计。
+        本函数不消费 CandidateBatch 的身份字段或监督目标。
         """
-        if self.config.variant == "pocket_only":
+        if self.config.variant == "blob_only":
+            if self.blob_encoder is None:
+                raise RuntimeError("blob_only 编码器未建立。")
+            # 浮点张量, [B,12] -> [B,3]. 只保留 V 组 count、概率均值和概率最大值, 计数执行 log1p.
+            manual = self.prepare_manual_features(batch["candidate_manual_features"])
+            # 浮点张量, [B,4] -> [B,4]. 归一化当前 blob 的裁剪边界、中心偏移和 V 保留比例.
+            sampling = normalize_candidate_sampling_features(batch["candidate_sampling_features"])
+            candidate_embedding = self.blob_encoder(
+                batch["v_tokens"],
+                batch["v_mask"],
+                manual,
+                sampling,
+            )
+            voxel_features = None
+            ligand_area_logits = None
+            binding_area_logits = None
+        elif self.config.variant == "pocket_only":
             if self.pocket_encoder is None:
                 raise RuntimeError("pocket_only 编码器未建立。")
             # [B,N_A,50] + [B,N_A] -> [B,D_m], 只对真实 A-L0 token 做投影、均值和最大值归约.
@@ -340,7 +492,7 @@ class CandidateEncoder(nn.Module):
             binding_area_logits = None
 
         else:
-            if self.voxel_backbone is None or self.candidate_summary is None or self.aggregator is None:
+            if self.voxel_backbone is None or self.candidate_summary is None:
                 raise RuntimeError("U-Net 候选路径未完整建立。")
             # 浮点张量, (B,C_in,48,48,48). Dataset 的 float16 缓存先对齐首层卷积参数 dtype, 自动混合精度仍由外层上下文决定实际算子精度.
             voxel_input = batch["voxel_input"].to(
@@ -355,63 +507,19 @@ class CandidateEncoder(nn.Module):
             )
             # 浮点张量, [B,2C_v] -> [B,D_m], 为四模态聚合提供候选级体素摘要, 也是条件注意力的查询.
             candidate_summary = self.candidate_summary(pooled)
-            # 二元组, 浮点 (B,0,D_m) token 与 bool (B,0) 掩码. 禁用模态共享该只读空占位.
-            empty = self._empty_modality(
-                candidate_summary.shape[0],
-                candidate_summary.dtype,
-                candidate_summary.device,
-            )
-            # dict[str,tuple[Tensor,Tensor]], 四键固定按 A/P/V/PP 对应投影 token 与有效掩码; 当前变体禁用的键暂时指向空占位.
-            modalities: dict[str, tuple[torch.Tensor, torch.Tensor]] = {
-                "a": empty,
-                "p": empty,
-                "v": empty,
-                "pp": empty,
-            }
-            # tuple[str,...], 本次实际从 CandidateBatch 读取并投影的模态名称. 顺序也是后续写回 modalities 的稳定顺序.
-            names = ("v",) if self.config.variant == "density_blob_only" else ("a", "p", "v", "pp")
-            for name in names:
-                # 浮点 (B,N_m,F_m) 与 bool (B,N_m), 当前模态补齐后的原始 token 及真实 token 掩码.
-                tokens = batch[f"{name}_tokens"]
-                mask = batch[f"{name}_mask"]
-                # 浮点张量, [B,N_m,F_m] -> [B,N_m,D_m]. TokenProjector 在末端把 mask=False 的补零位置重新清零.
-                projected = self.token_projectors[name](tokens, mask)
-                if name == "v":
-                    if "v" not in self.voxel_modulators:
-                        raise RuntimeError("V token 体素调制器未建立。")
-                    # 浮点张量, [B,C_v,48,48,48] + [B,N_V,3] -> [B,N_V,C_v]. 按 v_index_zyx 为每个真实 V token 读取同位置 RAUNet 特征.
-                    sampled = gather_voxel_features(voxel_features, batch["v_index_zyx"], mask)
-                    # [B,N_V,D_m] + [B,N_V,C_v] -> [B,N_V,D_m], 把局部体素上下文作为加性调制写入 Stage1 V token 表示.
-                    projected = projected + self.voxel_modulators["v"](sampled)
-                    # 浮点张量, (B,N_V,D_m). 调制器含偏置, 因而相加后再次把补零 V token 严格清零.
-                    projected = projected * mask[..., None].to(dtype=projected.dtype)
-                elif name == "pp":
-                    if "pp" not in self.voxel_modulators:
-                        raise RuntimeError("PP token 体素调制器未建立。")
-                    # 浮点张量, [B,C_v,48,48,48] + [B,N_PP,3] -> [B,N_PP,C_v]. 按 pp_index_zyx 读取每个高概率体素的 RAUNet 特征.
-                    sampled = gather_voxel_features(voxel_features, batch["pp_index_zyx"], mask)
-                    # [B,N_PP,D_m] + [B,N_PP,C_v] -> [B,N_PP,D_m], 把局部体素上下文加入概率与相对坐标投影.
-                    projected = projected + self.voxel_modulators["pp"](sampled)
-                    # 浮点张量, (B,N_PP,D_m). 调制器偏置可能激活补零槽, 因而返回聚合器前再次应用 PP 掩码.
-                    projected = projected * mask[..., None].to(dtype=projected.dtype)
-                # 当前键由空占位替换为浮点 (B,N_m,D_m) 投影 token 与 bool (B,N_m) 有效掩码.
-                modalities[name] = (projected, mask)
-            # 浮点张量, [B,12] -> [B,12]. 四组 token 数执行 log1p, 每组 Stage1 概率均值与最大值保持原值.
-            manual = normalize_candidate_manual_features(batch["candidate_manual_features"])
-            # 浮点张量, [B,4] -> [B,4]. 两项中心偏移分别按 24*sqrt(3) 与 24 缩放, 边界标志和 V 保留比例保持原值.
-            sampling = normalize_candidate_sampling_features(batch["candidate_sampling_features"])
-            # 浮点张量, [B,D_m] + 四模态投影 token/掩码 + [B,12] + [B,4] -> [B,D_m]. 具体归约方式由当前变体构造的聚合器固定.
-            candidate_embedding = self.aggregator(
-                candidate_summary,
-                modalities,
-                manual,
-                sampling,
-            )
-            if self.ligand_area_head is None or self.binding_area_head is None:
-                raise RuntimeError("区域辅助头未建立。")
-            # 两个浮点张量, [B,C_v,48,48,48] -> [B,48,48,48]. 每个头独立产生一个未归一化的逐体素二分类分数.
-            ligand_area_logits = self.ligand_area_head(voxel_features)
-            binding_area_logits = self.binding_area_head(voxel_features)
+            if self.config.variant in ("density_only", "density_only_106"):
+                # 两个体素-only 变体都直接使用 RAUNet 空间 mean/max 投影，不读取批次中的任何 token 或人工统计.
+                candidate_embedding = candidate_summary
+                ligand_area_logits = None
+                binding_area_logits = None
+            else:
+                if self.aggregator is None:
+                    raise RuntimeError("候选模态聚合器未建立。")
+                candidate_embedding, ligand_area_logits, binding_area_logits = self._aggregate_voxel_modalities(
+                    batch,
+                    voxel_features,
+                    candidate_summary,
+                )
         # CandidateEncoderOutput, 候选表示进入后续身份打分; foreground_head 输出的 (B,1) 删除最后一个单例轴得到 (B,).
         return {
             "candidate_embedding": candidate_embedding,
@@ -420,3 +528,84 @@ class CandidateEncoder(nn.Module):
             "binding_area_logits": binding_area_logits,
             "voxel_features": voxel_features,
         }
+
+    def _aggregate_voxel_modalities(
+        self,
+        batch: CandidateBatch,
+        voxel_features: torch.Tensor,
+        candidate_summary: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        把启用的 token、人工统计和 RAUNet 摘要聚合为候选表示及两个区域输出.
+
+        - batch: 当前物理批次；只读取 density_blob_only、strongest 或 trunk_only 启用的字段.
+        - voxel_features: 浮点张量，(B,C_v,48,48,48)；RAUNet 最高分辨率特征.
+        - candidate_summary: 浮点张量，(B,D_m)；voxel_features 的空间 mean/max 投影.
+        - return.candidate_embedding: 浮点张量，(B,D_m)；候选模态聚合结果.
+        - return.ligand_area_logits: 浮点张量，(B,48,48,48)；配体区域未归一化分数.
+        - return.binding_area_logits: 浮点张量，(B,48,48,48)；结合区域未归一化分数.
+
+        density_only 与 density_only_106 不调用本函数，因而不会实例化或读取 token、人工统计与区域头.
+        """
+        # 二元组, 浮点 (B,0,D_m) token 与 bool (B,0) 掩码. 禁用模态共享该只读空占位.
+        empty = self._empty_modality(
+            candidate_summary.shape[0],
+            candidate_summary.dtype,
+            candidate_summary.device,
+        )
+        # dict[str,tuple[Tensor,Tensor]], 四键固定按 A/P/V/PP 对应投影 token 与有效掩码; 当前变体禁用的键暂时指向空占位.
+        modalities: dict[str, tuple[torch.Tensor, torch.Tensor]] = {
+            "a": empty,
+            "p": empty,
+            "v": empty,
+            "pp": empty,
+        }
+        # tuple[str,...], 本次实际从 CandidateBatch 读取并投影的模态名称. 顺序也是后续写回 modalities 的稳定顺序.
+        names = ("v",) if self.config.variant == "density_blob_only" else ("a", "p", "v", "pp")
+        for name in names:
+            # 浮点 (B,N_m,F_m) 与 bool (B,N_m), 当前模态补齐后的原始 token 及真实 token 掩码.
+            tokens = batch[f"{name}_tokens"]
+            mask = batch[f"{name}_mask"]
+            # 浮点张量, [B,N_m,F_m] -> [B,N_m,D_m]. TokenProjector 在末端把 mask=False 的补零位置重新清零.
+            projected = self.token_projectors[name](tokens, mask)
+            if name == "v":
+                if "v" not in self.voxel_modulators:
+                    raise RuntimeError("V token 体素调制器未建立。")
+                # 浮点张量, [B,C_v,48,48,48] + [B,N_V,3] -> [B,N_V,C_v]. 按 v_index_zyx 为每个真实 V token 读取同位置 RAUNet 特征.
+                sampled = gather_voxel_features(voxel_features, batch["v_index_zyx"], mask)
+                # [B,N_V,D_m] + [B,N_V,C_v] -> [B,N_V,D_m], 把局部体素上下文作为加性调制写入 Stage1 V token 表示.
+                projected = projected + self.voxel_modulators["v"](sampled)
+                # 浮点张量, (B,N_V,D_m). 调制器含偏置, 因而相加后再次把补零 V token 严格清零.
+                projected = projected * mask[..., None].to(dtype=projected.dtype)
+            elif name == "pp":
+                if "pp" not in self.voxel_modulators:
+                    raise RuntimeError("PP token 体素调制器未建立。")
+                # 浮点张量, [B,C_v,48,48,48] + [B,N_PP,3] -> [B,N_PP,C_v]. 按 pp_index_zyx 读取每个高概率体素的 RAUNet 特征.
+                sampled = gather_voxel_features(voxel_features, batch["pp_index_zyx"], mask)
+                # [B,N_PP,D_m] + [B,N_PP,C_v] -> [B,N_PP,D_m], 把局部体素上下文加入概率与相对坐标投影.
+                projected = projected + self.voxel_modulators["pp"](sampled)
+                # 浮点张量, (B,N_PP,D_m). 调制器偏置可能激活补零槽, 因而返回聚合器前再次应用 PP 掩码.
+                projected = projected * mask[..., None].to(dtype=projected.dtype)
+            if name in self.modality_gates:
+                # 浮点标量, strongest 对 A/P/PP 的独立直接乘数; 此处位于 PP 局部体素调制之后, 因而不会留下绕过门控的 token 增量.
+                gate = self.modality_gates[name].to(dtype=projected.dtype)
+                projected = projected * gate
+            # 当前键由空占位替换为浮点 (B,N_m,D_m) 投影 token 与 bool (B,N_m) 有效掩码.
+            modalities[name] = (projected, mask)
+        # 浮点张量, [B,12] -> [B,12]. 四组 token 数执行 log1p, 每组 Stage1 概率均值与最大值保持原值.
+        manual = self.prepare_manual_features(batch["candidate_manual_features"])
+        # 浮点张量, [B,4] -> [B,4]. 两项中心偏移分别按 24*sqrt(3) 与 24 缩放, 边界标志和 V 保留比例保持原值.
+        sampling = normalize_candidate_sampling_features(batch["candidate_sampling_features"])
+        # 浮点张量, [B,D_m] + 四模态投影 token/掩码 + [B,12] + [B,4] -> [B,D_m]. 具体归约方式由当前变体构造的聚合器固定.
+        candidate_embedding = self.aggregator(
+            candidate_summary,
+            modalities,
+            manual,
+            sampling,
+        )
+        if self.ligand_area_head is None or self.binding_area_head is None:
+            raise RuntimeError("区域辅助头未建立。")
+        # 两个浮点张量, [B,C_v,48,48,48] -> [B,48,48,48]. 每个头独立产生一个无 sigmoid 的逐体素分数.
+        ligand_area_logits = self.ligand_area_head(voxel_features)
+        binding_area_logits = self.binding_area_head(voxel_features)
+        return candidate_embedding, ligand_area_logits, binding_area_logits

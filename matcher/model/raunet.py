@@ -645,11 +645,11 @@ class RotarySelfAttention3d(nn.Module):
 
 class RaUnetBackbone(nn.Module):
     """
-    复现 Find_0 的多尺度三维 RAUNet, 并把最高分辨率解码状态用于回收.
+    复现正式 Stage1 的三维 RAUNet, 并把最高分辨率解码状态用于回收和输出.
 
     构造参数:
-    - input_channels: 整数 C_in; strongest/trunk_only 传 106, density_blob_only 传 1.
-    - feature_channels: 整数 C_v; 最终最高分辨率特征通道数.
+    - input_channels: 整数 C_in; strongest/density_only_106/trunk_only 传 106, density_only/density_blob_only 传 1；blob_only/pocket_only 不实例化本类.
+    - feature_channels: 整数 C_v; 必须等于 planes 中的 dec0, 使最高分辨率解码状态可以直接输出.
     - planes: 九项可转换为整数的序列; 依次为 enc0、enc1、enc2、enc3、bottleneck、dec3、dec2、dec1、dec0.
     - recycle_iterations: 正整数 R; 同一 voxel_input 的前向轮数, 前置轮显式 no_grad, 第 R-1 轮不受该内部上下文包裹, 是否建图由外层梯度模式决定.
     - gradient_checkpointing: 布尔语义值; 训练且梯度启用时, 决定高开销模块是否使用非重入激活重计算.
@@ -659,7 +659,7 @@ class RaUnetBackbone(nn.Module):
     - voxel_input: 浮点张量, (B,C_in,48,48,48); 空间轴依次为 Z/Y/X.
 
     前向输出:
-    - voxel_features: 浮点张量, (B,C_v,48,48,48); 三种卷积核多尺度分支连接后投影的最高分辨率特征.
+    - voxel_features: 浮点张量, (B,C_v,48,48,48); 最后一轮最高分辨率解码特征.
 
     固定 48 立方体调用的编码空间大小依次为 48、24、12、6、3; 解码空间大小依次恢复为 6、12、24、48. planes 必须满足 enc3=bottleneck=dec3, 使最深上采样可与 level3 相加; 还必须满足 dec0=enc0, 使 decoded0 可直接送入下一轮 recycle_norm.
     """
@@ -673,11 +673,11 @@ class RaUnetBackbone(nn.Module):
         bottleneck_attention_layers: int,
     ) -> None:
         """
-        建立四级编码器、瓶颈注意力、门控解码器和多尺度输出分支.
+        建立四级编码器、瓶颈注意力和门控解码器.
 
         输入参数:
         - input_channels: 整数 C_in; input_projection 的输入宽度, 本构造器不单独检查正值.
-        - feature_channels: 整数 C_v; feature_projection 的输出宽度, 本构造器不单独检查正值.
+        - feature_channels: 整数 C_v; 必须等于 planes 中的 dec0.
         - planes: 序列; 每项先执行 int(value), 随后要求共九项且转换结果为正.
         - recycle_iterations: 数值; 显式要求大于零, 正式配置保证是精确 int, 直接传入正非整数会在 forward 的 range 调用处失败.
         - gradient_checkpointing: 布尔语义值; 保存后由 _heavy 与 training、grad_enabled 共同判断.
@@ -705,11 +705,7 @@ class RaUnetBackbone(nn.Module):
         - self.gate1: AttentionGate3d; 把 dec2 粗特征与 enc1 跳跃特征融合成 dec1 通道和 24 立方体.
         - self.decode1: Sequential; 四个保持 dec1 通道和 24 立方体的 Res2NetBlock3d.
         - self.gate0: AttentionGate3d; 把 dec1 粗特征与 4enc0 跳跃特征融合成 dec0 通道和 48 立方体.
-        - self.decode0: Sequential; 四个保持 dec0 通道和 48 立方体的 Res2NetBlock3d.
-        - self.multiscale3: 三乘三乘三 Conv3d; decoded0 到 branch_channels, 保持空间大小.
-        - self.multiscale5: 五乘五乘五 Conv3d; decoded0 到 branch_channels, 保持空间大小.
-        - self.multiscale7: 七乘七乘七 Conv3d; decoded0 到 branch_channels, 保持空间大小.
-        - self.feature_projection: 三乘三乘三 Conv3d; 连接的 3×branch_channels 映射到 C_v.
+        - self.decode0: Sequential; 四个保持 dec0=C_v 通道和 48 立方体的 Res2NetBlock3d.
         """
         super().__init__()
         # 九项 int 元组; 直接构造允许可由 int 转换的序列元素, MatcherModelConfig 路径则已保证精确正整数.
@@ -724,6 +720,8 @@ class RaUnetBackbone(nn.Module):
             raise ValueError("当前 RAUNet 契约要求 enc3、bottleneck 和 dec3 通道相同。")
         if dec0 != enc0:
             raise ValueError("原 RAUNet 直接回收 decoded0，因此 dec0 必须等于 enc0。")
+        if feature_channels != dec0:
+            raise ValueError("关闭末端多尺度卷积后 feature_channels 必须等于 dec0。")
         self.input_channels = input_channels
         self.feature_channels = feature_channels
         self.planes = plane_values
@@ -756,20 +754,6 @@ class RaUnetBackbone(nn.Module):
         self.gate0 = AttentionGate3d(enc0 * 4, dec1, dec0)
         self.decode0 = _res2_stack(dec0, scale=4)
 
-        # NOTE: 注意，还需要仔细核验一遍，确保和stage1的网络相同; 另外， stage1 的网络实际上没有启动末尾的多尺度卷积：因为已经证明了：加了多尺度卷积反而有害
-        # TODO: 我一次性向你说明未来的最小改动。
-        # TODO: 模型层面：加上一个是否移除多尺度卷积的开关，默认全模型统一移除; blob 模型改为只使用blob自身的特征,也就是说Unet的调制也省了; strongest 模型中, 控制前期 p,pp,a 这三个模态的影响: 建议加上一个0.01的可学习门控或零初始化。
-        # TODO: 参数层面: 假阳性过滤权重降为0.3, 辅助损失(ligand-area/binding-area)各自降为0.05; patience 从2提统一升为3(第4次得分不增再下降学习率)。
-        # TODO: 优化 strongest 的 I/O： 你可以阅读 codex://threads/01a0b7ac-7941-7c91-9651-dcfb0638d572 的分析，参考它的方案进行优化。可以尝试在GPU上进行构造密度通道，但要注意最新的代码库必须保证"不同时出现两种逻辑"，且，你要保证代码的极简。
-        # TODO: 阅读 C:\Users\15919\Desktop\Matcher\测试结果与追溯\记录规则与说明.md 。且注意现在有一张空闲的H100： 378587      h100      F-5 penghong  R 3-11:07:52      1 hnode02 ，还有一张空闲的A800： 378587      h100      F-5 penghong  R 3-22:27:47      1 hnode02 。修改好代码后，按照 strongest 的新逻辑，重新训练并在全测试集和小分子stage3测试集上测评 strongest，日志和结果按照格式说明放到 C:\Users\15919\Desktop\Matcher\测试结果与追溯\experiment-centric\strongest-1 里面。同时使用空闲(try_lock)的 A800  完成blob only的训练和全套测评(全测试集&小分子stage3测试集)，结果同样放在 C:\Users\15919\Desktop\Matcher\测试结果与追溯\experiment-centric\blob_only-0 。它们都要按照现有范式启动，且画出和之前一样的可视化图。
-
-        # 正整数, 三个最高分辨率卷积分支各自的宽度; 至少 32, 否则取 dec0 的向下取整一半.
-        branch_channels = max(32, dec0 // 2)
-        self.multiscale3 = nn.Conv3d(dec0, branch_channels, kernel_size=3, padding=1)
-        self.multiscale5 = nn.Conv3d(dec0, branch_channels, kernel_size=5, padding=2)
-        self.multiscale7 = nn.Conv3d(dec0, branch_channels, kernel_size=7, padding=3)
-        self.feature_projection = nn.Conv3d(branch_channels * 3, feature_channels, kernel_size=3, padding=1)
-
     def forward(self, voxel_input: torch.Tensor) -> torch.Tensor:
         """
         执行 R 轮回收, 并只返回最后一轮最高分辨率特征.
@@ -778,7 +762,7 @@ class RaUnetBackbone(nn.Module):
         - voxel_input: 浮点张量, (B,C_in,48,48,48); 通道数必须等于 self.input_channels, 空间轴依次为 Z/Y/X.
 
         返回值:
-        - voxel_features: 浮点张量, (B,C_v,48,48,48); 最后一轮 _forward_once 的 feature_projection 输出, dtype 由参数、设备与自动混合精度上下文共同决定.
+        - voxel_features: 浮点张量, (B,C_v,48,48,48); 最后一轮 _forward_once 的 decoded0, dtype 由参数、设备与自动混合精度上下文共同决定.
 
         第 0 到 R-2 轮在 torch.no_grad 中运行, 只保存已停止梯度的 decoded0; 每轮后调用 torch.clear_autocast_cache 清除当前自动混合精度权重转换缓存. 第 R-1 轮使用上一轮状态且不受本函数内部 no_grad 包裹; 是否建立计算图服从外层梯度模式及参与运算张量的 requires_grad, 外层 no_grad 或 inference_mode 下不建图. 缓存清理是进程内 PyTorch 自动混合精度状态副作用, 不写文件或修改输入张量.
         """
@@ -801,10 +785,10 @@ class RaUnetBackbone(nn.Module):
             # bool, 仅最后一轮为真; 只控制是否跳过本函数内部 no_grad, 不能覆盖调用位置的外层梯度模式.
             compute_gradients = iteration == self.recycle_iterations - 1
             if compute_gradients:
-                final_feature, _ = self._forward_once(voxel_input, recycle)
+                final_feature = self._forward_once(voxel_input, recycle)
             else:
                 with torch.no_grad():
-                    _, decoded0 = self._forward_once(voxel_input, recycle)
+                    decoded0 = self._forward_once(voxel_input, recycle)
                 # 浮点, (B,enc0,48,48,48), 与前置轮计算图断开的最高分辨率 decoded0, 供下一轮 recycle_norm 读取.
                 recycle = decoded0.detach()
                 # 清空前置无梯度轮留下的自动混合精度权重缓存, 避免最后一轮复用无梯度参数转换并改变非重入激活重计算保存的张量序列.
@@ -817,17 +801,16 @@ class RaUnetBackbone(nn.Module):
         self,
         voxel_input: torch.Tensor,
         recycle: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    ) -> torch.Tensor:
         """
-        执行一次完整编码、瓶颈注意力、门控解码和多尺度输出.
+        执行一次完整编码、瓶颈注意力和门控解码.
 
         输入参数:
         - voxel_input: 浮点张量, (B,C_in,48,48,48); 每轮都重新经过同一 input_projection.
         - recycle: 浮点张量, (B,enc0,48,48,48); 首轮为零, 后续轮为上一轮已停止梯度的 decoded0.
 
         返回值:
-        - voxel_features: 浮点张量, (B,C_v,48,48,48); 三个卷积核分支连接并投影后的特征.
-        - decoded0: 浮点张量, (B,dec0,48,48,48); 最高分辨率解码状态, dec0=enc0, 可直接作为下一轮 recycle.
+        - decoded0: 浮点张量, (B,C_v,48,48,48); 最高分辨率解码状态, C_v=dec0=enc0, 同时作为本轮输出和下一轮 recycle.
 
         固定 48 立方体时, level0 至 level4 的空间边长依次为 48、24、12、6、3, decoded3 至 decoded0 依次为 6、12、24、48.
         """
@@ -855,18 +838,7 @@ class RaUnetBackbone(nn.Module):
         decoded1 = self._heavy(self.decode1, self._heavy(self.gate1, decoded2, level1))
         # 浮点, (B,dec0,48,48,48), decoded1 查询并门控 level0 后经四个 Res2Net 块.
         decoded0 = self._heavy(self.decode0, self._heavy(self.gate0, decoded1, level0))
-        # 浮点, (B,3×branch_channels,48,48,48), 三、五、七卷积核分支按通道连接后经 ReLU.
-        multiscale = F.relu(
-            torch.cat(
-                (
-                    self.multiscale3(decoded0),
-                    self.multiscale5(decoded0),
-                    self.multiscale7(decoded0),
-                ),
-                dim=1,
-            )
-        )
-        return self.feature_projection(multiscale), decoded0
+        return decoded0
 
     def _heavy(self, module: nn.Module, *inputs: torch.Tensor) -> torch.Tensor:
         """

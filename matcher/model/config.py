@@ -1,4 +1,4 @@
-"""定义四个且仅四个 Matcher 模型变体及其共同结构参数.
+"""定义 Matcher 正式模型变体及其共同结构参数.
 
 主要入口是 MatcherModelConfig. 该 dataclass 校验 YAML 或 checkpoint 提供的结构字段,
 并向候选编码器与身份编码器暴露少量派生开关. 本模块不实例化模型且不读写磁盘.
@@ -13,6 +13,9 @@ from typing import Any, Literal
 
 ModelVariant = Literal[
     "strongest",
+    "blob_only",
+    "density_only",
+    "density_only_106",
     "density_blob_only",
     "pocket_only",
     "trunk_only",
@@ -20,6 +23,9 @@ ModelVariant = Literal[
 
 MODEL_VARIANTS = (
     "strongest",
+    "blob_only",
+    "density_only",
+    "density_only_106",
     "density_blob_only",
     "pocket_only",
     "trunk_only",
@@ -29,10 +35,10 @@ MODEL_VARIANTS = (
 @dataclass(frozen=True)
 class MatcherModelConfig:
     """
-    保存具名模型变体和四项实验共同使用的结构超参数.
+    保存具名模型变体共同使用的结构超参数.
 
     配置字段:
-    - variant: 四个正式变体之一; 该字段同时决定候选输入和身份增量模块.
+    - variant: 具名变体之一; 该字段同时决定候选输入和身份增量模块.
     - model_dim: 候选与身份表示共同宽度 D_m, 必须能被 attention_heads 整除.
     - attention_heads: 候选条件、配体图和身份清单注意力的头数.
     - dropout: 模型丢弃概率, 范围为 [0,1).
@@ -44,8 +50,10 @@ class MatcherModelConfig:
     - graph_layers: SMILES 图消息传递层数; trunk_only 不实例化对应模块.
 
     图分支和身份清单分支的门初值固定为 0, 不作为 YAML 可变字段. strongest 与 trunk_only
-    使用 mean/max 和候选条件注意力摘要拼接; density_blob_only 使用单密度 U-Net、V token、
-    V 三项统计和四项采样统计; pocket_only 只使用 A token 的原始 50 维 L0.
+    使用 mean/max 和候选条件注意力摘要拼接; blob_only 只使用 V token、V 三项统计和四项
+    采样统计; density_only 只使用单实验密度 U-Net 的空间 mean/max 摘要;
+    density_only_106 只使用 56 通道密度 bank 与 50 通道受体特征网格的同结构摘要;
+    density_blob_only 保留既有单密度与 V/blob 联合定义; pocket_only 只使用 A token 的原始 50 维 L0.
     """
     variant: ModelVariant
     model_dim: int
@@ -94,20 +102,33 @@ class MatcherModelConfig:
     @property
     def use_manual_features(self) -> bool:
         """
-        判断是否消费 12 项候选手动统计.
+        判断是否消费候选手动统计.
 
-        - return: pocket_only 为 False, 其余三个变体为 True.
+        - return: density_only、density_only_106 与 pocket_only 为 False, 其余变体为 True.
         """
-        return self.variant != "pocket_only"
+        return self.variant not in ("density_only", "density_only_106", "pocket_only")
+
+    @property
+    def identity_manual_feature_dim(self) -> int:
+        """
+        返回身份配对残差实际消费的候选手动统计宽度.
+
+        - return: density_only、density_only_106 与 pocket_only 为 0，blob_only 只使用 V 的三项统计，其余变体使用 A、P、V、PP 的 12 项统计.
+        """
+        if self.variant in ("density_only", "density_only_106", "pocket_only"):
+            return 0
+        if self.variant == "blob_only":
+            return 3
+        return 12
 
     @property
     def use_sampling_features(self) -> bool:
         """
         判断是否消费四项候选裁剪统计.
 
-        - return: pocket_only 为 False, 其余三个变体为 True.
+        - return: density_only、density_only_106 与 pocket_only 为 False, 其余变体为 True.
         """
-        return self.variant != "pocket_only"
+        return self.variant not in ("density_only", "density_only_106", "pocket_only")
 
     @property
     def uses_identity_increments(self) -> bool:

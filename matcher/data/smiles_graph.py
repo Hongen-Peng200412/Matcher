@@ -46,8 +46,8 @@ class SmilesGraphStore:
     - initialize: 打开图包一次, 把全部数组复制到内存并关闭文件.
     - get: 按精确顶层 SMILES 返回由内存切片和有向边派生数组构成的 SmilesGraph.
 
-    同一 Dataset 副本只持有一个 Store. DataLoader 使用持久工作进程时, worker_init_fn
-    在每个工作进程启动阶段调用 initialize, 样本读取阶段不再打开图包.
+    同一 Dataset 副本只持有一个 Store。worker_init_fn 在每个非持久 DataLoader 工作进程
+    启动阶段调用 initialize，样本读取阶段不再打开图包；当前遍历完成后该进程退出。
     """
     def __init__(self, path: Path) -> None:
         """
