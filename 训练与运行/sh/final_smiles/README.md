@@ -13,6 +13,7 @@
 | `evaluate_blob_only.sh` | 用 blob_only-0 冻结 BEST 生成正式 test_0、test_1 与三张图 |
 | `evaluate_density_only.sh` | 用 density_only-0 冻结 BEST 生成正式 test_0、test_1 与三张图 |
 | `evaluate_density_only_106.sh` | 用 density_only-106 冻结 BEST 生成正式 test_0、test_1 与三张图 |
+| `evaluate_pocket_only.sh` | 用 pocket_only-0 冻结 BEST 生成正式 test_0、test_1 与三张图 |
 | `train_density_blob_only.sh` | 从头训练 density_blob_only |
 | `train_trunk_only.sh` | 从头训练 trunk_only |
 | `evaluate_strongest.sh` | 用第一轮 strongest-0 冻结 BEST 生成正式 test_0、test_1 与三张图 |
