@@ -33,10 +33,32 @@ runtime:
 
 # --- 冻结训练结果 ---
 models:
+  density_only-0:
+    variant: density_only  # str, 第二轮单实验密度 checkpoint 内必须精确匹配的结构变体
+    checkpoint: /storage/penghongen/Matcher/runs/density_only-0/train_density_only0_job379403_20260920T205216/BEST.pt  # str, 第二轮训练自然停止后的冻结 BEST
+    training_run_name: train_density_only0_job379403_20260920T205216  # str, 版本化结果目录名
+  strongest-1:
+    variant: strongest  # str, 第二轮 strongest checkpoint 内必须精确匹配的结构变体
+    checkpoint: /storage/penghongen/Matcher/runs/strongest-1/train_strongest1_revised_job378587_20260920T230727/BEST.pt  # str, 区域损失权重修订后从头训练并自然停止的冻结 BEST
+    training_run_name: train_strongest1_revised_job378587_20260920T230727  # str, 版本化结果目录名
+  density_only-106:
+    variant: density_only_106  # str, 56 通道密度 bank 与 50 通道受体体素网格的直接摘要变体
+    checkpoint: /storage/penghongen/Matcher/runs/density_only-106/train_density_only106_job386151_20260920T230728/BEST.pt  # str, H100 正式训练自然停止后的冻结 BEST
+    training_run_name: train_density_only106_job386151_20260920T230728  # str, 版本化结果目录名
+  pocket_only-0:
+    variant: pocket_only  # str, 候选侧只归约原始 50 维 A_feat_L0 的第二轮消融
+    checkpoint: /storage/penghongen/Matcher/runs/pocket_only-0/train_pocket_only0_job379403_20260921T122846/BEST.pt  # str, A800 正式训练自然停止后的冻结 BEST
+    training_run_name: train_pocket_only0_job379403_20260921T122846  # str, 版本化结果目录名
+  blob_only-0:
+    variant: blob_only  # str, 第二轮 blob-only checkpoint 内必须精确匹配的结构变体
+    checkpoint: /storage/penghongen/Matcher/runs/blob_only-0/train_blob_only0_job379403_20260920T142850/BEST.pt  # str, 第二轮训练自然早停后的冻结 BEST
+    training_run_name: train_blob_only0_job379403_20260920T142850  # str, 版本化结果目录名
   density_blob_only:
+    variant: density_blob_only  # str, checkpoint 内必须精确匹配的模型结构变体
     checkpoint: /storage/penghongen/Matcher/runs/density_blob_only/predict_calibration_job379403_20260918T184914_a8/BEST.pt  # str, 已冻结 BEST
     training_run_name: predict_calibration_job379403_20260918T184914_a8  # str, 版本化结果目录名
   strongest:
+    variant: strongest  # str, checkpoint 内必须精确匹配的模型结构变体
     checkpoint: /storage/penghongen/Matcher/runs/strongest/train_docking_job378587_20260918T185357_a8/BEST.pt  # str, 已自然早停的冻结 BEST
     training_run_name: train_docking_job378587_20260918T185357_a8  # str, 版本化结果目录名
 
