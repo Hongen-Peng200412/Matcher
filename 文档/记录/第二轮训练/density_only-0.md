@@ -4,18 +4,22 @@
 
 ## 当前状态
 
-- 阶段：实际 A800 门禁通过，正式训练已触发并处于启动或首个训练区段。
+- 阶段：正式训练已自然早停；全测试集与 Stage3 小分子冻结评估及绘图均已完成，等待本地结果归档。
 - 正式资源：计划顺序复用 A800 数组任务 `379403_1`；锁与反馈目录使用基础编号 `379403`，活动阶段使用 15 个非持久 DataLoader worker。
 - 稳定实验标识：`density_only-0`；代码模型变体：`density_only`。
 - 正式 YAML：`configs/experiments/final_smiles/density_only.yaml`。
 - 训练 release：`/home/penghongen/Feedback/Matcher/releases/Matcher_8c8f126c6d8b/Matcher`；内容 SHA-256 `8c8f126c6d8b69f9ea8471f15f6b3772969b59a3ded39ca14fa31140e520636a`。
 - 门禁 launch/report：`gate_density_only0_job379403_20260920T204613`；`/home/penghongen/Feedback/Matcher/gates/second_round/density_only-0/gate_density_only0_job379403_20260920T204613.json`。
 - 训练 launch：`train_density_only0_job379403_20260920T205216`。
+- W&B：`https://wandb.ai/pencounkdual-111/Matcher/runs/3wfaiq6v`；运行根：`/storage/penghongen/Matcher/runs/density_only-0/train_density_only0_job379403_20260920T205216`。
 - 冻结 train/validation manifest：`/storage/penghongen/Matcher/manifests/final_train_validation_shards01_06_v1/manifest.json`；SHA-256 `3551e4a7b111c9d51a718fe11586769f31a7a50f66b8d25839bb9742418ad247`。
 - 候选输入：`experimental_density_48` 经 0.1%/99.9% 分位截断与全网格 z-score 后形成 `(1,48,48,48)`；不读取或构造 V、A、P、PP、模拟密度、受体栅格和候选人工统计。
 - 模型边界：使用无末端多尺度卷积的 RAUNet；最高分辨率特征的空间 mean/max 经投影直接形成候选表示；不建立 token 投影器、体素调制器、候选模态聚合器或区域头。
 - 损失权重：前景 `0.30`、ligand-area `0.00`、binding-area `0.00`、SMILES 身份 `1.00`。
 - 选模公式：`(0.3 * foreground_PRAUC + supported_foreground_SMILES_accuracy) / 1.3`。
+- 自然停止：epoch 12、第 38 次完整 validation 触发早停；BEST 位于 epoch 9、第 30 次 validation，selection `0.850683342024217`，冻结 validation 前景阈值 `0.52734375`。38 份逐检查 checkpoint 全部保留；BEST SHA-256 为 `7667d645dd871651af85283fcbae147344b3834c547ee4048c52ec3684015376`。
+- 通用测试：launch `evaluate_full_density_only0_job379403_20260921T114259`；`frozen_test.json` 位于 `/storage/penghongen/Matcher/evaluation/final_smiles/density_only-0/frozen_test.json`，SHA-256 `cbfe0d18f03433f640806ed77ee6f1bdce6d4e472258a0101e0ad822dfa779a5`。
+- 小分子测试：launch `evaluate_small_density_only0_job379403_20260921T115924`；绘图 launch `plot_small_density_only0_job379403_20260921T121457`；`evaluation.json` SHA-256 `4fd526617489104ef307254a3f8c1f96205ad3a20e5148aacdd4f238dfc25208`。
 
 ## 正式命令
 
@@ -27,7 +31,7 @@
 
 `bash 训练与运行/sh/small_molecule_test/plot_density_only.sh`
 
-后三项只会在 BEST 冻结后执行；它们已绑定固定运行目录中的 `BEST.pt`，并与测试和门禁命令分开记录。
+后三项已在 BEST 冻结后执行；它们绑定固定运行目录中的 `BEST.pt`，并与测试和门禁命令分开记录。
 
 ## 测试、门禁和只读核查
 
