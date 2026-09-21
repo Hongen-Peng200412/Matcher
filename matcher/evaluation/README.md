@@ -15,6 +15,7 @@
 - 前景 F1：只使用 BEST 在 validation 上保存的阈值。
 - SMILES 匹配准确率：只统计 `foreground_target=true` 且 `identity_supported=true` 的候选。
 - 五类分层：`ion`、`nucleotide_like`、`peptide_like`、`small_molecule`、`sugar`；零支持时 `accuracy=null`，绘图显示 `N/A (n=0)`。
+- validation 选模分数：`(0.3 × 前景 PRAUC + SMILES 匹配准确率) / 1.3`。前景 F1 与阈值不参与选模。
 
 `9ian` 与 `9oq7` 的部分真前景缺少严格图和语言资产。这些候选保留前景真值与 Stage1 原排名，不进入 SMILES 准确率分母，也不能产生 Stage1+Matcher 命中。
 
