@@ -1,4 +1,4 @@
-"""执行四个正式 Matcher 变体共用的单卡训练、完整验证和 BEST/LAST 治理.
+"""执行 Matcher 具名变体共用的单卡训练、完整验证和 BEST/LAST 治理.
 
 主要入口是 run_smiles_training. 该入口建立 Dataset、DataLoader、模型和优化器, 每个 epoch
 运行完整 validation, 按唯一 selection 更新 BEST 并执行自然早停. 运行目录保存来源路径、
@@ -16,7 +16,7 @@ import socket
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterator, cast
+from typing import Any, cast
 
 import numpy as np
 import torch
@@ -203,8 +203,8 @@ class _ValidationPolicyState:
         - config: 提供最小改善量、平台耐心、降低乘数和累计降低上限.
         - return: improved、plateau、learning_rate_reduced 和 should_stop 四个布尔状态.
 
-        patience_bad_validation_checks=2 表示前两次未改善只累计计数, 第三次未改善才执行
-        平台动作. 有效改善清零坏检查数, 但不清零累计学习率降低次数.
+        patience_bad_validation_checks=3 表示前三次未改善只累计计数，第四次未改善才执行
+        平台动作。有效改善清零坏检查数，但不清零累计学习率降低次数。
         """
         if not math.isfinite(score):
             raise ValueError("validation selection 必须是有限值。")
@@ -275,6 +275,41 @@ def _partition_optimizer_updates(total_updates: int, part_count: int) -> tuple[i
         quotient + (1 if index < remainder else 0)
         for index in range(part_count)
     )
+
+
+def _partition_epoch_batch_plan(
+    batch_plan: list[list[int]],
+    accumulation_steps: int,
+    part_count: int,
+) -> tuple[list[list[int]], ...]:
+    """
+    按完整梯度累积窗口切分一个 epoch 已冻结的物理批次计划。
+
+    - batch_plan: list[list[int]]，当前 epoch 唯一的候选下标批次顺序。
+    - accumulation_steps: int，每次优化器更新包含的连续物理批次数。
+    - part_count: int，连续训练区段数，也就是完整 validation 次数。
+    - return: tuple[list[list[int]], ...]，依次连接后与 batch_plan 逐批相同的非空区段。
+
+    本函数只切片已经确定的批次计划，不重新调用采样器。区段边界严格落在完整梯度累积
+    窗口之间，因此关闭和重建 DataLoader 不会遗漏、重复或改变训练样本顺序。
+    """
+    if type(accumulation_steps) is not int or accumulation_steps <= 0:
+        raise ValueError("accumulation_steps 必须是正整数。")
+    if len(batch_plan) % accumulation_steps:
+        raise ValueError("物理批次计划必须形成完整梯度累积窗口。")
+    update_counts = _partition_optimizer_updates(
+        len(batch_plan) // accumulation_steps,
+        part_count,
+    )
+    segments: list[list[list[int]]] = []
+    start = 0
+    for update_count in update_counts:
+        stop = start + update_count * accumulation_steps
+        segments.append(batch_plan[start:stop])
+        start = stop
+    if start != len(batch_plan):
+        raise RuntimeError("训练区段未完整覆盖当前 epoch 批次计划。")
+    return tuple(segments)
 
 
 @torch.no_grad()
@@ -361,7 +396,7 @@ def _validate(
     return result, accumulator
 
 
-def _train_epoch_segments(
+def _train_segment(
     model: ClosedSetMatcher,
     loader: Any,
     optimizer: torch.optim.Optimizer,
@@ -369,40 +404,34 @@ def _train_epoch_segments(
     device: torch.device,
     global_step: int,
     tracker: Any,
-) -> Iterator[tuple[int, dict[str, float], int]]:
+) -> tuple[dict[str, float], int]:
     """
-    单次遍历一个训练 epoch, 并在连续区段边界依次交回控制权.
+    穷尽一个连续训练区段，并返回区段汇总与累计参数更新数。
 
     - model: 当前 ClosedSetMatcher. 函数入口切换到 train 模式.
-    - loader: 产生 CandidateBatch 的训练 DataLoader. 批次数必须形成完整累积窗口.
+    - loader: 当前区段的 DataLoader；批次数必须形成完整累积窗口，遍历结束后工作进程退出。
     - optimizer: 当前 AdamW 优化器. 每个完整窗口执行一次 step.
     - config: 完整实验配置. 提供损失权重、累积步数、裁剪阈值和追踪频率.
     - device: 当前单卡 CUDA 设备.
     - global_step: 进入本 epoch 前已经完成的参数更新数.
     - tracker: wandb.Run 或 None. None 时不写在线指标.
-    - yield[0]: int. 当前区段在 epoch 内的一起始编号.
-    - yield[1]: dict[str, float]. 当前区段的五项物理批次均值损失与身份 eligible 计数.
-    - yield[2]: int. 完成当前区段后的累计参数更新数.
+    - return[0]: dict[str, float]，当前区段五项物理批次均值损失、身份支持数和更新数。
+    - return[1]: int，完成当前区段后的累计参数更新数。
 
-    DataLoader 只建立一次迭代器, 三个区段连续消费它, 不重启采样器, 也不重复训练样本.
-    每个物理批次候选数相同, 因此前景和区域均除以 accumulation_steps. 身份候选数会在
+    当前 loader 的下标批次来自当前 epoch 已冻结计划的连续切片。每个物理批次候选数相同，
+    因此前景和区域均除以 accumulation_steps。身份候选数会在
     物理批次之间变化, 先读取一个完整累积窗口的真值计数, 再让各批身份均值按其合格候选
     数占窗口总数的比例回传. 这样 32x1、16x2 与 8x4 使用相同的身份损失定义.
     """
     physical_batch_count = len(loader)
     if physical_batch_count % config.data.accumulation_steps:
         raise RuntimeError("训练批次数必须形成完整梯度累积窗口。")
-    segment_update_counts = _partition_optimizer_updates(
-        physical_batch_count // config.data.accumulation_steps,
-        config.optimization.validation_checks_per_epoch,
-    )
     model.train()
     optimizer.zero_grad(set_to_none=True)
     totals = {name: 0.0 for name in ("total", "foreground", "ligand_area", "binding_area", "identity")}
     physical_batches = 0
     identity_eligible = 0
-    segment_index = 0
-    segment_updates = 0
+    optimizer_updates = 0
     window: list[CandidateBatch] = []
     for cpu_batch in loader:
         window.append(cpu_batch)
@@ -465,7 +494,7 @@ def _train_epoch_segments(
         optimizer.step()
         optimizer.zero_grad(set_to_none=True)
         global_step += 1
-        segment_updates += 1
+        optimizer_updates += 1
         if global_step % config.tracking.log_every_updates == 0:
             if latest_losses is None:
                 raise RuntimeError("完整梯度累积窗口未产生损失。")
@@ -479,21 +508,12 @@ def _train_epoch_segments(
                 global_step,
             )
         window.clear()
-        if segment_updates == segment_update_counts[segment_index]:
-            summary = {name: value / physical_batches for name, value in totals.items()}
-            summary["identity_eligible_count"] = float(identity_eligible)
-            summary["optimizer_update_count"] = float(segment_updates)
-            yield segment_index + 1, summary, global_step
-            segment_index += 1
-            segment_updates = 0
-            totals = {
-                name: 0.0
-                for name in ("total", "foreground", "ligand_area", "binding_area", "identity")
-            }
-            physical_batches = 0
-            identity_eligible = 0
-    if window or segment_index != len(segment_update_counts):
-        raise RuntimeError("训练 epoch 未严格完成全部连续区段。")
+    if window or physical_batches != physical_batch_count:
+        raise RuntimeError("训练区段未严格穷尽全部物理批次。")
+    summary = {name: value / physical_batches for name, value in totals.items()}
+    summary["identity_eligible_count"] = float(identity_eligible)
+    summary["optimizer_update_count"] = float(optimizer_updates)
+    return summary, global_step
 
 
 # ================================================================================================
@@ -503,7 +523,7 @@ def run_smiles_training(config: SmilesExperimentConfig, config_path: Path) -> Pa
     """
     执行一次正式单卡从零训练.
 
-    - config: 已严格加载的四变体之一完整配置.
+    - config: 已严格加载的一份完整实验配置.
     - config_path: 与 config 对应的 YAML 路径; 路径写入来源证据.
     - return: 新建的运行目录, 内含 run.json、history.jsonl、BEST.pt、LAST.pt 和 summary.json.
 
@@ -552,6 +572,7 @@ def run_smiles_training(config: SmilesExperimentConfig, config_path: Path) -> Pa
             "gpu_total_memory_bytes": torch.cuda.get_device_properties(device).total_memory,
             "cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES"),
             "num_workers": config.data.num_workers,
+            "loader_lifecycle": "stage_exclusive_nonpersistent",
         },
     }
     write_json(run_directory / "run.json", provenance)
@@ -578,8 +599,6 @@ def run_smiles_training(config: SmilesExperimentConfig, config_path: Path) -> Pa
         multiple = config.data.batch_size * config.data.accumulation_steps
         train_sampler = ShuffledBatchSampler(train_dataset, config.data.batch_size, True, True, config.seed, multiple)
         validation_sampler = ShuffledBatchSampler(validation_dataset, config.data.batch_size, False, False, config.seed, None)
-        train_loader = build_candidate_loader(train_dataset, train_sampler, config.data.num_workers, config.data.prefetch_factor, config.seed + 1)
-        validation_loader = build_candidate_loader(validation_dataset, validation_sampler, config.data.num_workers, config.data.prefetch_factor, config.seed + 2)
         model = ClosedSetMatcher(config.model).to(device)
         optimizer = torch.optim.AdamW(
             model.parameters(),
@@ -595,14 +614,44 @@ def run_smiles_training(config: SmilesExperimentConfig, config_path: Path) -> Pa
         stopped_by_early_stopping = False
         for epoch in range(config.optimization.max_epochs):
             train_sampler.set_epoch(epoch)
-            segments = _train_epoch_segments(
-                model, train_loader, optimizer, config, device, global_step, tracker
+            # list[list[int]]，当前 epoch 唯一的物理批次顺序；后续只连续切片，不再次采样。
+            epoch_batch_plan = list(train_sampler)
+            segment_batch_plans = _partition_epoch_batch_plan(
+                epoch_batch_plan,
+                config.data.accumulation_steps,
+                config.optimization.validation_checks_per_epoch,
             )
-            for epoch_segment, training, global_step in segments:
+            for segment_offset, segment_batch_plan in enumerate(segment_batch_plans):
+                epoch_segment = segment_offset + 1
+                train_loader = build_candidate_loader(
+                    train_dataset,
+                    segment_batch_plan,
+                    config.data.num_workers,
+                    config.data.prefetch_factor,
+                    config.seed + 1 + epoch * len(segment_batch_plans) + segment_offset,
+                )
+                training, global_step = _train_segment(
+                    model,
+                    train_loader,
+                    optimizer,
+                    config,
+                    device,
+                    global_step,
+                    tracker,
+                )
+                del train_loader
                 validation_check += 1
+                validation_loader = build_candidate_loader(
+                    validation_dataset,
+                    validation_sampler,
+                    config.data.num_workers,
+                    config.data.prefetch_factor,
+                    config.seed + 2 + validation_check,
+                )
                 validation, accumulator = _validate(
                     model, validation_loader, config, device, global_step, tracker
                 )
+                del validation_loader
                 score = float(validation["metrics"]["selection"])
                 decision = policy.observe(
                     score,
@@ -673,7 +722,6 @@ def run_smiles_training(config: SmilesExperimentConfig, config_path: Path) -> Pa
                 last_epoch = epoch
                 if decision["should_stop"]:
                     stopped_by_early_stopping = True
-                    cast(Any, segments).close()
                     break
             if stopped_by_early_stopping:
                 break

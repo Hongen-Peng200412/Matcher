@@ -219,7 +219,7 @@ def evaluate_model(config_path: Path, model_name: str) -> Path:
 
     输入参数:
         - config_path: Path, test_smallmolecule.yaml 的现存路径.
-        - model_name: str, density_blob_only 或 strongest; 决定 checkpoint 与版本化结果目录.
+        - model_name: str, 配置 models 下的稳定实验标识; 决定 checkpoint 与版本化结果目录.
 
     返回值:
         - result_path: Path, 已发布的 evaluation_root/model/training_run/evaluation.json.
@@ -228,7 +228,7 @@ def evaluate_model(config_path: Path, model_name: str) -> Path:
         - evaluation.json: object.
           - schema: str, 模型评测产物契约版本.
           - created_at_utc: str, UTC ISO 8601 发布时间.
-          - model_name: str, density_blob_only 或 strongest.
+          - model_name: str, 配置 models 下用于归档结果的稳定实验标识.
           - checkpoint.path: str, 冻结 BEST 绝对路径.
           - checkpoint.sha256: str, 冻结 BEST 内容摘要.
           - checkpoint.best_epoch: int, BEST 所属训练 epoch.
@@ -313,6 +313,7 @@ def evaluate_model(config_path: Path, model_name: str) -> Path:
     if model_name not in config["models"]:
         raise KeyError(f"配置不含模型 {model_name!r}.")
     model_record = config["models"][model_name]
+    expected_variant = str(model_record["variant"])
     checkpoint_path = Path(model_record["checkpoint"])
     manifest_path = Path(config["outputs"]["manifest_root"]) / "manifest.json"
     stage1_path = Path(config["outputs"]["evaluation_root"]) / "stage1_only/stage1_only.json"
@@ -353,9 +354,9 @@ def evaluate_model(config_path: Path, model_name: str) -> Path:
     model, checkpoint, model_config, model_code_source = load_matcher_from_training_release(
         checkpoint_path, device
     )
-    if str(model_config.variant) != model_name:
+    if str(model_config.variant) != expected_variant:
         raise ValueError(
-            f"checkpoint 变体 {model_config.variant!r} 与请求模型 {model_name!r} 不一致."
+            f"checkpoint 变体 {model_config.variant!r} 与配置声明 {expected_variant!r} 不一致."
         )
 
     checkpoint_sha256 = sha256_file(checkpoint_path)
@@ -590,9 +591,7 @@ def main(argv: list[str] | None = None) -> int:
     """
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path, required=True)
-    parser.add_argument(
-        "--model", choices=("density_blob_only", "strongest"), required=True
-    )
+    parser.add_argument("--model", required=True)
     arguments = parser.parse_args(argv)
     print(evaluate_model(arguments.config, arguments.model))
     return 0

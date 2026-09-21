@@ -57,7 +57,7 @@ def plot_results(config_path: Path, target: str) -> list[Path]:
 
     输入参数:
         - config_path: Path, test_smallmolecule.yaml 路径.
-        - target: str, stage1_only、density_blob_only 或 strongest.
+        - target: str, stage1_only 或配置 models 下的稳定实验标识.
 
     返回值:
         - output_paths: list[Path], 依次为 Gaussian 与概率均值 PNG 路径.
@@ -141,11 +141,7 @@ def main(argv: list[str] | None = None) -> int:
     """
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path, required=True)
-    parser.add_argument(
-        "--target",
-        choices=("stage1_only", "density_blob_only", "strongest"),
-        required=True,
-    )
+    parser.add_argument("--target", required=True)
     arguments = parser.parse_args(argv)
     for path in plot_results(arguments.config, arguments.target):
         print(path)
