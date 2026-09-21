@@ -16,12 +16,13 @@ from matcher.data.density import (
 )
 from matcher.data.labels import OccurrenceMask, assign_candidate_target
 from matcher.data.smiles_graph import SmilesGraph, SmilesGraphStore
-from matcher.datasets.batching import collate_candidates
-from matcher.datasets.candidate_data import load_manifest_dataset
+from matcher.datasets.batching import build_candidate_loader, collate_candidates
+from matcher.datasets.candidate_data import _centered_fields, load_manifest_dataset
 from matcher.evaluation.checkpoint import load_matcher_from_training_release
 from matcher.evaluation.metrics import (
     fit_foreground_threshold,
     foreground_average_precision,
+    selection_score,
     smiles_match_metrics,
 )
 from matcher.evaluation.test_set import (
@@ -36,8 +37,9 @@ from matcher.model.ligand_matcher import ClosedSetMatcher
 from matcher.training.config import load_smiles_experiment
 from matcher.training.engine import (
     _ValidationPolicyState,
+    _partition_epoch_batch_plan,
     _partition_optimizer_updates,
-    _train_epoch_segments,
+    _train_segment,
     _write_manifest_snapshot,
 )
 from matcher.training.losses import (
@@ -185,20 +187,24 @@ def _graph() -> SmilesGraph:
 
 def _item(variant: str) -> dict[str, object]:
     spatial = 48
-    if variant == "pocket_only":
+    if variant in ("blob_only", "pocket_only"):
         voxel = np.empty((0, spatial, spatial, spatial), dtype=np.float16)
-        a_tokens = np.ones((2, 50), dtype=np.float32)
+        a_tokens = (
+            np.ones((2, 50), dtype=np.float32)
+            if variant == "pocket_only"
+            else np.empty((0, 230), dtype=np.float32)
+        )
     else:
-        voxel_channels = 1 if variant == "density_blob_only" else 106
+        voxel_channels = 1 if variant in ("density_only", "density_blob_only") else 106
         voxel = np.zeros((voxel_channels, spatial, spatial, spatial), dtype=np.float16)
         a_tokens = (
             np.empty((0, 230), dtype=np.float32)
-            if variant == "density_blob_only"
+            if variant in ("density_only", "density_only_106", "density_blob_only")
             else np.ones((1, 230), dtype=np.float32)
         )
     v_tokens = (
         np.ones((1, 68), dtype=np.float32)
-        if variant != "pocket_only"
+        if variant not in ("density_only", "density_only_106", "pocket_only")
         else np.empty((0, 68), dtype=np.float32)
     )
     return {
@@ -273,15 +279,69 @@ def test_single_density_channel_matches_exp_clipnorm_nopost() -> None:
     np.testing.assert_allclose(single[0], complete[index], rtol=0, atol=0)
 
 
-@pytest.mark.parametrize("variant", ["strongest", "density_blob_only", "pocket_only", "trunk_only"])
-def test_four_model_variants_forward_and_direct_identity_loss(variant: str) -> None:
+def test_blob_only_centered_fields_exclude_density_receptor_and_area_inputs() -> None:
+    fields = set(_centered_fields("blob_only"))
+    assert fields == {
+        "centered_box_index",
+        "crop_start_local_zyx",
+        "voxel_offsets",
+        "voxel_index_local_zyx",
+        "voxel_final",
+        "centered_probability",
+        "source_voxel_count",
+        "crop_clipped_axis_mask",
+        "crop_center_offset_zyx",
+    }
+    assert fields.isdisjoint(
+        {
+            "experimental_density_48",
+            "simulated_density_48",
+            "source_probability_48",
+            "A_feat_L0",
+            "P_feat_L2",
+        }
+    )
+
+
+def test_density_only_centered_fields_contain_only_index_and_experimental_density() -> None:
+    fields = set(_centered_fields("density_only"))
+    assert fields == {"centered_box_index", "experimental_density_48"}
+
+
+def test_density_only_106_centered_fields_contain_only_voxel_construction_inputs() -> None:
+    fields = set(_centered_fields("density_only_106"))
+    assert fields == {
+        "centered_box_index",
+        "crop_start_local_zyx",
+        "box_origin_world",
+        "voxel_size_world",
+        "experimental_density_48",
+        "simulated_density_48",
+    }
+    assert fields.isdisjoint(
+        {
+            "A_feat_L0",
+            "P_feat_L2",
+            "voxel_final",
+            "source_probability_48",
+            "source_voxel_count",
+        }
+    )
+
+
+@pytest.mark.parametrize(
+    "variant",
+    ["strongest", "blob_only", "density_only", "density_only_106", "density_blob_only", "pocket_only", "trunk_only"],
+)
+def test_model_variants_forward_and_direct_identity_loss(variant: str) -> None:
     batch = collate_candidates([_item(variant)])
     model = ClosedSetMatcher(_config(variant)).eval()
     output = model(batch)
     assert output["foreground_logit"].shape == (1,)
     assert output["identity_logits"].shape == (1, 1)
     assert torch.isfinite(output["foreground_logit"]).all()
-    weights = LossWeights(1.0, 0.0 if variant == "pocket_only" else 0.1, 0.0 if variant == "pocket_only" else 0.1, 1.0)
+    area_weight = 0.0 if variant in ("blob_only", "density_only", "density_only_106", "pocket_only") else 0.1
+    weights = LossWeights(1.0, area_weight, area_weight, 1.0)
     loss = compute_matcher_loss(output, batch, weights)
     assert torch.isfinite(loss["total"])
     assert int(loss["identity_eligible_count"]) == 1
@@ -296,12 +356,98 @@ def test_trunk_only_parameter_tree_has_no_identity_increment_modules() -> None:
     assert not any("inventory_gate" in name for name in names)
 
 
-def test_four_variants_share_identical_initial_values_for_common_parameters() -> None:
+def test_strongest_gates_and_blob_only_parameter_boundaries() -> None:
+    strongest = ClosedSetMatcher(_config("strongest"))
+    gates = strongest.candidate_encoder.modality_gates
+    assert tuple(gates) == ("a", "p", "pp")
+    for gate in gates.values():
+        torch.testing.assert_close(gate.detach(), torch.asarray(0.01), rtol=0, atol=0)
+
+    blob_only = ClosedSetMatcher(_config("blob_only"))
+    names = tuple(dict(blob_only.named_parameters()))
+    assert blob_only.candidate_encoder.blob_encoder is not None
+    assert blob_only.candidate_encoder.voxel_backbone is None
+    assert blob_only.candidate_encoder.ligand_area_head is None
+    assert blob_only.candidate_encoder.binding_area_head is None
+    assert not any("voxel_backbone" in name for name in names)
+    assert not any("voxel_modulators" in name for name in names)
+
+    density_only_106 = ClosedSetMatcher(_config("density_only_106"))
+    names = tuple(dict(density_only_106.named_parameters()))
+    assert density_only_106.candidate_encoder.voxel_backbone is not None
+    assert density_only_106.candidate_encoder.candidate_summary is not None
+    assert density_only_106.candidate_encoder.aggregator is None
+    assert density_only_106.candidate_encoder.ligand_area_head is None
+    assert density_only_106.candidate_encoder.binding_area_head is None
+    assert not any("token_projectors" in name for name in names)
+    assert not any("voxel_modulators" in name for name in names)
+
+    density_only = ClosedSetMatcher(_config("density_only"))
+    names = tuple(dict(density_only.named_parameters()))
+    assert density_only.candidate_encoder.voxel_backbone is not None
+    assert density_only.candidate_encoder.candidate_summary is not None
+    assert density_only.candidate_encoder.aggregator is None
+    assert density_only.candidate_encoder.ligand_area_head is None
+    assert density_only.candidate_encoder.binding_area_head is None
+    assert not any("token_projectors" in name for name in names)
+    assert not any("voxel_modulators" in name for name in names)
+
+
+def test_zero_strongest_gates_block_manual_feature_bypass() -> None:
+    model = ClosedSetMatcher(_config("strongest")).eval()
+    with torch.no_grad():
+        for gate in model.candidate_encoder.modality_gates.values():
+            gate.zero_()
+
+    baseline = collate_candidates([_item("strongest")])
+    changed = collate_candidates([_item("strongest")])
+    changed_manual = changed["candidate_manual_features"]
+    changed_manual[:, 0:6] = torch.asarray(
+        [[9.0, 0.4, 0.8, 7.0, 0.2, 0.9]], dtype=changed_manual.dtype
+    )
+    changed_manual[:, 9:12] = torch.asarray(
+        [[11.0, 0.3, 0.7]], dtype=changed_manual.dtype
+    )
+
+    with torch.no_grad():
+        baseline_logits = model(baseline)["identity_logits"]
+        changed_logits = model(changed)["identity_logits"]
+    torch.testing.assert_close(baseline_logits, changed_logits, rtol=0, atol=0)
+
+
+def test_blob_only_ignores_non_v_manual_feature_groups() -> None:
+    model = ClosedSetMatcher(_config("blob_only")).eval()
+    baseline = collate_candidates([_item("blob_only")])
+    changed = collate_candidates([_item("blob_only")])
+    changed_manual = changed["candidate_manual_features"]
+    changed_manual[:, 0:6] = torch.asarray(
+        [[9.0, 0.4, 0.8, 7.0, 0.2, 0.9]], dtype=changed_manual.dtype
+    )
+    changed_manual[:, 9:12] = torch.asarray(
+        [[11.0, 0.3, 0.7]], dtype=changed_manual.dtype
+    )
+
+    with torch.no_grad():
+        baseline_output = model(baseline)
+        changed_output = model(changed)
+    for field in ("candidate_embedding", "foreground_logit", "identity_logits"):
+        torch.testing.assert_close(
+            baseline_output[field], changed_output[field], rtol=0, atol=0
+        )
+
+
+def test_raunet_has_no_terminal_multiscale_branch() -> None:
+    names = tuple(dict(ClosedSetMatcher(_config("strongest")).named_parameters()))
+    assert not any("multiscale" in name for name in names)
+    assert not any("feature_projection" in name for name in names)
+
+
+def test_variants_share_identical_initial_values_for_common_parameters() -> None:
     """
-    同一实验种子下, 四变体的同名同形参数必须逐值相同.
+    同一实验种子下，各变体的同名同形参数必须逐值相同。
     """
     models: dict[str, dict[str, torch.Tensor]] = {}
-    for variant in ("strongest", "density_blob_only", "pocket_only", "trunk_only"):
+    for variant in ("strongest", "blob_only", "density_only", "density_only_106", "density_blob_only", "pocket_only", "trunk_only"):
         torch.manual_seed(3409)
         rng_state = torch.random.get_rng_state()
         model = ClosedSetMatcher(_config(variant))
@@ -404,7 +550,38 @@ def test_training_manifest_snapshot_keeps_original_generation_after_entry_moves(
     ("variant", "disabled_fields"),
     [
         ("strongest", ()),
+        (
+            "blob_only",
+            (
+                "voxel_input",
+                "a_tokens",
+                "p_tokens",
+                "pp_tokens",
+            ),
+        ),
         ("density_blob_only", ("a_tokens", "p_tokens", "pp_tokens")),
+        (
+            "density_only",
+            (
+                "a_tokens",
+                "p_tokens",
+                "v_tokens",
+                "pp_tokens",
+                "candidate_manual_features",
+                "candidate_sampling_features",
+            ),
+        ),
+        (
+            "density_only_106",
+            (
+                "a_tokens",
+                "p_tokens",
+                "v_tokens",
+                "pp_tokens",
+                "candidate_manual_features",
+                "candidate_sampling_features",
+            ),
+        ),
         (
             "pocket_only",
             (
@@ -751,10 +928,10 @@ def test_final_metrics_and_topk_keep_empty_pdb_in_fixed_denominator(tmp_path: Pa
     assert curve["hit_count"] == [0] * 20
 
 
-def test_four_formal_yaml_files_differ_only_by_registered_variant_and_area_boundary() -> None:
+def test_formal_yaml_files_register_second_round_training_contract() -> None:
     root = Path("configs/experiments/final_smiles")
     configs = {path.stem: load_smiles_experiment(path) for path in sorted(root.glob("*.yaml"))}
-    assert set(configs) == {"strongest", "density_blob_only", "pocket_only", "trunk_only"}
+    assert set(configs) == {"strongest", "blob_only", "density_only", "density_only_106", "density_blob_only", "pocket_only", "trunk_only"}
     assert {config.seed for config in configs.values()} == {3409}
     assert {config.data.selected_only for config in configs.values()} == {True}
     for name, config in configs.items():
@@ -764,14 +941,40 @@ def test_four_formal_yaml_files_differ_only_by_registered_variant_and_area_bound
         assert config.data.accumulation_steps == 1
         assert config.optimization.validation_checks_per_epoch == 3
         assert config.optimization.selection_improvement_minimum == 0.001
-        assert config.optimization.patience_bad_validation_checks == 2
         assert config.optimization.learning_rate_reduction_factor == 0.8
         assert config.optimization.max_learning_rate_reductions == 2
         assert config.optimization.max_epochs == 15
-        if name == "pocket_only":
+        if name in ("blob_only", "density_only", "density_only_106", "pocket_only"):
             assert config.loss_weights.ligand_area == config.loss_weights.binding_area == 0.0
-        else:
-            assert config.loss_weights.ligand_area == config.loss_weights.binding_area == 0.1
+    strongest = configs["strongest"]
+    blob_only = configs["blob_only"]
+    density_only = configs["density_only"]
+    density_only_106 = configs["density_only_106"]
+    pocket_only = configs["pocket_only"]
+    assert strongest.name == "strongest-1"
+    assert blob_only.name == "blob_only-0"
+    assert density_only.name == "density_only-0"
+    assert density_only_106.name == "density_only-106"
+    assert pocket_only.name == "pocket_only-0"
+    assert strongest.data.num_workers == 30
+    assert blob_only.data.num_workers == 15
+    assert density_only.data.num_workers == 15
+    assert density_only_106.data.num_workers == 30
+    assert pocket_only.data.num_workers == 15
+    assert strongest.optimization.patience_bad_validation_checks == 3
+    assert blob_only.optimization.patience_bad_validation_checks == 3
+    assert density_only.optimization.patience_bad_validation_checks == 3
+    assert density_only_106.optimization.patience_bad_validation_checks == 3
+    assert pocket_only.optimization.patience_bad_validation_checks == 3
+    assert strongest.loss_weights == LossWeights(0.30, 0.0, 0.0, 1.0)
+    assert blob_only.loss_weights == LossWeights(0.30, 0.0, 0.0, 1.0)
+    assert density_only.loss_weights == LossWeights(0.30, 0.0, 0.0, 1.0)
+    assert density_only_106.loss_weights == LossWeights(0.30, 0.0, 0.0, 1.0)
+    assert pocket_only.loss_weights == LossWeights(0.30, 0.0, 0.0, 1.0)
+
+
+def test_selection_uses_normalized_point_three_to_one_weighting() -> None:
+    assert selection_score(0.4, 0.8) == pytest.approx((0.3 * 0.4 + 0.8) / 1.3)
 
 
 def test_optimizer_updates_are_partitioned_without_omission_or_repetition() -> None:
@@ -780,8 +983,35 @@ def test_optimizer_updates_are_partitioned_without_omission_or_repetition() -> N
     with pytest.raises(ValueError, match="不小于"):
         _partition_optimizer_updates(2, 3)
 
+    batch_plan = [[index] for index in range(20)]
+    segments = _partition_epoch_batch_plan(batch_plan, accumulation_steps=2, part_count=3)
+    assert [len(segment) for segment in segments] == [8, 6, 6]
+    assert [batch for segment in segments for batch in segment] == batch_plan
 
-def test_training_segments_consume_one_loader_iteration(
+
+def test_candidate_loader_workers_are_not_persistent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeLoader(dict[str, object]):
+        def __init__(self, **keyword: object) -> None:
+            captured.update(keyword)
+            super().__init__(keyword)
+
+    monkeypatch.setattr("matcher.datasets.batching.DataLoader", FakeLoader)
+    result = build_candidate_loader(
+        object(),  # type: ignore[arg-type]
+        [[0]],
+        num_workers=2,
+        prefetch_factor=1,
+        worker_generator_seed=7,
+    )
+    assert result["persistent_workers"] is False  # type: ignore[index]
+    assert result["multiprocessing_context"] == "spawn"  # type: ignore[index]
+
+
+def test_training_segment_consumes_one_loader_iteration(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     config = load_smiles_experiment(Path("configs/experiments/final_smiles/trunk_only.yaml"))
@@ -830,21 +1060,18 @@ def test_training_segments_consume_one_loader_iteration(
     loader = CountingLoader()
     model = ScalarModel()
     optimizer = torch.optim.AdamW(model.parameters(), lr=1.0e-4)
-    segments = list(
-        _train_epoch_segments(
-            model,
-            loader,
-            optimizer,
-            config,
-            torch.device("cpu"),
-            0,
-            None,
-        )
+    summary, global_step = _train_segment(
+        model,
+        loader,
+        optimizer,
+        config,
+        torch.device("cpu"),
+        0,
+        None,
     )
     assert loader.iteration_count == 1
-    assert [segment for segment, _, _ in segments] == [1, 2, 3]
-    assert [step for _, _, step in segments] == [4, 7, 10]
-    assert [summary["optimizer_update_count"] for _, summary, _ in segments] == [4.0, 3.0, 3.0]
+    assert global_step == 10
+    assert summary["optimizer_update_count"] == 10.0
 
 
 def test_validation_policy_uses_one_threshold_and_stops_after_two_real_lr_reductions() -> None:
@@ -857,29 +1084,29 @@ def test_validation_policy_uses_one_threshold_and_stops_after_two_real_lr_reduct
     assert first["improved"] is True
     assert state.best_score == pytest.approx(0.5000)
 
-    for validation_check, score in enumerate((0.5009, 0.5008), start=2):
+    for validation_check, score in enumerate((0.5009, 0.5008, 0.5007), start=2):
         decision = state.observe(score, 0, validation_check, optimizer, config)
         assert decision["plateau"] is False
-    first_plateau = state.observe(0.5007, 0, 4, optimizer, config)
+    first_plateau = state.observe(0.5006, 1, 5, optimizer, config)
     assert first_plateau["learning_rate_reduced"] is True
     assert state.learning_rate_reductions == 1
     assert optimizer.param_groups[0]["lr"] == pytest.approx(8.0e-5)
 
-    improvement = state.observe(0.5010, 1, 5, optimizer, config)
+    improvement = state.observe(0.5010, 1, 6, optimizer, config)
     assert improvement["improved"] is True
     assert state.bad_validation_checks == 0
     assert state.learning_rate_reductions == 1
 
-    for validation_check in (6, 7):
+    for validation_check in (7, 8, 9):
         state.observe(0.5015, 1, validation_check, optimizer, config)
-    second_plateau = state.observe(0.5014, 2, 8, optimizer, config)
+    second_plateau = state.observe(0.5014, 3, 10, optimizer, config)
     assert second_plateau["learning_rate_reduced"] is True
     assert state.learning_rate_reductions == 2
     assert optimizer.param_groups[0]["lr"] == pytest.approx(6.4e-5)
 
-    for validation_check in (9, 10):
+    for validation_check in (11, 12, 13):
         state.observe(0.5012, 2, validation_check, optimizer, config)
-    final_plateau = state.observe(0.5011, 3, 11, optimizer, config)
+    final_plateau = state.observe(0.5011, 4, 14, optimizer, config)
     assert final_plateau == {
         "improved": False,
         "plateau": True,
