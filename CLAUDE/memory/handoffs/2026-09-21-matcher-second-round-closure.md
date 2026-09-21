@@ -6,7 +6,7 @@ Date: 2026-09-21
 
 第二轮 `strongest-1`、`blob_only-0`、`density_only-0`、`density_only-106` 与 `pocket_only-0` 均已完成训练、完整 held_out_test_0、同次前向筛选的 test_1，以及 77-PDB Stage3 小分子测试。正式结果位于 `测试结果与追溯/experiment-centric/`，两个评估口径总览位于 `测试结果与追溯/测试结果总览/`。
 
-实现线端点为 `codex/second-round-training@59b7b19d133b6292fc1b5be9eaaff1fbc1595b6e`。学习线从共同基点 `a7947478200568fbd36c0fd2b91318a8d6d6a1a7` 重建为五个概念提交；加入本交接文档前，学习端点 `afc6f899fb7ebdb1a2e1a93219109156c3a293a5` 与实现端点具有相同 Git tree `7ef43214154904e68fad778d5951166d5e43c95a`。
+实现线端点为 `codex/second-round-training@59b7b19d133b6292fc1b5be9eaaff1fbc1595b6e`。学习线从共同基点 `a7947478200568fbd36c0fd2b91318a8d6d6a1a7` 重建为五个概念提交；加入本交接文档前，学习端点 `afc6f899fb7ebdb1a2e1a93219109156c3a293a5` 与实现端点具有相同 Git tree `7ef43214154904e68fad778d5951166d5e43c95a`。`Learn/CUMULATIVE` 已推进到本轮学习线，隔离工作树已删除，最终只保留 `C:\Users\15919\Desktop\Matcher` 主工作树。
 
 ## Completed
 
@@ -26,13 +26,11 @@ Date: 2026-09-21
 
 ## Open Questions
 
-无科学实现问题。2026-09-21 16:08 左右只读检查时，Job 378587、386151 与数组任务 379403_1 均已恢复 try_lock，pre_lock/kill_lock 不存在，节点上没有 Matcher 训练或评估残留进程；after_lock 当时已不存在，但三个 allocation 仍短暂显示 RUNNING。此次收口没有删除、创建或恢复 after_lock，也没有使用 scancel。
+无科学实现问题。2026-09-21 16:12 左右只读检查时，Job 378587、386151 与数组任务 379403_1 均已恢复 try_lock，pre_lock/kill_lock 不存在，节点上没有 Matcher 训练或评估残留进程；after_lock 当时已不存在，但三个 allocation 仍显示 RUNNING。此次收口没有删除、创建或恢复 after_lock，也没有使用 scancel。
 
 ## Next Actions
 
-1. 只读复核三个 Slurm allocation 是否已自然退出；不要为保留资源重新创建 after_lock。
-2. 将 `Learn/CUMULATIVE` 快进到本轮学习端点，并把主工作树切换到累计学习分支，同时保留用户原有三个未暂存 Python 修改。
-3. 删除已经干净的隔离工作树，确保最终只保留 `C:\Users\15919\Desktop\Matcher` 主工作树。
+本轮没有遗留实现、训练或评估动作。后续若需要释放三个仍显示 RUNNING 的 allocation，应先重新只读核对锁与进程，再按用户届时给出的锁协议操作；不要把本交接文档视为删除锁或调用 `scancel` 的授权。
 
 ## Files To Reopen
 
