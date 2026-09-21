@@ -4,7 +4,7 @@
 
 ## 当前状态
 
-- 阶段：实际 H100 门禁已通过，正式从头训练稳定运行；首个训练区段和完整 validation 已完成。
+- 阶段：正式训练自然早停；全测试集与 Stage3 小分子冻结评估及绘图均已完成，等待总览汇总。
 - 正式资源：H100 Job `386151`，32 CPU，剩余 walltime 为无限；活动阶段计划使用 30 个非持久 DataLoader worker。
 - 稳定实验标识：`density_only-106`；代码模型变体：`density_only_106`。
 - 正式 YAML：`configs/experiments/final_smiles/density_only_106.yaml`。
@@ -20,12 +20,19 @@
 - 运行根：`/storage/penghongen/Matcher/runs/density_only-106/train_density_only106_job386151_20260920T230728`。
 - W&B：`https://wandb.ai/pencounkdual-111/Matcher/runs/jfdp3ifl`。
 - 首次完整 validation：epoch 0、第 1 区段、`global_step=465`；前景 PRAUC `0.712084939914394`、SMILES 匹配准确率 `0.7569919204474829`、selection `0.7466287710936931`。该记录只用于确认正式运行稳定，不替代最终 BEST。
+- 自然停止：epoch 11、第 36 次 validation 早停；BEST 位于 epoch 10、第 32 次 validation，PRAUC/SMILES 准确率/selection 为 `0.7927801413/0.8980733375/0.8737749076`，冻结阈值 `0.396484375`。BEST SHA-256 `f779f96594dc49f91cc9a4eadb0d7b5440cc65e582d87b5d74354186ad35a258`。
+- 通用测试：launch `evaluate_full_density_only106_job386151_20260921T123627`；`frozen_test.json` SHA-256 `33db6aef2de269203aa0e67729999d23e417e7caece33a2b27787c360fc1074d`。
+- 小分子测试：launch `evaluate_small_density_only106_job386151_20260921T125204`；绘图 launch `plot_small_density_only106_job386151_20260921T130741`；`evaluation.json` SHA-256 `7c0bfb22f22f06f27b22d6bd44b4eef96b7ec8ac8a88de23f26ce5be659b086f`。
 
 ## 正式命令
 
 `bash 训练与运行/sh/final_smiles/train_density_only_106.sh`
 
-全测试集与 Stage3 小分子正式入口将在训练运行根冻结后绑定实际 BEST，并与门禁和只读核查命令分开记录。
+`bash 训练与运行/sh/final_smiles/evaluate_density_only_106.sh`
+
+`bash 训练与运行/sh/small_molecule_test/evaluate_density_only_106.sh`
+
+`bash 训练与运行/sh/small_molecule_test/plot_density_only_106.sh`
 
 ## 测试、门禁和只读核查
 
