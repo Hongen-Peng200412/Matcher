@@ -15,6 +15,10 @@ Stage1+Stage2 不使用 Matcher 前景头或 validation 冻结前景阈值，只
 | `dense_blob_only-0` | Find_1 Stage1-only；真实受体/CryoAtom2；Gaussian/概率均值；全配体/small-molecule Stage1+Stage2 | [实验结果](../experiment-centric/dense_blob_only-0/实验结果.md) | [追溯与说明](../experiment-centric/dense_blob_only-0/追溯与说明.md) |
 | `strongest-0` | Find_1 Stage1-only；真实受体/CryoAtom2；Gaussian/概率均值；全配体/small-molecule Stage1+Stage2 | [实验结果](../experiment-centric/strongest-0/实验结果.md) | [追溯与说明](../experiment-centric/strongest-0/追溯与说明.md) |
 | `blob_only-0` | Find_1 Stage1-only；真实受体/CryoAtom2；Gaussian/概率均值；全配体/small-molecule Stage1+Stage2 | [实验结果](../experiment-centric/blob_only-0/实验结果.md) | [追溯与说明](../experiment-centric/blob_only-0/追溯与说明.md) |
+| `strongest-1` | Find_1 Stage1-only；真实受体/CryoAtom2；Gaussian/概率均值；全配体/small-molecule Stage1+Stage2 | [实验结果](../experiment-centric/strongest-1/实验结果.md) | [追溯与说明](../experiment-centric/strongest-1/追溯与说明.md) |
+| `density_only-0` | Find_1 Stage1-only；真实受体/CryoAtom2；Gaussian/概率均值；全配体/small-molecule Stage1+Stage2 | [实验结果](../experiment-centric/density_only-0/实验结果.md) | [追溯与说明](../experiment-centric/density_only-0/追溯与说明.md) |
+| `density_only-106` | Find_1 Stage1-only；真实受体/CryoAtom2；Gaussian/概率均值；全配体/small-molecule Stage1+Stage2 | [实验结果](../experiment-centric/density_only-106/实验结果.md) | [追溯与说明](../experiment-centric/density_only-106/追溯与说明.md) |
+| `pocket_only-0` | Find_1 Stage1-only；真实受体/CryoAtom2；Gaussian/概率均值；全配体/small-molecule Stage1+Stage2 | [实验结果](../experiment-centric/pocket_only-0/实验结果.md) | [追溯与说明](../experiment-centric/pocket_only-0/追溯与说明.md) |
 | `Emap2lig` | 单条 receptor-independent Stage1-only 曲线 | [实验结果](../experiment-centric/Emap2lig/实验结果.md) | [追溯与说明](../experiment-centric/Emap2lig/追溯与说明.md) |
 
 ## Stage1-only
@@ -114,6 +118,29 @@ Stage1+Stage2 不使用 Matcher 前景头或 validation 冻结前景阈值，只
 | 8 | 63/77 (0.818182) | 62/77 (0.805195) | 63/77 (0.818182) | 62/77 (0.805195) |
 | 9–20 | 64/77 (0.831169) | 62/77 (0.805195) | 64/77 (0.831169) | 62/77 (0.805195) |
 
+## 第二轮新增模型：Stage1+Stage2
+
+以下单元格依次给出 k=1、3、5、10、20 的命中数，固定分母为 77。斜杠左侧是全配体答案范围，右侧是 small-molecule 答案范围；数值完全相同时只写一组。
+
+| 实验 | 排序与条件 | 全配体 / small-molecule |
+| --- | --- | --- |
+| `strongest-1` | Gaussian，真实受体 | 59、63、64、64、64 |
+| `strongest-1` | Gaussian，CryoAtom2 | 45、59、61、63、63 |
+| `strongest-1` | 概率均值，真实受体 | 61、63、63、64、64 |
+| `strongest-1` | 概率均值，CryoAtom2 | 51、63、63、63、63 |
+| `density_only-0` | Gaussian，真实受体 | 53、58、60、61、61 / 55、60、61、62、62 |
+| `density_only-0` | Gaussian，CryoAtom2 | 39、53、57、59、60 / 43、57、59、61、62 |
+| `density_only-0` | 概率均值，真实受体 | 51、58、59、61、61 / 55、59、60、62、62 |
+| `density_only-0` | 概率均值，CryoAtom2 | 43、59、59、59、60 / 48、61、61、61、62 |
+| `density_only-106` | Gaussian，真实受体 | 61、63、64、65、65 |
+| `density_only-106` | Gaussian，CryoAtom2 | 46、59、61、64、64 / 47、60、62、65、65 |
+| `density_only-106` | 概率均值，真实受体 | 60、63、63、65、65 |
+| `density_only-106` | 概率均值，CryoAtom2 | 52、63、63、64、64 / 53、64、64、65、65 |
+| `pocket_only-0` | Gaussian，真实受体 | 55、58、60、60、60 / 55、59、61、61、61 |
+| `pocket_only-0` | Gaussian，CryoAtom2 | 40、52、54、56、56 / 41、54、56、58、58 |
+| `pocket_only-0` | 概率均值，真实受体 | 56、58、59、60、60 / 57、59、60、61、61 |
+| `pocket_only-0` | 概率均值，CryoAtom2 | 48、56、56、56、56 / 50、58、58、58、58 |
+
 ## 结果解读
 
 - Find_1 Stage1-only 在真实受体条件下于 top-5 达到 69/77；CryoAtom2 条件下，Gaussian 于 top-6 达到 68/77，概率均值于 top-5 达到 68/77。
@@ -121,4 +148,7 @@ Stage1+Stage2 不使用 Matcher 前景头或 validation 冻结前景阈值，只
 - `dense_blob_only-0` 的全配体与 small-molecule 答案范围完全相同，最终达到真实受体 64/77、CryoAtom2 62/77。
 - `strongest-0` 在真实受体下两档答案范围相同，最终达到 64/77；在 CryoAtom2 下，small-molecule 屏蔽相对全配体范围稳定增加 1 个命中 PDB，最终为 63/77 对 62/77。
 - `blob_only-0` 的两档答案范围逐点相同，最终达到真实受体 64/77、CryoAtom2 62/77；其终点与 `dense_blob_only-0` 相同，但低 k 点位并非逐点一致。
+- `density_only-106` 的终点最高：真实受体与 CryoAtom2 的 small-molecule 答案范围均达到 65/77；但该模型在 H100 训练，不能与 A800 上的单通道 `density_only-0` 形成只改变通道数的严格因果对照。
+- `strongest-1` 最终达到真实受体 64/77、CryoAtom2 63/77，与第一轮 strongest 的终点相同；低 k 点位存在少量差异。
+- `density_only-0` 在 small-molecule 屏蔽后最终从真实受体 61 提高到 62、CryoAtom2 60 提高到 62；`pocket_only-0` 对应从 60 提高到 61、从 56 提高到 58。该变化只来自答案范围屏蔽，不改变前向或身份间注意力。
 - 这些 Stage1+Stage2 数值只表示目标 SMILES 身份是否命中；没有用前景头再次筛候选，不能与完整测试集中的“前景判断+身份判断”曲线混为同一口径。
