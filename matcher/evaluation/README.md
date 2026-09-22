@@ -2,11 +2,40 @@
 
 本目录把训练期 validation 与冻结 test 分开。test 只读取 BEST 中保存的 validation 前景阈值，不在真实受体或 CryoAtom2 测试数据上重新拟合。
 
+## 服务器正式产物位置
+
+服务器通用评测产物根为 `/storage/penghongen/Matcher/evaluation/`。以下目录树已与服务器现存文件做只读核对；`final_smiles/` 下列出的 7 个实验目录具有相同文件契约。
+
+```text
+## <科学产物>
+/storage/penghongen/Matcher/evaluation/
+├── stage1_only_preview/
+│   └── stage1_only_preview.json                 # 179-PDB Stage1-only 预览元数据，不含 Matcher 预测
+└── final_smiles/
+    └── {strongest,density_blob_only,blob_only-0,strongest-1,density_only-0,density_only-106,pocket_only-0}/
+        └── frozen_test.json                     # 当前实验的 test_0 前向、test_1 子集指标、逐候选预测和两种 top-k 排序
+
+## <其他文件>
+/storage/penghongen/Matcher/evaluation/
+├── stage1_only_preview/
+│   ├── topk_gaussian_stage1_only_preview.png    # Gaussian 排序的 Stage1-only 预览图（可再生辅助导出）
+│   └── topk_source_probability_mean_stage1_only_preview.png # 来源概率均值排序的 Stage1-only 预览图（可再生辅助导出）
+└── final_smiles/
+    └── {strongest,density_blob_only,blob_only-0,strongest-1,density_only-0,density_only-106,pocket_only-0}/
+        ├── foreground_and_smiles_metrics.png    # 前景与 SMILES 指标图（可再生辅助导出）
+        ├── topk_gaussian_final.png              # Gaussian 排序的正式 top-k 图（可再生辅助导出）
+        └── topk_source_probability_mean_final.png # 来源概率均值排序的正式 top-k 图（可再生辅助导出）
+```
+
+目录名 `strongest` 对应稳定实验标识 `strongest-0`，`density_blob_only` 对应稳定实验标识 `dense_blob_only-0`；其余 5 个目录名与稳定实验标识相同。图片只从同目录或已冻结的 Stage1-only JSON 生成，不能替代 JSON 科学产物。
+
+同一服务器父目录中的 `/storage/penghongen/Matcher/evaluation/test_smallmolecule_v1/` 属于独立的 Stage3 小分子评测，不由本目录的 `build_final_test_artifact()` 写出；其 `evaluation.json`、`docking_handoff_candidates.jsonl` 和图片契约见 [`../../ops/small_molecule_test/README.md`](../../ops/small_molecule_test/README.md)。
+
 ## 推荐阅读顺序
 
 1. `metrics.py`：先理解前景 PRAUC、固定阈值 F1、SMILES 匹配准确率和 selection。
 2. `test_set.py`：理解 Stage1-only 预览、BEST 冻结前向、Stage1+Matcher 曲线和 test_1 筛选。
-3. `plotting.py`：理解三个 JSON 驱动图入口；绘图不加载模型，也不重新计算科学事实。
+3. `plotting.py`：理解 `plot_stage1_only_preview()`、`plot_topk_final()` 和 `plot_metric_bars()` 三个 JSON 驱动入口；绘图不加载模型，也不重新计算科学事实。
 4. `__init__.py`：查看目录的公开入口。
 
 ## 指标定义
@@ -21,7 +50,7 @@
 
 ## Stage1-only 预览产物
 
-`build_stage1_only_preview_metadata()` 写出一个 `matcher_stage1_only_preview_v1` JSON。它不含 Matcher 概率、预测 SMILES 或 Stage1+Matcher 数值，不能称为最终图的数据源。
+`build_stage1_only_preview_metadata()` 把 `schema="matcher_stage1_only_preview_v1"` 的对象原子写入调用方指定的 `output_path`。当前正式 `output_path` 是 `/storage/penghongen/Matcher/evaluation/stage1_only_preview/stage1_only_preview.json`；`matcher_stage1_only_preview_v1` 是 JSON 顶层 `schema` 字段的值，不是文件名。该 JSON 保存 179-PDB Stage1-only 曲线元数据，绘图脚本用它生成同目录的两张 `stage1_only_preview` 图片；它不含 Matcher 概率、预测 SMILES 或 Stage1+Matcher 数值，不能称为最终图的数据源。
 
 | 顶层字段 | 类型或结构 | 含义与示例 |
 | --- | --- | --- |
@@ -35,12 +64,12 @@
 | `curves.gaussian` | 曲线映射 | 含 `real_receptor`、`cryoatom2_receptor`、`emap2lig`。 |
 | `curves.source_probability_mean` | 曲线映射 | 含相同三个键；两种排序中的 `emap2lig` 曲线内容必须完全相同。 |
 
-每条曲线记录的字段如下：
+每条"曲线映射"记录的字段如下：
 
 | 字段 | 类型与形状 | 含义与对齐 | 示例值 |
 | --- | --- | --- | --- |
 | `name` | `str` | 图例文字；Emap2lig 明确标记 density-only、receptor-independent。 | `"Find_1 real-receptor Find_1 Stage1-only"` |
-| `source` | `str` | 正式只读来源根或文件路径。 | `"/storage/.../held_out_test_0"` |
+| `source` | `str` | 正式只读来源根或文件路径。 | `"/storage/penghongen/AdaLigand_stage1_inference/Find_1/真实受体/artifacts/Find_1/held_out_test_0"` |
 | `pdb_count` | `int` | 固定为 179。 | `179` |
 | `pdb_ids` | `list[str]`，长度 179 | 曲线固定 PDB 轴，按小写标识排序。 | `["9abc", "9def"]` 是缩短格式示例 |
 | `top_k` | `list[int]`，长度 20 | 固定为 1 到 20。 | `[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]` |
@@ -48,11 +77,17 @@
 | `hit_ratio` | `list[float]`，长度 20 | `hit_count[j] / 179`，与 `top_k` 逐项对齐。 | `87 / 179` |
 | `pdb_hit` | `dict[str,list[bool]]` | 每个 PDB 对应 20 个累积命中值；一旦命中，后续更大 k 保持 `true`。 | `{"9abc": [false, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true]}` |
 
+三条 Stage1-only 来源曲线分别追溯到以下只读目录：
+
+- `real_receptor`：`/storage/penghongen/AdaLigand_stage1_inference/Find_1/真实受体/artifacts/Find_1/held_out_test_0`；
+- `cryoatom2_receptor`：`/storage/penghongen/AdaLigand_stage1_inference/Find_1/CryoAtom2受体/artifacts/Find_1/held_out_test_0`；
+- `emap2lig`：`/storage/penghongen/AdaLigand_stage1_inference/Emap2lig/official_find_li/held_out_test_0/evaluation`。
+
 Find_1 对 `candidate_selected=True` 和 `False` 分别按 Gaussian `candidate_score` 或 `source_probability_mean` 降序，再把 `False` 段追加到 `True` 段之后。分数并列时使用较小的 `source_blob_index`；两项键都相同时保留来源顺序。因此，unselected 候选不能挤占原 selected 前缀。Emap2lig 对自身候选使用相同的分段规则和实例内原生 ligand probability 均值；每张图只有一条 Emap2lig 曲线，不复制为两种受体条件。
 
 ## 正式冻结 test 产物
 
-`build_final_test_artifact()` 用同一个 BEST 对真实受体与 CryoAtom2 test_0 各前向一次，写出 `matcher_frozen_test_v1` JSON。同一次候选预测同时服务两种 Find_1 排序，不为第二种排序重复前向。模型配置、模型类和 checkpoint 加载规则固定从训练 run 的 `run.json` 所指 release 读取；当前评估 release 只提供冻结清单读取、扩展 top-k 汇总和绘图逻辑。
+`build_final_test_artifact()` 用同一个 BEST 对真实受体与 CryoAtom2 test_0 各前向一次，并把 `schema="matcher_frozen_test_v1"` 的对象原子写入调用方指定的 `output_path`。当前正式路径为 `/storage/penghongen/Matcher/evaluation/final_smiles/<experiment_dir>/frozen_test.json`，其中 `<experiment_dir>` 是本页“服务器正式产物位置”列出的 7 个实验目录之一；`matcher_frozen_test_v1` 是 JSON 顶层 `schema` 字段的值，不是文件名。同一次候选预测同时服务两种 Find_1 排序，不为第二种排序重复前向。模型配置、模型类和 checkpoint 加载规则固定从训练 run 的 `run.json` 所指 release 读取；当前评估 release 只提供冻结清单读取、扩展 top-k 汇总和绘图逻辑。
 
 | 顶层字段 | 类型或结构 | 含义 |
 | --- | --- | --- |
@@ -62,7 +97,7 @@ Find_1 对 `candidate_selected=True` 和 `False` 分别按 Gaussian `candidate_s
 | `checkpoint_path` | `str` | 被评估的真实 BEST 路径。 |
 | `real_manifest_path` | `str` | 真实受体 test_0 manifest 路径。 |
 | `cryoatom2_manifest_path` | `str` | CryoAtom2 test_0 manifest 路径。 |
-| `stage1_preview_path` | `str` | 已验收 Stage1-only 预览 JSON 路径。 |
+| `stage1_preview_path` | `str` | 已验收 Stage1-only 预览 JSON 路径；当前正式值为 `/storage/penghongen/Matcher/evaluation/stage1_only_preview/stage1_only_preview.json`。 |
 | `candidate_order` | `str` | Stage1-only 与 Stage1+Matcher 共用的 selected 优先扩展顺序。 |
 | `foreground_threshold_source` | `str` | 固定声明阈值来自 BEST validation 拟合。 |
 | `metrics` | 条件映射 | `real_receptor` 和 `cryoatom2_receptor` 各一份指标。 |
@@ -109,8 +144,10 @@ Find_1 对 `candidate_selected=True` 和 `False` 分别按 Gaussian `candidate_s
 
 ### 可选 `test_1`
 
-`test_1.source` 是官方 149-PDB 文本路径，`definition` 固定说明复用 test_0 前向，`metrics` 含两种受体条件的 149-PDB 指标。它不保存第二份预测，也不创建新的模型前向。
+`test_1` 是同一份 `frozen_test.json` 内的可选顶层字段，不是单独的 JSON 文件。`test_1.source` 是官方 149-PDB 文本路径，`definition` 固定说明复用 test_0 前向，`metrics` 含两种受体条件的 149-PDB 指标。它不保存第二份预测，也不创建新的模型前向。
 
 ## 绘图边界
 
-`plot_stage1_only_preview()` 只接受 `status=stage1_only_preview`，输出文件名必须含 `stage1_only_preview`。正式 top-k 图和七栏指标图只接受 `status=final_with_matcher`。三类绘图函数都只读取冻结 JSON，不加载模型、checkpoint 或来源 NPZ。
+`ops/matcher/plot_stage1_preview.py` 读取 `/storage/penghongen/Matcher/evaluation/stage1_only_preview/stage1_only_preview.json`，以 `gaussian` 和 `source_probability_mean` 分别调用一次 `plot_stage1_only_preview()`，写出 `topk_gaussian_stage1_only_preview.png` 和 `topk_source_probability_mean_stage1_only_preview.png`。该函数只接受 `status=stage1_only_preview`，输出文件名必须含 `stage1_only_preview`。
+
+`ops/matcher/plot_frozen_test.py` 读取某个实验目录的 `frozen_test.json`，以两种排序分别调用 `plot_topk_final()`，写出 `topk_gaussian_final.png` 和 `topk_source_probability_mean_final.png`；同一脚本调用 `plot_metric_bars()` 写出 `foreground_and_smiles_metrics.png`。这两个正式绘图函数只接受 `status=final_with_matcher`。三类绘图函数都只读取冻结 JSON，不加载模型、checkpoint 或来源 NPZ。

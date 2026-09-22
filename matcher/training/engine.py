@@ -35,7 +35,7 @@ from .losses import compute_matcher_loss
 
 def _write_manifest_snapshot(source_path: Path, snapshot_path: Path) -> dict[str, Any]:
     """
-    写出可由 Dataset 直接读取的不可变 manifest 入口快照.
+    将 source_path 返回的 manifest 进行load, 并写入 snapshot_path.
 
     - source_path: 构建训练进程时解析的正式 manifest.json 路径.
     - snapshot_path: 当前运行目录内的新 JSON 路径.
@@ -312,6 +312,12 @@ def _partition_epoch_batch_plan(
     return tuple(segments)
 
 
+
+
+
+
+# ================================================================================================
+# ================================================================================================
 @torch.no_grad()
 def _validate(
     model: ClosedSetMatcher,
@@ -517,6 +523,7 @@ def _train_segment(
 
 
 # ================================================================================================
+# ================================================================================================
 
 
 def run_smiles_training(config: SmilesExperimentConfig, config_path: Path) -> Path:
@@ -527,9 +534,8 @@ def run_smiles_training(config: SmilesExperimentConfig, config_path: Path) -> Pa
     - config_path: 与 config 对应的 YAML 路径; 路径写入来源证据.
     - return: 新建的运行目录, 内含 run.json、history.jsonl、BEST.pt、LAST.pt 和 summary.json.
 
-    每个 epoch 连续训练三个区段, 每段后遍历同一完整 validation. selection 至少提高配置中的
-    最小改善量才更新 BEST; 平台最多实际降低两次学习率, 第三次平台直接早停. 训练结束后只用
-    已保存的 BEST validation 预测拟合一次前景 F1 阈值, 不额外执行第 46 次 validation.
+    每个 epoch 连续训练三个区段, 每段后遍历同一完整 validation. selection 至少提高配置中的最小改善量才更新 BEST; 平台最多实际降低两次学习率, 第三次平台直接早停. 
+    训练结束后只用已保存的 BEST validation 预测拟合一次前景 F1 阈值, 不额外执行第 46 次 validation.
     """
     _set_seed(config.seed)
     if not torch.cuda.is_available():

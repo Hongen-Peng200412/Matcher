@@ -74,7 +74,7 @@ def foreground_counts(
     - target: bool (N,); 五类真实配体合并后的前景真值.
     - probability: 浮点 (N,); 与 target 对齐的前景概率.
     - threshold: 浮点标量; 概率大于或等于该值时预测为前景.
-    - return: true_positive、false_positive、false_negative、true_negative 和 f1 的映射; F1 分母为零时返回 NaN.
+    - return: true_positive、false_positive、false_negative、true_negative 和 f1.
     """
     truth = np.asarray(target, dtype=np.bool_)
     predicted = np.asarray(probability, dtype=np.float64) >= float(threshold)
@@ -122,7 +122,7 @@ def fit_foreground_threshold(
 
 def _accuracy(correct: int, eligible: int) -> float | None:
     """
-    计算允许零支持的准确率.
+    计算允许零支持的准确率: correct / eligible if eligible else None.
 
     - correct: 匹配正确的非负候选数.
     - eligible: 进入当前指标分母的非负候选数.
@@ -139,14 +139,17 @@ def smiles_match_metrics(
     identity_supported: np.ndarray,
 ) -> dict[str, Any]:
     """
-    汇总受支持真前景候选的 SMILES 匹配准确率.
+    汇总"受支持真前景候选"(假阳性自动跳过)的 SMILES 匹配准确率.
+    
+    输入:
+        - predicted_smiles: 长度 N; 每个候选的闭集 argmax 精确 SMILES, 无法预测时为 None.
+        - target_smiles: 长度 N; 最大覆盖 occurrence 的精确 SMILES, 背景为 None.
+        - target_category: 长度 N; 五类前景标签之一, 背景为 None.
+        - foreground_target: bool (N,); True 表示真实前景.
+        - identity_supported: bool (N,); 目标图和 SMI-TED 资产均可用时为 True.
 
-    - predicted_smiles: 长度 N; 每个候选的闭集 argmax 精确 SMILES, 无法预测时为 None.
-    - target_smiles: 长度 N; 最大覆盖 occurrence 的精确 SMILES, 背景为 None.
-    - target_category: 长度 N; 五类前景标签之一, 背景为 None.
-    - foreground_target: bool (N,); True 表示真实前景.
-    - identity_supported: bool (N,); 目标图和 SMI-TED 资产均可用时为 True.
-    - return: overall 与五类分层的 correct_count、eligible_count、accuracy; 零支持类别 accuracy 为 None.
+    输出: 
+        - return: overall 与五类配体类别的:  correct_count、eligible_count(实际的GT数目)、`accuracy; 零支持类别 accuracy 为 None.
     """
     count = len(predicted_smiles)
     if not (
@@ -196,12 +199,17 @@ class ValidationAccumulator:
     """
     收集完整 validation 的逐候选预测.
 
-    - foreground_target: 每个候选的前景真值.
-    - foreground_probability: 每个候选的前景概率.
-    - predicted_smiles: 每个候选的闭集 argmax 精确 SMILES.
-    - target_smiles: 每个候选的确定目标 SMILES; 背景为 None.
-    - target_category: 每个候选的五类前景标签; 背景为 None.
-    - identity_supported: 目标图和语言向量是否均受支持.
+    形状符号:
+        - N: 已追加到当前累积器的 validation 候选数.
+
+    字段:
+        - foreground_target: list[bool], 长度 N; 每项是对应候选的几何前景真值, True 表示候选与一个真实 occurrence 的双向覆盖率均达到 0.30.
+        - foreground_probability: list[float], 长度 N; 每项是对应候选前景 logit 经 sigmoid 得到的概率, 数值位于 [0,1].
+
+        - predicted_smiles: list[str | None], 长度 N; 每项是对应候选在所属 PDB 闭集身份轴上的最高分精确 SMILES, 如 `"CCO"`; 没有身份槽时为 None.
+        - target_smiles: list[str | None], 长度 N; 每项是真实 occurrence 为对应候选确定的精确 SMILES, 如 `"CCO"`; 背景或没有确定目标时为 None.
+        - target_category: list[str | None], 长度 N; 真前景项属于 ion、nucleotide_like、peptide_like、small_molecule 或 sugar, 背景为 None.
+        - identity_supported: list[bool], 长度 N; True 表示 target_smiles 同时具有合法 SMILES 图和 SMI-TED 语言向量, 对应候选进入 SMILES 匹配准确率分母.
 
     所有列表必须沿同一候选轴追加; finalize 在完整 validation 结束后一次性计算指标.
     """
@@ -225,8 +233,27 @@ class ValidationAccumulator:
         """
         计算完整候选集合的科学指标.
 
-        - threshold: 可选固定前景阈值; None 时不报告 F1, 有值时只应用而不重新拟合.
-        - return: candidate_count、foreground_prauc、smiles_match 和 selection; 提供阈值时 额外含 foreground_threshold 与前景混淆计数/F1.
+        输入: 
+            - threshold: float 或 None; 固定前景概率阈值, probability >= threshold 判为前景; None 时不返回阈值相关字段, 有值时只应用而不重新拟合.
+        
+        输出: 
+            - return.candidate_count: int; 六个累积列表共享的候选数 N.
+            - return.foreground_prauc: float; 把五类真实配体合并为前景后计算的 average precision, 没有真实前景时为 NaN.
+
+            - return.smiles_match: dict[str, dict[str, int | float | None]]; 键为 overall、ion、nucleotide_like、peptide_like、small_molecule 和 sugar, 每组只统计 identity_supported=True 的真实前景候选.
+            - return.smiles_match.<group>.correct_count: int; 当前组中 predicted_smiles 与 target_smiles 完全相等的候选数.
+            - return.smiles_match.<group>.eligible_count: int; 当前组中进入 SMILES 匹配准确率分母的受支持真前景候选数.
+            - return.smiles_match.<group>.accuracy: float 或 None; correct_count / eligible_count, 当前组没有合格候选时为 None.
+
+            - return.selection: float; `(0.3 * foreground_prauc + smiles_match.overall.accuracy) / 1.3`, 任一输入不可用时抛出 ValueError.
+
+            - return.foreground_threshold: float; 仅 threshold 非 None 时存在, 数值等于传入的固定前景阈值.
+            - return.foreground: dict[str, int | float]; 仅 threshold 非 None 时存在, 保存固定阈值对应的前景混淆计数与 F1.
+            - return.foreground.true_positive: int; 真实前景且前景概率达到 threshold 的候选数.
+            - return.foreground.false_positive: int; 真实背景但前景概率达到 threshold 的候选数.
+            - return.foreground.false_negative: int; 真实前景但前景概率低于 threshold 的候选数.
+            - return.foreground.true_negative: int; 真实背景且前景概率低于 threshold 的候选数.
+            - return.foreground.f1: float; `2 * true_positive / (2 * true_positive + false_positive + false_negative)`, 分母为零时为 NaN.
         """
         truth = np.asarray(self.foreground_target, dtype=np.bool_)
         probability = np.asarray(self.foreground_probability, dtype=np.float64)

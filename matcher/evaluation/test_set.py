@@ -45,30 +45,6 @@ def _candidate_hit_mask(
     )
 
 
-def _ranked_hit_curve(
-    score: np.ndarray,
-    source_blob_index: np.ndarray,
-    selected: np.ndarray,
-    candidate_hit: np.ndarray,
-) -> list[bool]:
-    """
-    按冻结的 Stage1 顺序返回一个 PDB 的 top-k 命中状态.
-
-    - score: 浮点 (N_candidate,); 当前排序采用的 Gaussian 分数或来源概率均值.
-    - source_blob_index: 整数 (N_candidate,); 同分候选的升序并列键.
-    - selected: bool (N_candidate,); True 候选整段排在 False 候选之前.
-    - candidate_hit: bool (N_candidate,); 由双向 0.30 覆盖门槛得到的 Stage1 命中标志.
-    - return: 长度 20 的布尔列表; 第 k-1 项表示扩展顺序前 k 个候选中是否至少一次命中.
-    """
-    score = np.asarray(score, dtype=np.float64)
-    blob = np.asarray(source_blob_index, dtype=np.int64)
-    selected = np.asarray(selected, dtype=np.bool_)
-    hit = np.asarray(candidate_hit, dtype=np.bool_)
-    if not (score.shape == blob.shape == selected.shape == hit.shape):
-        raise ValueError("候选分数、编号、选择掩码和命中掩码必须同形。")
-    order = _selected_priority_order(score, blob, selected)
-    ranked_hit = hit[order]
-    return [bool(np.any(ranked_hit[:k])) for k in TOP_K_VALUES]
 
 
 def _selected_priority_order(
@@ -99,6 +75,35 @@ def _selected_priority_order(
     return np.concatenate(segments)
 
 
+def _ranked_hit_curve(
+    score: np.ndarray,
+    source_blob_index: np.ndarray,
+    selected: np.ndarray,
+    candidate_hit: np.ndarray,
+) -> list[bool]:
+    """
+    按冻结的 Stage1 顺序返回一个 PDB 的 top-k 命中状态.
+
+    - score: 浮点 (N_candidate,); 当前排序采用的 Gaussian 分数或来源概率均值.
+    - source_blob_index: 整数 (N_candidate,); 同分候选的升序并列键.
+    - selected: bool (N_candidate,); True 候选整段排在 False 候选之前.
+    - candidate_hit: bool (N_candidate,); 由双向 0.30 覆盖门槛得到的 Stage1 命中标志.
+    - return: 长度 20 的布尔列表; 第 k-1 项表示扩展顺序前 k 个候选中是否至少一次命中.
+    """
+    score = np.asarray(score, dtype=np.float64)
+    blob = np.asarray(source_blob_index, dtype=np.int64)
+    selected = np.asarray(selected, dtype=np.bool_)
+    hit = np.asarray(candidate_hit, dtype=np.bool_)
+    if not (score.shape == blob.shape == selected.shape == hit.shape):
+        raise ValueError("候选分数、编号、选择掩码和命中掩码必须同形。")
+    order = _selected_priority_order(score, blob, selected)
+    ranked_hit = hit[order]
+    return [bool(np.any(ranked_hit[:k])) for k in TOP_K_VALUES]
+
+
+
+
+# NOTE: 不必要
 def _assert_selected_prefix_unchanged(
     score: np.ndarray,
     source_blob_index: np.ndarray,
@@ -165,9 +170,6 @@ def _curve_record(
     }
 
 
-# ================================================================================================
-
-
 def build_find_stage1_curves(stage1_test_root: Path, label: str) -> dict[str, dict[str, Any]]:
     """
     从一套 Find_1 held_out_test_0 重算两条 Stage1-only 曲线.
@@ -211,6 +213,10 @@ def build_find_stage1_curves(stage1_test_root: Path, label: str) -> dict[str, di
             f"{label} Find_1 Stage1-only", root, probability_hits
         ),
     }
+
+# ================================================================================================
+
+
 
 
 def build_emap2lig_stage1_curve(evaluation_root: Path) -> dict[str, Any]:

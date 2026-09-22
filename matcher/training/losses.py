@@ -116,12 +116,11 @@ def smiles_identity_cross_entropy(
     - identity_logits: 浮点张量, (B,I). 每个候选在所属 PDB 闭集身份轴上的未归一化分数.
     - identity_mask: bool 张量, (B,I). True 表示真实身份槽, False 表示批内补零槽.
     - identity_target: int64 张量, (B,). 受支持真前景指向 [0,I), 其它候选为 -1.
-    - foreground_target: bool 张量, (B,). True 表示通过双向覆盖门槛的真实前景.
+    - foreground_target: bool 张量, (B,). True 表示通过双向覆盖门槛的真实前景, 只在True时算损失.
     - return[0]: 标量浮点张量. eligible 子集上的均值交叉熵, 无 eligible 候选时为连图零.
     - return[1]: int64 标量张量. 当前物理批次的 eligible 候选数.
 
-    eligible = foreground_target & (identity_target >= 0). 损失不乘前景预测概率, 也不提供
-    其它身份损失变体或历史兼容分支.
+    eligible = foreground_target & (identity_target >= 0). 损失不乘前景预测概率, 也不提供其它身份损失变体或历史兼容分支.
     """
     if identity_mask.dtype != torch.bool or identity_mask.shape != identity_logits.shape:
         raise ValueError("identity_mask 必须是与 identity_logits 同形的 bool 张量。")
@@ -150,23 +149,33 @@ def compute_matcher_loss(
     """
     计算一个物理批次的四项正式训练损失.
 
-    - outputs.foreground_logit: 浮点 (B,); 前景二分类 logit.
-    - outputs.identity_logits: 浮点 (B,I); PDB 内闭集 SMILES 分数.
-    - outputs.ligand_area_logits/binding_area_logits: 浮点区域张量或 None.
-    - batch.foreground_target: bool (B,); 与身份资产可用性无关的几何前景真值.
-    - batch.identity_target: int64 (B,); 受支持真前景指向目标身份, 其余为 -1.
-    - weights: 四项损失系数; 区域头不存在时相应权重必须为零.
-    - return: 可用于真实分母聚合的 LossOutput.
+    输入: 
+        - outputs.foreground_logit: 浮点 (B,); 前景二分类 logit.
+        - outputs.identity_logits: 浮点 (B,I); PDB 内闭集 SMILES 分数.
+        - outputs.ligand_area_logits/binding_area_logits: 浮点区域张量或 None.
+        - batch.foreground_target: bool (B,); 与身份资产可用性无关的几何前景真值.
+        - batch.identity_target: int64 (B,); 受支持真前景指向目标身份, 其余为 -1.
+        - weights: 四项损失系数; 区域头不存在时相应权重必须为零.
+    
+    输出:
+        - return: LossOutput; 保存四项可反向损失、加权总损失和跨物理批次聚合所需的真实分母.
+        - return.total: 标量浮点张量; foreground、ligand_area、binding_area 和 identity 分别乘 weights 中对应系数后的和.
+        - return.foreground: 标量浮点张量; 当前 B 个候选的前景二分类 BCE 均值.
+        - return.ligand_area: 标量浮点张量; 当前 B 个候选的配体区域辅助损失均值, 模型无配体区域头时为与前景分支连图的零.
+        - return.binding_area: 标量浮点张量; 当前 B 个候选的受体结合区域辅助损失均值, 模型无结合区域头时为与前景分支连图的零.
+        - return.identity: 标量浮点张量; 真实前景且 identity_target 非负候选的闭集 SMILES 交叉熵均值, 没有合格候选时为与身份分支连图的零.
+        - return.foreground_denominator: 标量浮点张量; 当前物理批次的候选数 B, 用于按真实候选数聚合批次均值.
+        - return.identity_eligible_count: int64 标量张量; 当前物理批次实际进入身份交叉熵的候选数, 用于身份损失的窗口缩放和跨批次聚合.
     """
     foreground_logit = outputs["foreground_logit"]
     identity_logits = outputs["identity_logits"]
     if not isinstance(foreground_logit, torch.Tensor) or not isinstance(identity_logits, torch.Tensor):
         raise TypeError("模型必须返回 foreground_logit 和 identity_logits 张量。")
+
     foreground_target = batch["foreground_target"]
-    foreground = F.binary_cross_entropy_with_logits(
-        foreground_logit, foreground_target.to(dtype=foreground_logit.dtype)
-    )
+    foreground = F.binary_cross_entropy_with_logits(foreground_logit, foreground_target.to(dtype=foreground_logit.dtype))
     denominator = foreground_logit.new_tensor(foreground_target.numel())
+
     zero = foreground_logit.sum() * 0
     ligand_logits = outputs["ligand_area_logits"]
     binding_logits = outputs["binding_area_logits"]
@@ -182,6 +191,7 @@ def compute_matcher_loss(
         binding_area = zero
     else:
         binding_area = balanced_voxel_loss(binding_logits, batch["binding_area_target"])
+
     identity, identity_count = smiles_identity_cross_entropy(
         identity_logits,
         batch["identity_mask"],
