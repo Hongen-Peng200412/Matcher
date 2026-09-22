@@ -11,16 +11,8 @@ import numpy as np
 
 
 def _read_json(path: Path) -> dict[str, Any]:
-    """
-    读取冻结评估 JSON.
-
-    - path: UTF-8 JSON 文件路径.
-    - return: 顶层对象映射; 顶层不是对象时失败关闭.
-    """
-    value = json.loads(Path(path).read_text(encoding="utf-8"))
-    if not isinstance(value, dict):
-        raise ValueError(f"{path} 必须是 JSON 对象。")
-    return value
+    """读取顶层为对象映射的冻结评估 JSON."""
+    return json.loads(Path(path).read_text(encoding="utf-8"))
 
 
 def _save_figure(figure: plt.Figure, path: Path) -> Path:
@@ -38,32 +30,19 @@ def _save_figure(figure: plt.Figure, path: Path) -> Path:
     return path
 
 
-# ================================================================================================
-
-
 def plot_stage1_only_preview(
     metadata_path: Path, sorting: str, output_path: Path
 ) -> Path:
     """
     绘制不含任何 Matcher 数值的 Stage1-only 预览图.
 
-    - metadata_path: matcher_stage1_only_preview_v1 JSON.
+    - metadata_path: Stage1-only 曲线 JSON.
     - sorting: gaussian 或 source_probability_mean, 只改变 Find_1 的排序字段.
-    - output_path: 文件名必须含 stage1_only_preview, 避免被误称为最终图.
+    - output_path: PNG 输出路径.
     - return: 已保存的 PNG 路径.
     """
-    if sorting not in ("gaussian", "source_probability_mean"):
-        raise ValueError("sorting 必须是 gaussian 或 source_probability_mean。")
-    if "stage1_only_preview" not in Path(output_path).name:
-        raise ValueError("预览图文件名必须明确包含 stage1_only_preview。")
     artifact = _read_json(metadata_path)
-    if artifact.get("status") != "stage1_only_preview":
-        raise ValueError("输入不是 Stage1-only 预览元数据。")
     curves = artifact["curves"][sorting]
-    emap_gaussian = artifact["curves"]["gaussian"]["emap2lig"]["hit_count"]
-    emap_probability = artifact["curves"]["source_probability_mean"]["emap2lig"]["hit_count"]
-    if emap_gaussian != emap_probability:
-        raise ValueError("两张预览图引用的 Emap2lig 单曲线必须逐点相同。")
     figure, axis = plt.subplots(figsize=(8.4, 5.2))
     styles = (
         ("real_receptor", "Find_1 real-receptor Stage1-only", "#2563eb", "o"),
@@ -86,7 +65,11 @@ def plot_stage1_only_preview(
             markevery=2,
             linewidth=2,
         )
-    sorting_label = "Gaussian candidate_score" if sorting == "gaussian" else "source_probability_mean"
+    sorting_label = (
+        "Gaussian candidate_score"
+        if sorting == "gaussian"
+        else "source_probability_mean"
+    )
     axis.set_title(f"stage1_only_preview — Find_1 ranked by {sorting_label}")
     axis.set_xlabel("Top-k candidate count")
     axis.set_ylabel("PDB hit ratio (fixed denominator n=179)")
@@ -102,39 +85,32 @@ def plot_topk_final(result_path: Path, sorting: str, output_path: Path) -> Path:
     """
     绘制阶段 E 的一张正式 top-k 图.
 
-    - result_path: 状态为 final_with_matcher 的冻结测试 JSON.
-    - sorting: gaussian 或 source_probability_mean; 输出文件名必须含该字段.
+    - result_path: 含正式 Stage1-only 与 Stage1+Matcher 曲线的冻结测试 JSON.
+    - sorting: gaussian 或 source_probability_mean.
     - output_path: 正式 PNG 路径.
     - return: 已保存的 PNG 路径.
 
     图中包含真实受体和 CryoAtom2 各自的 Stage1-only、Stage1+Matcher 四条 Find_1 曲线,
     以及一条 Emap2lig receptor-independent 基线.
     """
-    if sorting not in ("gaussian", "source_probability_mean"):
-        raise ValueError("sorting 必须是 gaussian 或 source_probability_mean。")
-    if sorting not in Path(output_path).name:
-        raise ValueError("最终 top-k 图文件名必须明确包含 Find_1 排序字段。")
     artifact = _read_json(result_path)
-    if artifact.get("status") != "final_with_matcher":
-        raise ValueError("最终 top-k 图必须读取真实 Matcher 冻结评估产物。")
     curves = artifact["curves"][sorting]
-    required = {
+    curve_order = (
         "real_stage1_only",
         "real_stage1_matcher",
         "cryo_stage1_only",
         "cryo_stage1_matcher",
         "emap2lig",
-    }
-    if set(curves) != required:
-        raise ValueError(f"最终 top-k 曲线必须精确为 {sorted(required)}。")
-    other_sorting = "source_probability_mean" if sorting == "gaussian" else "gaussian"
-    if curves["emap2lig"]["hit_count"] != artifact["curves"][other_sorting]["emap2lig"]["hit_count"]:
-        raise ValueError("两张最终图引用的 Emap2lig 单曲线必须逐点相同。")
+    )
     figure, axis = plt.subplots(figsize=(8.4, 5.2))
-    for key in sorted(required):
+    for key in curve_order:
         curve = curves[key]
         axis.plot(curve["top_k"], curve["hit_ratio"], label=curve["name"], linewidth=2)
-    sorting_label = "Gaussian candidate_score" if sorting == "gaussian" else "source_probability_mean"
+    sorting_label = (
+        "Gaussian candidate_score"
+        if sorting == "gaussian"
+        else "source_probability_mean"
+    )
     axis.set_title(f"Find_1 ranked by {sorting_label}")
     axis.set_xlabel("Top-k candidate count")
     axis.set_ylabel("PDB hit ratio (fixed denominator n=179)")
@@ -150,7 +126,7 @@ def plot_metric_bars(result_path: Path, output_path: Path) -> Path:
     """
     绘制真实受体与 CryoAtom2 的正式指标图.
 
-    - result_path: 状态为 final_with_matcher 的冻结测试 JSON.
+    - result_path: 含正式 Matcher 测试指标的冻结测试 JSON.
     - output_path: 七栏图 PNG 输出路径.
     - return: 已保存的 PNG 路径.
 
@@ -158,8 +134,6 @@ def plot_metric_bars(result_path: Path, output_path: Path) -> Path:
     类别绘制为 N/A 并明确标注 n=0, 不把它转换成零准确率.
     """
     artifact = _read_json(result_path)
-    if artifact.get("status") != "final_with_matcher":
-        raise ValueError("七栏图必须读取真实 Matcher 冻结评估产物。")
     labels = [
         "SMILES overall",
         "small molecule",

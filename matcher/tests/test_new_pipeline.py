@@ -101,7 +101,7 @@ def test_checkpoint_loader_uses_training_release_package(tmp_path: Path) -> None
         checkpoint_path,
     )
 
-    model, checkpoint, config, provenance = load_matcher_from_training_release(
+    model, checkpoint, config = load_matcher_from_training_release(
         checkpoint_path,
         torch.device("cpu"),
     )
@@ -112,7 +112,6 @@ def test_checkpoint_loader_uses_training_release_package(tmp_path: Path) -> None
         model.projection.weight,
         checkpoint["model_state"]["projection.weight"],
     )
-    assert provenance["training_project_root"] == str(project_root.resolve())
 
 
 def test_test1_subset_reads_official_json_pdb_ids(tmp_path: Path) -> None:
@@ -886,7 +885,7 @@ def test_matcher_curve_uses_the_same_selected_priority_order(tmp_path: Path) -> 
             },
         ]
     }
-    curve = _matcher_curve("test", rows, pdb_ids, "gaussian_score", tmp_path / "best.pt")
+    curve = _matcher_curve("test", rows, pdb_ids, "gaussian_score")
     assert curve["hit_count"][:3] == [0, 0, 1]
 
 
@@ -923,7 +922,7 @@ def test_final_metrics_and_topk_keep_empty_pdb_in_fixed_denominator(tmp_path: Pa
     assert metrics["pdb_count"] == 2
     assert "selection" not in metrics
     pdb_ids = [f"pdb{index:03d}" for index in range(179)]
-    curve = _matcher_curve("test", {}, pdb_ids, "gaussian_score", tmp_path / "best.pt")
+    curve = _matcher_curve("test", {}, pdb_ids, "gaussian_score")
     assert curve["pdb_count"] == 179
     assert curve["hit_count"] == [0] * 20
 

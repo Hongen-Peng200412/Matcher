@@ -364,7 +364,7 @@ def _centered_fields(variant: ModelVariant) -> tuple[str, ...]:
         "experimental_density_48",
         "box_start_zyx",
     )
-    if variant == "density_blob_only":
+    if variant == "density_blob_only":  # blob+实验密度
         return common + spatial
     return common + spatial + (
         "simulated_density_48",

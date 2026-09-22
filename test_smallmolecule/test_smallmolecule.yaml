@@ -1,0 +1,55 @@
+# Stage3 小分子测试集的正式评估配置.
+# test_smallmolecule 中的清单、评估与绘图入口共同读取本文件.
+
+# --- 只读科学来源 ---
+sources:
+  stage3_occurrences: /storage/penghongen/PocketXMol/data/smiles-v1/frozen/test.jsonl  # str, 446 个 Stage3 测试 occurrence
+  data_root: /storage/penghongen/AdaLigand/Ori_Data  # str, occurrence 类别与 Matcher Dataset 共用数据根
+  prepared_root: /storage/penghongen/AdaLigand/Ori_Data/stage1_preparation_box_pool_2/ligand_language_models/prepared  # str, 顶层 PreparedLigand.smiles 的按 PDB 目录
+  real_manifest: /storage/penghongen/Matcher/manifests/test0_real_smiles_v1/manifest.json  # str, 真实受体完整 test_0 候选与身份入口
+  cryoatom2_manifest: /storage/penghongen/Matcher/manifests/test0_cryoatom2_smiles_v1/manifest.json  # str, CryoAtom2 完整 test_0 候选与身份入口
+  find_real_root: /storage/penghongen/AdaLigand_stage1_inference/Find_1/真实受体/artifacts/Find_1/held_out_test_0  # str, 真实受体 Find_1 完整 blob 与 centered 几何
+  find_cryoatom2_root: /storage/penghongen/AdaLigand_stage1_inference/Find_1/CryoAtom2受体/artifacts/Find_1/held_out_test_0  # str, CryoAtom2 Find_1 完整 blob 与 centered 几何
+  emap2lig_root: /storage/penghongen/AdaLigand_stage1_inference/Emap2lig/official_find_li/held_out_test_0  # str, Emap2lig 覆盖数组、原生概率均值与完整 blob
+
+# --- 正式产物根 ---
+outputs:
+  manifest_root: /storage/penghongen/Matcher/manifests/test_smallmolecule_v1  # str, 模型无关的小分子评估清单
+  evaluation_root: /storage/penghongen/Matcher/evaluation/test_smallmolecule_v1  # str, Stage1-only、Matcher 结果和图片共同根
+
+# --- Matcher 身份前向 ---
+runtime:
+  split: held_out_test_0  # str, 两份来源 manifest 中的测试划分键
+  batch_size: 32  # int, 一次 Matcher 前向的候选数
+  num_workers: 8  # int, 当前受体条件唯一活动 DataLoader 的工作进程数
+  prefetch_factor: 2  # int, 每个工作进程预取的物理批次数
+  worker_generator_seed: 3407  # int, DataLoader 工作进程种子
+  sampler_seed: 3407  # int, 不洗牌采样器的种子
+  torch_seed: 3407  # int, 当前评估进程与 CUDA 随机种子
+  pp_top_k: 2048  # int, strongest 使用的 PP token 上限
+  cache_gib_per_worker: 8.0  # float, 每个 Dataset 工作进程的 PDB 载荷缓存预算
+
+# --- 冻结训练结果 ---
+# 每个键是稳定实验标识. checkpoint 是模型输入, training_run_name 决定该实验的结果子目录.
+models:
+  density_only-0:
+    checkpoint: /storage/penghongen/Matcher/runs/density_only-0/train_density_only0_job379403_20260920T205216/BEST.pt
+    training_run_name: train_density_only0_job379403_20260920T205216
+  strongest-1:
+    checkpoint: /storage/penghongen/Matcher/runs/strongest-1/train_strongest1_revised_job378587_20260920T230727/BEST.pt
+    training_run_name: train_strongest1_revised_job378587_20260920T230727
+  density_only-106:
+    checkpoint: /storage/penghongen/Matcher/runs/density_only-106/train_density_only106_job386151_20260920T230728/BEST.pt
+    training_run_name: train_density_only106_job386151_20260920T230728
+  pocket_only-0:
+    checkpoint: /storage/penghongen/Matcher/runs/pocket_only-0/train_pocket_only0_job379403_20260921T122846/BEST.pt
+    training_run_name: train_pocket_only0_job379403_20260921T122846
+  blob_only-0:
+    checkpoint: /storage/penghongen/Matcher/runs/blob_only-0/train_blob_only0_job379403_20260920T142850/BEST.pt
+    training_run_name: train_blob_only0_job379403_20260920T142850
+  density_blob_only:
+    checkpoint: /storage/penghongen/Matcher/runs/density_blob_only/predict_calibration_job379403_20260918T184914_a8/BEST.pt
+    training_run_name: predict_calibration_job379403_20260918T184914_a8
+  strongest:
+    checkpoint: /storage/penghongen/Matcher/runs/strongest/train_docking_job378587_20260918T185357_a8/BEST.pt
+    training_run_name: train_docking_job378587_20260918T185357_a8
