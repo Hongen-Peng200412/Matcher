@@ -1,0 +1,52 @@
+Here are instructions on running the sim_cryo tool, which was used to create simulated cryoEM maps for fragment screening.
+
+The sim_cryo tool is included in the most recent weekly release of Rosetta. Instructions on downloading Rosetta can be found here: https://rosettacommons.org/software/download/
+Online documentation for the sim_cryo tool, much is repeated here, can be found here: https://docs.rosettacommons.org/docs/wiki/application_documentation/analysis/Simulated-CryoEM-Density
+
+###########################################
+Overview
+###########################################
+The "sim_cryo" tool realistically simulates cryo-electron microscopy data by creating 2D projection images for 3D reconstruction. The input structure is randomly rotated and images are taken of projections of each plane. To simulate noise, atoms in the image are perturbed and gaussian noise is applied across each image.
+
+###########################################
+Example command
+###########################################
+sim_cryo is used by calling the app in your $ROSETTA path. An example command used in the EMERALD-ID manuscript is:
+
+$ROSETTA/source/bin/sim_cryo.linuxgccrelease \
+        -NR 15000 \
+        -gauss_multiplier 0.6 \
+        -resolution 3.5 \
+        -pixel_size 1 \
+        -box_size_multiplier 2.25 \
+        -s inputs/1eqg.pdb \
+        -ignore_zero_occupancy false \
+        -ignore_unrecognized_res \
+        -particle_wt_offset 0.2 \
+        -crystal_refine \
+        -atom_gauss_random_multiplier 1.0
+
+Common options:
+-s # Input PDB for which to simulate data
+
+-NR # Number of rotations to project. Final number of images will be 3 times NR
+
+-resolution # Target resolution of the simulated map
+
+-pixel_size # Pixel size of projection images
+
+-box_size_multiplier # Size of the box of projection images
+
+-particle_wt_offset # Offset distance of particle in projection images
+
+-gauss_multiplier # Multiplier of gaussian noise applied to each projection image
+
+-atom_gauss_random_multiplier # Multiplier of gaussian noise for atom perturbation
+
+Other options:
+-crystal_refine # When included with -atom_gauss_random_multiplier will scale the multiplier by B-factors provided in the input PDB
+
+###########################################
+Outputs
+###########################################
+The application will output the stack of projection images in a `*.mrcs` file along with metadata in a `*.star` file. Both files are needed to import the particles into 3D reconstruction software. We used cryoSPARC for reconstruction. Once imported, a 3D map can be reconstructed by ab initio reconstruction and homogenous refinement using default settings. We manually set the pixel size when importing particles in cryoSPARC to 1. It will sometimes crash in ab initio reconstruction if it reads the pixel size from the star file.

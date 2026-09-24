@@ -1,0 +1,42 @@
+Here are instructions on running the ligand density detection tool.
+
+The ligand density detection tool is included in the most recent weekly release of Rosetta. Instructions on downloading Rosetta can be found here: https://rosettacommons.org/software/download/
+Online documentation for the ligand density detection tool, much is repeated here, can be found here: https://docs.rosettacommons.org/docs/wiki/application_documentation/analysis/Ligand-Density-Detector
+
+###########################################
+Overview
+###########################################
+The ligand density detection tool finds unmodelled regions (referred to as "blobs") in a cryoEM density map that likely belong to ligands. A mask of the provided PDB model is calculated and subtracted from the EM map to reveal unmodelled regions. Regions are evaluated based on the strength of the density and scored by their size and proximity to the macromolecule.
+
+###########################################
+Example command
+###########################################
+The ligand density detector is used with the `density_tools` application in $ROSETTA. An example command used in the EMERALD-ID manuscript is:
+
+$ROSETTA/source/bin/density_tools.default.linuxgccrelease \
+        -s inputs/7bxu.pdb \
+        -mapfile inputs/emd_30238.map \
+        -ligand_finder \
+        -edensity::mapreso 3.70
+
+Required options:
+-s # Input PDB to be used as a mask. Macromolecule should be built into the map as much as possible
+
+-ligand_finder # Required to search for unassigned density
+
+-mapfile # Input cryoEM map in CCP4/MRC format
+
+-edensity::mapreso # Resolution of the EM data
+
+###########################################
+Outputs
+###########################################
+The application will output a list of detected density regions in a PDB file called `ligand.pdb`. Each line in the file will contain the coordinates for the center of mass of a blob in the xyz coordinate slots. Additionally, a receptor contact score and the blob volume are provided in columns 56-60 and 61-66, respectively. The receptor contact score is the fraction of surface voxels in the blob that are within 4 Å of the receptor. Blob volume is simply the number of voxels in blob.
+
+###########################################
+Filtering Density Regions
+###########################################
+The receptor contact score and voxel volume can be used to determine which regions most likely belong to a ligand. Small molecules will usually have volume greater than 50 voxels, with most being between 70-120 voxels. The receptor contact score will vary by the binding mode of a ligand, but a score of 0.70 or higher is generally a good filter. The blob finder may incorrectly detect regions of density that correspond to unmodeled macromolecule. This often occurs near termini or cuts in the protein for disordered regions.
+
+For the manuscript, we used a strict filter of 0.90 for the receptor contact score and 70 for blob volume. Density regions were further filtered to exclude those within 5 Å of a cut or terminus of the receptor. The filtering step can be applied with the following script:
+./filter_density_regions.sh ligands.pdb 

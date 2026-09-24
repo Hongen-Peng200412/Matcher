@@ -10,3 +10,4 @@ results/
 tmp/
 wandb/
 *.review/
+ligand_parameters/

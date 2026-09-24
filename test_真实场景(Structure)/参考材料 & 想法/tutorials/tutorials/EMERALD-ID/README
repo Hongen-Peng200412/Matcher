@@ -1,0 +1,138 @@
+Here are instructions on running the ligand identification with EMERALD-ID.
+
+EMERALD-ID is included in the most recent weekly release of Rosetta. Instructions on downloading Rosetta can be found here: https://rosettacommons.org/software/download/
+
+###########################################
+Overview
+###########################################
+EMERALD-ID docks a library of ligand identities into a cryoEM density map and evaluates each identity by its estimated binding affinity and fit into the density map.
+
+###########################################
+File preparation
+###########################################
+To run EMERALD-ID, the user needs a cryoEM density map, an input PDB file, and Rosetta-specific parameters files for all ligand identities to be docked. An example of an input PDB file is inputs/7bxu.pdb. Examples of parameters files are found in the library/ directory.
+
+The input PDB file must have the mamcromolecule modeled into the map. The search location for ligand fitting is determined by information in the input PDB file. There are two options to determine the search location for ligand fitting.
+A ligand residue approximately centered in the search area can be included as the final residue. The ligand can be any small molecule identity, as long as its atom names correspond to the atom names in a provided Rosetta params file or the ligand's Chemcial Component Dictionary entry.
+
+OR
+
+A single set of coordinates representing the center of mass of the unmodeled density can be included as a "HETATM" line as the final residue in the PDB file. We recommend using "C3" as the atom name and "LG2" as the residue name for the HETATM line. For this tutorial, we use this option.
+
+
+We have included all ligand parameters files used in the manuscript in ligand_parameters.zip in the main manuscript file directory. To create a ligand parameters file outside those included, a mol2 file with partial charges and the correct protonation state is needed. We recommend using the MMFF94 force field to calculate partial charges. One way to add charges is through OpenBabel:
+obabel $input_LIG -O $output_LIG.mol2 --partialcharge mmff94
+   
+To generate the Rosetta parameters file, a python script is included with Rosetta
+$ROSETTA/source/scripts/python/public/generic_potential/mol2genparams.py --amide_chi -s $MOL2 --nm $LIG --puckering_chi 
+where $MOL2 is the ligand mol2 file and $LIG is the 3-letter name of the ligand. Default name is "LG1".
+
+For the purposes of the tutorial, a small 4 ligand library is included in the library/ directory.
+
+###########################################
+Example command
+###########################################
+Once the files are prepared, EMERALD can be ran with the command line below:
+
+$ROSETTA/source/bin/rosetta_scripts.linuxgccrelease \
+    -in:file:extra_res_fa $params_list \
+    -in:file:override_database_params \
+    -out:prefix $prefix \
+    -gen_potential \
+    -database $ROSETTA/database \
+    -s inputs/7bxu.pdb \
+    -multi_cool_annealer 10 \
+    -parser:protocol ligand_screen.xml \
+    -gen_potential \
+    -no_autogen_cart_improper \
+    -atom_mask 2 \
+    -parser:script_vars map=inputs/emd_30238.map \
+    -parser:script_vars ligands=$ligand_list \
+    -parser:script_vars local_res=3.97 \
+    -sliding_window 1 \
+    -edensity::score_sliding_window_context \
+    -edensity::mapreso 3.70 \
+    -edensity::grid_spacing 1.0
+
+Most of the command line flags are needed for small molecule and density map scoring. Flags relevant for EMERALD-ID are:
+
+-in:file:extra_res_fa $params_list
+where $params_list and a space separated list of ligand parameters files for the identities being docked,
+
+-parser:script_vars ligands=$ligand_list
+where $ligand_list is a comma separated list of 3-letter ligand residue names for the identities being docked (same as $LIG during parameters file generation), and
+
+-parser:script_vars local_res=3.97
+which is the local resolution of the binding pocket (an approximation is fine).
+
+###########################################
+Example RosettaScript
+###########################################
+For more EMERALD-ID-specific variables, we turn to the ligand_screen.xml RosettaScripts XML file  
+
+<ROSETTASCRIPTS>
+  <SCOREFXNS>
+          <ScoreFunction name="relaxscore" weights="beta_genpot">
+                  <Reweight scoretype="elec_dens_fast" weight="100"/>
+                  <Reweight scoretype="gen_bonded" weight="1.0"/>
+                  <Reweight scoretype="coordinate_constraint" weight="1.0"/>
+        </ScoreFunction>
+  </SCOREFXNS>
+
+  <TASKOPERATIONS>
+  </TASKOPERATIONS>
+
+  <FILTERS>
+  </FILTERS>
+
+  <MOVERS>
+          <SetupForDensityScoring name="setupdens" />
+          <LoadDensityMap name="loaddens" mapfile="%%map%%" />
+          <GALigandDock name="dock" scorefxn="relaxscore" ngen="10" npool="100" smoothing="0.0" ramp_schedule="0.1,1.0" grid_step="0.325" padding="5.0" sidechains="auto" final_exact_minimize="bbsc" random_oversample="10" use_pharmacophore="false" skeleton_threshold_const="5.0" neighborhood_size="7" sample_ring_conformers="1" reference_pool="map" estimate_dG="true" multiple_ligands="%%ligands%%" local_resolution="%%local_res%%" entropy_method="Simple"/>
+  </MOVERS>
+  <PROTOCOLS>
+          <Add mover="setupdens"/>
+          <Add mover="loaddens"/>
+          <Add mover="dock"/>
+  </PROTOCOLS>
+  <OUTPUT scorefxn="relaxscore"/>
+</ROSETTASCRIPTS>
+
+Required attributes for EMERALD-ID:
+reference_pool must be set to "map".
+
+estimated_dG must be set to "true" to calculate estimated binding affinity.
+
+entropy_method must be set to "Simple" for estimated binding affinity calculations.
+
+local_resolution should be provided for more accurate evaluations. If excluded, resolution provided by the -edensity::mapreso flag will be used.
+
+
+Other attributes listed control ligand docking into density. The provided values are recommended. If speed is valued over sampling, npool can be lowered. If more sampling is needed, increase npool or random_oversample.
+
+If it is suspected that a bound ligand could have more than 20 torsions, we recommend adding or changing the following attributes:
+skeleton_threshold_const="7.5"
+neighborhood_size="19"
+reference_frac="0.5"
+method_for_radius="no_padding"
+pmut="0.5"
+advanced_map_erosion="true"
+
+###########################################
+Running EMERALD-ID
+###########################################
+The included run_EMERALD-ID.sh script assists with running EMERALD-ID. Depending on the size of the ligand library and computing resources available, ligand identities can be docked in a single job sequentially or in multiple jobs in parallel.
+
+To dock ligands sequentially, place all params files in a single directory and provide it in the command line:
+./run_EMERALD-ID.sh library/
+
+To dock single ligands in parallel, provide a single params file in the command line and run multiple jobs with a task scheduler:
+./run_EMERALD-ID.sh library/ligand.params
+
+###########################################
+Output
+###########################################
+EMERALD-ID will produce a Rosetta scorefile with the *.sc extension, along with the lowest energy conformation found for each ligand identity. The scorefile contains Z-scores for each ligand. If ran sequentially, the scorefile will include calculated probabilities. If ran in parallel, a separate script is needed to calculate probabilities. Included is rank_ligand_identity.py which will take a directory containing scorefiles and calculate probabilities for the ligand identities. Ranked ligand identities from rank_ligand_identity.py are written to id_output.txt.
+
+python rank_ligand_identity.py  -d outputs/
+

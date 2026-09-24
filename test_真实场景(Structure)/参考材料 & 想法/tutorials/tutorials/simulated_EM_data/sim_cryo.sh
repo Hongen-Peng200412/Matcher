@@ -1,0 +1,12 @@
+$ROSETTA/source/bin/sim_cryo.linuxgccrelease \
+	-NR 3000 \
+	-gauss_multiplier 0.6 \
+	-resolution 3.5 \
+	-pixel_size 1 \
+	-box_size_multiplier 2.25 \
+	-s inputs/1eqg.pdb \
+	-ignore_zero_occupancy false \
+	-ignore_unrecognized_res \
+	-particle_wt_offset 0.2 \
+	-crystal_refine \
+	-atom_gauss_random_multiplier 1.0

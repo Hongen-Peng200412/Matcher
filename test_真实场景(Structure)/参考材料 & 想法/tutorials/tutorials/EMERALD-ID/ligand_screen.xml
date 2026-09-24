@@ -1,0 +1,27 @@
+<ROSETTASCRIPTS>
+  <SCOREFXNS>
+          <ScoreFunction name="relaxscore" weights="beta_genpot">
+                  <Reweight scoretype="elec_dens_fast" weight="100"/>
+                  <Reweight scoretype="gen_bonded" weight="1.0"/>
+                  <Reweight scoretype="coordinate_constraint" weight="1.0"/>
+        </ScoreFunction>
+  </SCOREFXNS>
+
+  <TASKOPERATIONS>
+  </TASKOPERATIONS>
+
+  <FILTERS>
+  </FILTERS>
+
+  <MOVERS>
+          <SetupForDensityScoring name="setupdens" />
+          <LoadDensityMap name="loaddens" mapfile="%%map%%" />
+          <GALigandDock name="dock" scorefxn="relaxscore" ngen="10" npool="100" smoothing="0.0" ramp_schedule="0.1,1.0" grid_step="0.325" padding="5.0" sidechains="auto" final_exact_minimize="bbsc" random_oversample="10" use_pharmacophore="false" skeleton_threshold_const="5.0" neighborhood_size="7" sample_ring_conformers="1" reference_pool="map" estimate_dG="true" multiple_ligands="%%ligands%%" local_resolution="%%local_res%%" entropy_method="Simple"/>
+  </MOVERS>
+  <PROTOCOLS>
+          <Add mover="setupdens"/>
+          <Add mover="loaddens"/>
+          <Add mover="dock"/>
+  </PROTOCOLS>
+  <OUTPUT scorefxn="relaxscore"/>
+</ROSETTASCRIPTS>
