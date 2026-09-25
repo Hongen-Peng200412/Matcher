@@ -1,6 +1,10 @@
 # 大致的比较想法
 
-注意: test_真实场景(Structure)\参考材料 & 想法\Automated identification of small molecules.pdf ， 这篇文章宣称可以实现类似于Match的功能，它就是我们的baseline，你需要仔细阅读官方源码库，了解实际的科学契约和调用入口。我们要使用 测试结果与追溯\experiment-centric\density_only-0 、 测试结果与追溯\experiment-centric\density_only-106 这两个"消融模型"跟他比，注意这两个消融模型本身只需要一个"位点"，不需要stage1推理出特定的blob。
+注意: test_真实场景(Structure)\参考材料 & 想法\Automated identification of small molecules.pdf ， 这篇文章宣称可以实现类似于Match的功能，它就是我们的baseline，你需要仔细阅读官方源码库，了解实际的科学契约和调用入口。论文原始链接在: https://pmc.ncbi.nlm.nih.gov/articles/PMC11601544/  、 数据在:  https://zenodo.org/records/14056520 。我从后面的网站上下载了: 
+test_真实场景(Structure)\参考材料 & 想法\tutorials\tutorials
+test_真实场景(Structure)\参考材料 & 想法\ligand_parameters\ligand_parameters
+
+我们要使用 测试结果与追溯\experiment-centric\density_only-0 、 测试结果与追溯\experiment-centric\density_only-106 这两个"消融模型"跟他比，注意这两个消融模型本身只需要一个"位点"，不需要stage1推理出特定的blob。
 
 测试可以分成两档： NxN的，以及 mxm的(分别对应于:  测试结果与追溯\测试结果总览\NxN真实测试.md 、 测试结果与追溯\测试结果总览\mxm真实测试.md )。
 
