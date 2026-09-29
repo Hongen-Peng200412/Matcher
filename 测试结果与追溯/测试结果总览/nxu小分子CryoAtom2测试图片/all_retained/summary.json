@@ -1,0 +1,137 @@
+{
+  "task": "nxu",
+  "view": "all_retained",
+  "pdb_count": 84,
+  "query_count": 357,
+  "methods": {
+    "density_only-0": {
+      "correct": 286,
+      "denominator": 357,
+      "micro_top1": 0.8011204481792717,
+      "pdb_macro_top1": 0.8961206452277882,
+      "scored_query_count": 357,
+      "fully_scored_query_count": 341,
+      "scored_identity_pairs": 572,
+      "total_identity_pairs": 588,
+      "scored_identity_pair_coverage": 0.9727891156462585,
+      "categories": {
+        "all": {
+          "correct": 286,
+          "support": 357,
+          "accuracy": 0.8011204481792717
+        },
+        "small_molecule": {
+          "correct": 286,
+          "support": 357,
+          "accuracy": 0.8011204481792717
+        },
+        "sugar": {
+          "correct": 0,
+          "support": 0,
+          "accuracy": null
+        },
+        "ion": {
+          "correct": 0,
+          "support": 0,
+          "accuracy": null
+        },
+        "peptide_like": {
+          "correct": 0,
+          "support": 0,
+          "accuracy": null
+        },
+        "nucleotide_like": {
+          "correct": 0,
+          "support": 0,
+          "accuracy": null
+        }
+      }
+    },
+    "density_only-106": {
+      "correct": 303,
+      "denominator": 357,
+      "micro_top1": 0.8487394957983193,
+      "pdb_macro_top1": 0.9124523294166151,
+      "scored_query_count": 357,
+      "fully_scored_query_count": 341,
+      "scored_identity_pairs": 572,
+      "total_identity_pairs": 588,
+      "scored_identity_pair_coverage": 0.9727891156462585,
+      "categories": {
+        "all": {
+          "correct": 303,
+          "support": 357,
+          "accuracy": 0.8487394957983193
+        },
+        "small_molecule": {
+          "correct": 303,
+          "support": 357,
+          "accuracy": 0.8487394957983193
+        },
+        "sugar": {
+          "correct": 0,
+          "support": 0,
+          "accuracy": null
+        },
+        "ion": {
+          "correct": 0,
+          "support": 0,
+          "accuracy": null
+        },
+        "peptide_like": {
+          "correct": 0,
+          "support": 0,
+          "accuracy": null
+        },
+        "nucleotide_like": {
+          "correct": 0,
+          "support": 0,
+          "accuracy": null
+        }
+      }
+    },
+    "EMERALD-ID": {
+      "correct": 263,
+      "denominator": 357,
+      "micro_top1": 0.7366946778711485,
+      "pdb_macro_top1": 0.8269227135298562,
+      "scored_query_count": 313,
+      "fully_scored_query_count": 222,
+      "scored_identity_pairs": 397,
+      "total_identity_pairs": 588,
+      "scored_identity_pair_coverage": 0.6751700680272109,
+      "categories": {
+        "all": {
+          "correct": 263,
+          "support": 357,
+          "accuracy": 0.7366946778711485
+        },
+        "small_molecule": {
+          "correct": 263,
+          "support": 357,
+          "accuracy": 0.7366946778711485
+        },
+        "sugar": {
+          "correct": 0,
+          "support": 0,
+          "accuracy": null
+        },
+        "ion": {
+          "correct": 0,
+          "support": 0,
+          "accuracy": null
+        },
+        "peptide_like": {
+          "correct": 0,
+          "support": 0,
+          "accuracy": null
+        },
+        "nucleotide_like": {
+          "correct": 0,
+          "support": 0,
+          "accuracy": null
+        }
+      }
+    }
+  }
+}
